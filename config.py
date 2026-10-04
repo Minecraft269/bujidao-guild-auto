@@ -299,6 +299,8 @@ CONFIG_COMMENTS = {
     "async.enabled": "启用开关:true=启用异步执行,fals=串行执行(调试建议关闭)",
     "async.num_workers": "后台线程数:每个线程独立轮询日志验证命令结果，默认 2",
     "async.max_queue_size": "命令队列最大容量:满时丢弃后续命令，默认 100",
+    "async.max_retries": "验证失败最大重试次数:重试耗尽的任务进入补做队列。建议 1~5",
+    "async.retry_delay": "重试间隔(秒):失败后等待多久再重试,建议 0.5~3",
     # ── 功能开关 ────────────────────────────────────────────────────────────
     "switches": "功能开关:每类操作可单独开关;执行开关 false=dry-run(仅查询+通知+输出报告)",
     "switches.promote_enabled": "升职开关:false=即使满足条件也不执行 promote",
@@ -375,6 +377,7 @@ KEY_ALIASES = {
 }
 
 VALID_SCOPES = ("all", "high", "mid", "low", "entry")
+VALID_NOTIFY_MODES = ("summary", "per_player")
 
 
 # ---------------------------------------------------------------------------
@@ -425,12 +428,63 @@ def _strip_comment_keys(node):
     return node
 
 
+def _strip_jsonc(text):
+    """剥离 JSONC 注释:同时支持行注释 '//' 与块注释 '/* */'。
+
+    必须做字符串感知(逐字符 + 引号状态机)而非正则替换:
+    配置里全是路径与中文文案(如 "C:\\Path\\To\\Minecraft\\logs\\latest.log"),
+    正则会把字符串字面量内部的 '//' 当成注释起点,把整个配置截断。
+    行注释的换行保留,便于 JSON 报错时对得上原始行号。
+    """
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if ch == "\\":                      # 转义符(路径里的反斜杠)连同下一字符一起放行
+                out.append(ch)
+                if i + 1 < n:
+                    out.append(text[i + 1])
+                    i += 2
+                    continue
+            elif ch == '"':
+                in_str = False
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":                     # 行注释:跳到换行(保留换行符本身)
+                j = text.find("\n", i)
+                if j == -1:
+                    break
+                i = j
+                continue
+            if nxt == "*":                     # 块注释:跳到 '*/';未闭合时容忍到文件末尾
+                j = text.find("*/", i + 2)
+                if j == -1:
+                    break
+                i = j + 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _load_jsonc_text(path):
-    """读取 JSONC 配置文件:剥离行首 '//' 注释行后按 JSON 解析。"""
-    with open(path, "r", encoding="utf-8") as f:
+    """读取 JSONC 配置文件:剥离 '//' 与 '/* */' 注释后按 JSON 解析。
+
+    用 utf-8-sig 读取:顺带吃掉 BOM —— 用户在记事本里编辑存盘常带 BOM,
+    而带 BOM 的文本交给 json.loads 会直接抛 JSONDecodeError。"""
+    with open(path, "r", encoding="utf-8-sig") as f:
         text = f.read()
-    lines = [l for l in text.splitlines() if not l.lstrip().startswith("//")]
-    return json.loads("\n".join(lines))
+    return json.loads(_strip_jsonc(text))
 
 
 def ensure_default_config(path):
@@ -468,47 +522,116 @@ def validate_config(cfg):
     """校验配置,返回问题列表(每条为 (级别, 消息);级别: error/warning)。"""
     issues = []
 
+    def _is_num(v):
+        """bool 是 int 子类,true/false 不应通过数值校验。"""
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
     def check_num(d, key, path, minimum=0):
         val = d.get(key)
-        # 排除 bool(bool 是 int 子类,true/false 不应通过数值校验)
-        if isinstance(val, bool) or not isinstance(val, (int, float)) or val < minimum:
+        if not _is_num(val) or val < minimum:
             issues.append(("error", f"配置项 {path}.{key} 应为不小于 {minimum} 的数字,当前: {val!r}"))
 
-    th = cfg.get("thresholds", {})
-    for k in th:
+    def check_required(section, keys, path=None):
+        """必需键缺失检查:键被整个删掉时兜底(值类型错由 check_num 等负责)。"""
+        path = path or section
+        for k in keys:
+            if k not in section:
+                issues.append(("error", f"缺少必需配置项 {path}.{k}"))
+
+    def check_bool(d, key, path=""):
+        val = d.get(key)
+        label = f"{path}.{key}" if path else key
+        if not isinstance(val, bool):
+            issues.append(("error", f"配置项 {label} 应为布尔值 true/false,当前: {val!r}"))
+
+    def section(cfg, name):
+        """取子配置段;不是 dict 时返回空 dict。
+
+        下方所有遍历(''.values() / ''.get() / ''.items()'')都经它取段:
+        用户把某段写成字符串时,校验必须**报出错误**而不是在遍历处抛
+        AttributeError —— 抛异常等于校验整个失效(main 里 error 分支看不到)。"""
+        val = cfg.get(name)
+        return val if isinstance(val, dict) else {}
+
+    # ── 必需键(用户手删配置项时明确报错,而不是静默回退到默认后行为诡异) ──
+    for _path in ("thresholds", "commands", "notify_templates"):
+        if not isinstance(cfg.get(_path), dict):
+            issues.append(("error", f"配置项 {_path} 应为对象(dict),当前: {cfg.get(_path)!r}"))
+        else:
+            check_required(cfg[_path], DEFAULT_CONFIG[_path], _path)
+
+    # 其余子段同样要求是对象(否则下游遍历抛异常,等于校验失效)
+    for _path in ("delays", "timeouts", "switches", "debug", "log", "async",
+                  "rank_names", "state_check"):
+        if _path in cfg and not isinstance(cfg.get(_path), dict):
+            issues.append(("error", f"配置项 {_path} 应为对象(dict),当前: {cfg.get(_path)!r}"))
+
+    th = section(cfg, "thresholds")
+    for k in DEFAULT_CONFIG["thresholds"]:
         check_num(th, k, "thresholds")
 
-    d = cfg.get("delays", {})
-    for k in ("min_send_interval", "max_send_interval"):
-        check_num(d, k, "delays")
-    # 只在两者都确实是数值时才比较:上面 check_num 可能已记下"非数字"错误,
-    # 若此处无条件比较会 TypeError 崩掉整个校验(用户把延时写成字符串即触发)。
-    _dmin, _dmax = d.get("min_send_interval"), d.get("max_send_interval")
-    if (isinstance(_dmin, (int, float)) and not isinstance(_dmin, bool)
-            and isinstance(_dmax, (int, float)) and not isinstance(_dmax, bool)
-            and _dmin > _dmax):
-        issues.append(("error", "delays.min_send_interval 不能大于 max_send_interval"))
+    # ── 阈值逻辑矛盾:判定是 if/elif 链(先升职后降职/踢出),边界含/不含各自固定。
+    # 门槛倒置会让某个区间既不升职也不降职,该成员被静默跳过 —— 属必须拦下的配置事故。
+    # 表驱动:(键A, 键B, 比较函数, 报错措辞, 为什么);两端都必须是数字才比。
+    _n = lambda k: (th[k] if _is_num(th.get(k)) else None)
+    for _a, _b, _cmp, _word, _why in (
+            ("entry_promote_1", "entry_kick", lambda a, b: a < b, "小于",
+             "入门成员 exp 落在两者之间时既不升职也不踢出,等于静默跳过"),
+            ("entry_promote_1", "entry_promote_2", lambda a, b: a > b, "大于", "升职档位应随门槛递增"),
+            ("entry_promote_2", "entry_promote_3", lambda a, b: a > b, "大于", "升职档位应随门槛递增"),
+            ("low_promote_1", "low_promote_2", lambda a, b: a > b, "大于", "升职档位应随门槛递增")):
+        if _n(_a) is None or _n(_b) is None:
+            continue  # 非数值:类型错误已由上面的 check_num 报出,不重复
+        if _cmp(_n(_a), _n(_b)):
+            issues.append(("error", f"thresholds.{_a}({_n(_a)}) 不能{_word} "
+                                     f"thresholds.{_b}({_n(_b)}):{_why}"))
 
-    t = cfg.get("timeouts", {})
+    d = section(cfg, "delays")
+    # 三组随机区间都要查 min<=max:只查 send_interval 会漏掉另外两组同样写反的情况
+    for _lo, _hi in (("min_send_interval", "max_send_interval"),
+                     ("min_paste_to_enter", "max_paste_to_enter"),
+                     ("min_chat_key_delay", "max_chat_key_delay")):
+        check_num(d, _lo, "delays")
+        check_num(d, _hi, "delays")
+        # 只在两者都确实是数值时才比较:上面 check_num 可能已记下"非数字"错误,
+        # 若此处无条件比较会 TypeError 崩掉整个校验(用户把延时写成字符串即触发)。
+        if _is_num(d.get(_lo)) and _is_num(d.get(_hi)) and d[_lo] > d[_hi]:
+            issues.append(("error", f"delays.{_lo} 不能大于 delays.{_hi}"))
+
+    t = section(cfg, "timeouts")
     for k in ("response_wait", "max_retries"):
+        # check_num 已含"负数"判断(负值 < 0),无需再单独判 < 0
         check_num(t, k, "timeouts")
-    _mr = t.get("max_retries")
-    if isinstance(_mr, (int, float)) and not isinstance(_mr, bool) and _mr < 0:
-        issues.append(("error", "timeouts.max_retries 不能为负"))
 
     scope = cfg.get("query_scope", "all")
     if scope not in VALID_SCOPES:
         issues.append(("error", f"query_scope 取值非法: {scope!r},应为 {VALID_SCOPES} 之一"))
 
+    # ── 开关类型:值写成字符串 "false" 是 JSON 里最常见的坑(引号一加就永远为真),
+    #    到运行时表现是"开关关不掉",所以这里必须拦住。
+    sw = section(cfg, "switches")
+    if not isinstance(sw, dict):
+        issues.append(("error", f"配置项 switches 应为对象(dict),当前: {sw!r}"))
+    else:
+        for k in ("promote_enabled", "demote_enabled", "kick_enabled",
+                  "execution_enabled", "notify_enabled", "verbose_log"):
+            check_bool(sw, k, "switches")
+        if sw.get("notify_mode") not in VALID_NOTIFY_MODES:
+            issues.append(("error", f"switches.notify_mode 取值非法: {sw.get('notify_mode')!r},"
+                                     f"应为 {VALID_NOTIFY_MODES} 之一"))
+    check_bool(cfg, "kick_confirm", "")  # 顶层键:路径前缀为空
+    if "pause_key" in cfg and not isinstance(cfg["pause_key"], str):
+        issues.append(("error", f"配置项 pause_key 应为字符串,当前: {cfg['pause_key']!r}"))
+
     for rank in cfg.get("skip_ranks", []):
-        if rank not in cfg.get("rank_names", {}):
+        if rank not in section(cfg, "rank_names"):
             issues.append(("warning", f"skip_ranks 中未知等级: {rank!r}"))
 
-    for key, tmpl in cfg.get("notify_templates", {}).items():
+    for key, tmpl in section(cfg, "notify_templates").items():
         if not isinstance(tmpl, str) or not tmpl.strip():
             issues.append(("error", f"notify_templates.{key} 不能为空"))
 
-    for cmd in cfg.get("commands", {}).values():
+    for cmd in section(cfg, "commands").values():
         if not isinstance(cmd, str) or not cmd.strip():
             issues.append(("error", f"commands 中存在空命令: {cmd!r}"))
 
@@ -516,17 +639,18 @@ def validate_config(cfg):
         issues.append(("error", "chat_key 应为字符串('auto' 或键名)"))
 
     # debug skip_stages 合法性
-    skip = cfg.get("debug", {}).get("skip_stages", [])
+    skip = section(cfg, "debug").get("skip_stages", [])
     valid_stages = {"list", "member", "decide", "notify", "execute"}
     for stage in skip:
         if stage not in valid_stages:
             issues.append(("error", f"debug.skip_stages 中无效阶段: {stage}，应为 {valid_stages} 之一"))
 
     # 校验 players_per_rank
-    ppr = cfg.get("debug", {}).get("simulation", {}).get("players_per_rank")
+    sim = section(section(cfg, "debug"), "simulation")
+    ppr = sim.get("players_per_rank")
     if ppr is not None:
         if isinstance(ppr, dict):
-            rank_names = cfg.get("rank_names", {})
+            rank_names = section(cfg, "rank_names")
             for k, v in ppr.items():
                 if k not in rank_names:
                     issues.append(("warning", f"debug.simulation.players_per_rank 中未知等级: {k!r}"))
@@ -536,7 +660,7 @@ def validate_config(cfg):
             issues.append(("error", f"debug.simulation.players_per_rank 应为整数或对象，当前: {ppr!r}"))
 
     # 贡献范围必须为长度为2的列表且 min <= max
-    cr = cfg.get("debug", {}).get("simulation", {}).get("contribution_range")
+    cr = section(section(cfg, "debug"), "simulation").get("contribution_range")
     if cr is not None:
         if not isinstance(cr, list) or len(cr) != 2:
             issues.append(("error", "debug.simulation.contribution_range 应为 [min, max] 且 min <= max"))
@@ -547,13 +671,13 @@ def validate_config(cfg):
             issues.append(("error", "debug.simulation.contribution_range 应为 [min, max] 且 min <= max"))
 
     # 日志级别:必须为 1~6 的整数
-    lv = cfg.get("log", {}).get("level")
+    lv = section(cfg, "log").get("level")
     if lv is not None:
         if not isinstance(lv, int) or isinstance(lv, bool) or lv < 1 or lv > 6:
             issues.append(("error", f"log.level 应为 1~6 的整数，当前: {lv!r}"))
 
     # 异步配置校验
-    async_cfg = cfg.get("async", {})
+    async_cfg = section(cfg, "async")
     if not isinstance(async_cfg.get("enabled"), bool):
         issues.append(("error", "async.enabled 应为布尔值"))
     if not isinstance(async_cfg.get("num_workers"), int) or async_cfg.get("num_workers", 0) < 1:
@@ -565,7 +689,7 @@ def validate_config(cfg):
     # 归档互相触发,形成自读自写死循环)
     gl = str(cfg.get("game_log") or "")
     if gl:
-        log_dir_cfg = str(cfg.get("log", {}).get("dir", "logs"))
+        log_dir_cfg = str(section(cfg, "log").get("dir", "logs"))
         try:
             gl_abs = os.path.abspath(gl)
             own_logs_abs = os.path.abspath(log_dir_cfg)

@@ -23,7 +23,8 @@ from pynput import keyboard
 import pyautogui
 
 import config as config_mod
-from actions import ActionExecutor, build_notification, decide_actions, new_rank_after
+from actions import build_notification, decide_actions, new_rank_after
+from action_executor import ActionExecutor
 from async_executor import AsyncCommandExecutor
 import logger
 from config import console

@@ -1,42 +1,65 @@
 # -*- coding: utf-8 -*-
 """
-actions.py —— 业务判定与动作执行
-=================================
-职责:
-  * decide_actions —— 按继承的阈值矩阵判定 升职/降职/踢出(docs/业务规则继承清单.md §1)
-  * build_notification —— 渲染通知文案(继承原脚本 §3)
-  * ActionExecutor —— 发送 /gc 广播、执行升/降/踢命令,并检测日志错误回显
+actions.py —— 决策引擎 + 通知文案 + 命令格式(纯逻辑)
+=================================================
+本模块只做三件纯逻辑的事,全部可脱离游戏窗口独立单元测试:
+
+  * decide_actions      —— 阈值矩阵判定 升职/降职/踢出(业务规则 §1)
+  * build_notification  —— 渲染通知文案(业务规则 §3)
+  * build_command       —— 生成游戏内指令文本(业务规则 §2)
+  * new_rank_after      —— 动作执行后的新等级(报告用)
+
+**刻意不 import pyautogui / 不做任何键盘、剪贴板、窗口、OCR 交互。**
+发送与执行属于硬件层,已独立在 action_executor.py(见该模块);
+本模块只产出「该做什么」与「该发什么字」,不碰设备。
 """
-import threading
-import time
-import pyautogui
 
 import logger
-from config import console
-from game_state import prepare_chat_state
-from parsers import strip_chat_prefix
-from window_input import activate_window
 
-# 等级链:值越小等级越低(用于计算 升职N次/降职 后的新等级)
+# 等级链:索引越小等级越低(用于计算 升职N次/降职1次 后的新等级)
+# 业务规则 §1:入门成员 → 低活跃 → 中等活跃 → 高活跃
 RANK_ORDER = ["entry", "low", "mid", "high"]
 
 
 def decide_actions(rank, weekly, thresholds):
-    """按继承规则判定动作。
+    """按业务规则 §1 的阈值矩阵判定动作,是整个脚本的决策真源。
+
+    判定顺序:每个等级内先查升职分支,再查降职/踢出分支(if/elif 链,原脚本顺序)。
+    先命中先返回,因此高阈值分支必须排在低阈值分支之前。
+
+    边界语义(逐字继承原脚本,改动即为业务事故):
+      - 含边界(<= / >=):high_demote、mid_promote、low_promote_1/2、
+        entry_promote_1/2/3
+      - 不含边界(严格 <):mid_demote、low_demote、entry_kick
+      - 30000 处 high 与 mid **同值反向**:high 是 `exp <= 30000` 降职,
+        mid 是 `exp >= 30000` 升职。同一个 30000 在两个等级上走向相反,
+        这是原脚本的真实行为,必须原样保留,不得「修正」成一致。
+      - 降职类(high_demote/mid_demote/low_demote/entry_kick)的触发区间在
+        边界**内侧**;升职类的触发区间在边界**外侧**。
+
+    阈值从 thresholds 传入(全部可配置),默认值与业务规则 §1 完全一致;
+    thresholds 缺键时退回该键的默认值,因此只传部分键也能跑。
+    返回值对同一 (rank, weekly, thresholds) 是纯函数式的、无副作用的。
+
+    参数:
+      rank:       "entry" / "low" / "mid" / "high";未知等级 → 无动作
+      weekly:     周贡献(公会经验,已去千分位逗号的整数)
+      thresholds: 阈值字典,键名见 DEFAULT_CONFIG["thresholds"]
 
     返回 (actions, trigger_key):
-      actions:   动作名列表,如 ["promote","promote"] / ["demote"] / ["kick"] / []
-      trigger_key:触发的阈值配置键名(用于报告标注;无动作时为 None)
-    边界语义与原脚本逐字一致(含/不含边界见 docs/业务规则继承清单.md §1)。
+      actions:    动作名列表,如 ["promote","promote"] / ["demote"] / ["kick"] / []
+      trigger_key:命中的阈值配置键名(供报告标注);无动作时为 None
     """
     logger.trace_code_location("decide_actions.start", f"rank={rank} weekly={weekly}")
     t = thresholds
     if rank == "high":
+        # 高活跃:无升职分支,<= 30000 直接降职(含边界)
         if weekly <= t.get("high_demote", 30000):
             res = (["demote"], "high_demote")
             logger.trace_return("decide_actions", res)
             return res
     elif rank == "mid":
+        # 先升职(>= 30000),后降职(< 5000);中间区间无操作
         if weekly >= t.get("mid_promote", 30000):
             res = (["promote"], "mid_promote")
             logger.trace_return("decide_actions", res)
@@ -46,6 +69,7 @@ def decide_actions(rank, weekly, thresholds):
             logger.trace_return("decide_actions", res)
             return res
     elif rank == "low":
+        # 降序阈值:30000 → ×2,10000 → ×1,最后才是 < 3500 降职
         if weekly >= t.get("low_promote_2", 30000):
             res = (["promote", "promote"], "low_promote_2")
             logger.trace_return("decide_actions", res)
@@ -59,6 +83,9 @@ def decide_actions(rank, weekly, thresholds):
             logger.trace_return("decide_actions", res)
             return res
     elif rank == "entry":
+        # 降序阈值:30000 → ×3,10000 → ×2,3500 → ×1,最后才是 < 3500 踢出。
+        # entry_promote_1(>= 3500)与 entry_kick(< 3500)在 3500 处分段无缝衔接,
+        # 3500 本身归升职一侧(踢出不含边界)。
         if weekly >= t.get("entry_promote_3", 30000):
             res = (["promote", "promote", "promote"], "entry_promote_3")
             logger.trace_return("decide_actions", res)
@@ -75,13 +102,22 @@ def decide_actions(rank, weekly, thresholds):
             res = (["kick"], "entry_kick")
             logger.trace_return("decide_actions", res)
             return res
+    # 未命中任何分支(含未知 rank)→ 不做任何操作
     logger.trace_return("decide_actions", ([], None))
     return [], None
 
 
 def new_rank_after(rank, actions):
-    """动作执行后的新等级(报告用):升职 N 级 / 降职 1 级 / 踢出。
-    返回:等级 key 或 "kicked";无动作返回原等级。"""
+    """动作执行后的新等级(报告用):升职 N 级 / 降职 1 级 / 踢出 → "kicked"。
+
+    等级链 RANK_ORDER = entry → low → mid → high,封顶封底:
+      - 升职到链顶(high)后不再往上,停在 "high";
+      - 降职到链底(entry)后不再往下,停在 "entry"(业务上不会出现,
+        entry 只会被踢出,但保守处理避免越界 IndexError)。
+    actions 为空 → 返回原等级。
+    只认 promote/demote/kick 三种已知动作;未知动作名(配置写错等)保守返回
+    原等级,绝不落进 promote 分支被当成升职 —— 那会让报告误报新等级、掩盖异常。
+    """
     logger.trace_code_location("new_rank_after.start", f"rank={rank} actions={actions}")
     if not actions:
         logger.trace_return("new_rank_after", rank)
@@ -99,8 +135,6 @@ def new_rank_after(rank, actions):
         logger.trace_return("new_rank_after", rank)
         return rank
     # promote ×N
-    # 只认 promote/demote/kick 三种已知动作;未知动作名(配置写错等)保守返回原等级,
-    # 绝不能落进 promote 分支被当升职 —— 那会让报告误报新等级,掩盖异常。
     if actions[0] == "promote":
         if rank in RANK_ORDER:
             idx = RANK_ORDER.index(rank)
@@ -114,23 +148,57 @@ def new_rank_after(rank, actions):
 
 
 def build_notification(player, weekly, actions, cfg, count=None):
-    """渲染通知文案(继承原脚本文案,见 docs/业务规则继承清单.md §3)。
-    count:升职次数(默认取 actions 长度);无动作时用 none 模板。"""
+    """渲染通知文案(业务规则 §3,四类文案逐字继承原脚本)。
+
+    占位符:{player} {weekly} {count} {guild_qq}
+    模板与群号全部取自 cfg(配置化,零硬编码);cfg 缺键时回落到内联默认值,
+    这些默认值与 config.DEFAULT_CONFIG 完全一致。
+
+    文案选择的边界:
+      - actions 为空          → none 模板(无 count 占位符,渲染时不传 count)
+      - actions[0] == "promote" → promote 模板,count = len(actions) 即升职次数
+      - actions[0] == "demote" → demote 模板(无 count)
+      - actions[0] == "kick"   → kick 模板(无 count)
+    count 参数可显式覆盖升职次数(默认取 actions 长度);无操作/降职/踢出
+    三类的模板不含 {count},显式传入 count 对它们无影响。
+
+    参数:
+      player: 玩家 ID
+      weekly: 周贡献(公会经验,整数)
+      actions: decide_actions 的返回值
+      cfg:     配置字典(读 notify_templates / guild_qq)
+    返回:可直接作为 /gc 广播正文的中文字符串。
+    """
     logger.trace_code_location("build_notification.start", f"player={player} weekly={weekly} actions={actions}")
     templates = cfg.get("notify_templates", {})
     guild_qq = cfg.get("guild_qq", "")
     if not actions:
-        tmpl = templates.get("none", "{player} 这周贡献为:{weekly} 执行操作:无 公会群:{guild_qq}")
+        tmpl = templates.get(
+            "none",
+            "{player} 这周贡献为:{weekly} 执行操作:无 非常感谢你对公会做出的贡献 公会群:{guild_qq}",
+        )
         res = tmpl.format(player=player, weekly=weekly, guild_qq=guild_qq)
         logger.trace_return("build_notification", res)
         return res
     kind = actions[0]
     if kind == "kick":
-        tmpl = templates.get("kick")
+        tmpl = templates.get(
+            "kick",
+            "{player} 这周贡献为:{weekly} 执行操作:踢出 未完成这周最低标准 "
+            "若有异议请去群里寻找执行管理员 公会群:{guild_qq}",
+        )
     elif kind == "demote":
-        tmpl = templates.get("demote")
+        tmpl = templates.get(
+            "demote",
+            "{player} 这周贡献为:{weekly} 执行操作:降职 "
+            "若有异议请去群里找执行此操作的管理员 公会群:{guild_qq}",
+        )
     else:
-        tmpl = templates.get("promote")
+        tmpl = templates.get(
+            "promote",
+            "{player} 这周贡献为:{weekly} 执行操作:升职({count}次) "
+            "非常感谢你对公会做出的贡献 公会群:{guild_qq}",
+        )
     if count is None:
         count = len(actions)
     res = tmpl.format(player=player, weekly=weekly, count=count, guild_qq=guild_qq)
@@ -139,244 +207,29 @@ def build_notification(player, weekly, actions, cfg, count=None):
 
 
 def build_command(cfg, action, player):
-    """按配置的命令格式生成指令文本。"""
+    """生成游戏内指令文本(业务规则 §2,命令格式逐字继承原脚本)。
+
+    仅覆盖三类**破坏性**动作;格式全部取自 cfg["commands"],零硬编码:
+      promote → commands.guild_promote  = "/guild promote {player}"
+                 (升职 N 级 = 该命令重复发送 N 次,重复由调用方做)
+      demote  → commands.guild_demote   = "/guild demote {player}"
+      kick    → commands.guild_kick     = "/guild kick {player} {reason}"
+                 reason 取 commands.kick_reason = "未完成一周最低标准"(踢出必带原因)
+
+    查询命令(/guild list、/guild member)刻意**不经本函数** —— 调用方(main)
+    自行按 cfg["commands"] 拼接。未知 action 一律 raise ValueError 而非"猜"
+    出一条指令:猜错会把一条查询发成破坏性操作。宁可中断也不误发。
+
+    玩家 ID 原样嵌入,不做 strip/转义 —— 真实样本存在含空格的玩家名。
+    """
     cmds = cfg.get("commands", {})
     if action == "promote":
         return cmds.get("guild_promote", "/guild promote {player}").format(player=player)
     if action == "demote":
         return cmds.get("guild_demote", "/guild demote {player}").format(player=player)
     if action == "kick":
-        reason = cfg.get("commands", {}).get("kick_reason", "未完成一周最低标准")
-        return cmds.get("guild_kick", "/guild kick {player} {reason}").format(player=player, reason=reason)
+        reason = cmds.get("kick_reason", "未完成一周最低标准")
+        return cmds.get("guild_kick", "/guild kick {player} {reason}").format(
+            player=player, reason=reason
+        )
     raise ValueError(f"未知动作: {action}")
-
-
-# ---------------------------------------------------------------------------
-# 执行器
-# ---------------------------------------------------------------------------
-class ActionExecutor:
-    """执行 /gc 广播与升/降/踢命令,通过日志钩子检测错误回显。"""
-
-    def __init__(self, cfg, human_input, watcher, hwnd=None, detector=None, stop_check=None):
-        self.cfg = cfg
-        self.input = human_input
-        self.watcher = watcher
-        self.hwnd = hwnd
-        self.detector = detector
-        self.stop_check = stop_check
-        self.verbose = cfg.get("switches", {}).get("verbose_log", True)
-        self.error_patterns = cfg.get("error_patterns", [])
-        # 错误回显检测窗口(秒):发送命令后收集日志的时长;慢服务器可调大
-        self.error_check_window = float(cfg.get("timeouts", {}).get("error_check_window", 4.0))
-        # 发送互斥锁:模拟键盘/剪贴板是全局设备,多线程(异步队列)并发调用时
-        # 必须串行化;暂停检查也在锁内完成,保证暂停期间任何线程都发不出命令,
-        # 且恢复后先重置窗口状态再发送(见 _acquire_send_gate)
-        self._send_lock = threading.Lock()
-
-    def _send_with_gate(self, cmd):
-        """带暂停门的串行发送:获取发送锁 → 暂停则阻塞等待 → 恢复后重置窗口 → 发送。
-        所有模拟输入(键盘/剪贴板)必须经此方法,不存在绕过暂停/重置的发送路径。"""
-        with self._send_lock:
-            # ---- 暂停门:严格等到 _paused 稳定为 False(去抖 N 周期) ----
-            # 用户原话"按了 u 但未长按,_paused 短暂 True 后立即恢复 False":
-            # 原 sleep(0.2) 看一次就放行——现改为看到 True 后 sleep+再 check,共 N 周期
-            # 持续 False 才放行(避免瞬时抖动误判)
-            _DEBOUNCE_CYCLES = 3
-            logged_waiting = False
-            if self.stop_check and self.stop_check():
-                # 看到 True 先打印,等 3 个 50ms 周期全部 False 才放行
-                if not logged_waiting:
-                    logger.log_debug("检测到暂停状态,发送线程严格阻塞等待稳定恢复 ...")
-                    console("执行暂停,发送等待恢复 ...")
-                    logged_waiting = True
-                stable = 0
-                while self.stop_check and self.stop_check() and stable < _DEBOUNCE_CYCLES:
-                    time.sleep(0.05)
-                    if not (self.stop_check and self.stop_check()):
-                        stable += 1
-                    else:
-                        stable = 0
-            # ---- 二次复查(防抖:用户按了 u 又立即松开时,原 while time.sleep(0.2)
-            # 后看到 _paused 已经是 False,while 立即退出导致 send_chat_text 已执行)。
-            # 现在:看到 _paused=False 后再等一个 poll 周期再看一次——稳定为 False 才发。
-            # 用 while True + break 模式以便二次暂停时 continue 回顶部
-            while True:
-                time.sleep(0.2)  # 二次复查去抖间隔(与门内 while 一致)
-                if not (self.stop_check and self.stop_check()):
-                    break  # 稳定非暂停,准备发送
-                logger.log_debug("发送前二次复查检测到持续暂停,继续阻塞等待 ...")
-            # ---- 恢复后重置窗口状态(_reset_needed 由 main._toggle_pause 置位,
-            #      reset_ui 内部消费该标志;无残留标志时 reset_ui 仍做一次轻量校验) ----
-            self.reset_ui()
-            logger.trace_code_location("ActionExecutor._send_with_gate", f"准备发送 cmd={cmd[:60]!r}")
-            t_send = time.monotonic()
-            self.input.send_chat_text(cmd)
-            send_ms = int((time.monotonic() - t_send) * 1000)
-            logger.trace_code_location("ActionExecutor._send_with_gate", f"send_chat_text 完成({send_ms}ms)")
-
-    def reset_ui(self):
-        """发送前界面保障:激活游戏窗口;若暂停恢复标志置位则按 Esc 清残留并 OCR 处理菜单。
-        幂等:_reset_needed 未置位时不做多余动作(仅激活窗口)。"""
-        if self.hwnd:
-            activate_window(self.hwnd)
-        # 消费 main 的暂停恢复标志(main.reset_window_state_after_pause 同款逻辑;
-        # 经回调注入避免循环导入——由 main 在构造后 set_reset_hook 注入)
-        consume = getattr(self, "_consume_reset_flag", None)
-        need_reset = bool(consume()) if callable(consume) else False
-        if need_reset:
-            pyautogui.press("esc")   # 关闭可能残留的菜单/聊天栏
-            time.sleep(0.2)
-            if self.detector is not None:
-                prepare_chat_state(self.detector, console)
-            time.sleep(0.3)
-            console("  (重置界面状态：激活窗口，关闭覆盖层，处理菜单)")
-
-    def set_reset_hook(self, consume_fn):
-        """注入暂停恢复标志的消费函数(main._reset_needed 的读取+复位)。"""
-        self._consume_reset_flag = consume_fn
-
-    def _ensure_window(self):
-        """发送前重新激活游戏窗口并处理菜单界面(每次发送前执行,含重试/暂停恢复)。"""
-        if self.hwnd is not None:
-            activate_window(self.hwnd)
-        if self.detector is not None:
-            prepare_chat_state(self.detector, console)
-
-    def _find_error(self, text):
-        for pat in self.error_patterns:
-            if pat and pat in text:
-                return pat
-        return None
-
-    def gc_broadcast(self, text):
-        """通过 /gc 在游戏内广播(查询完成后、执行操作前发送)。
-        经 _send_with_gate 发送:锁内串行 + 暂停门 + 恢复重置。"""
-        prefix = self.cfg.get("commands", {}).get("gc_prefix", "/gc")
-        self._ensure_window()
-        self._send_with_gate(f"{prefix} {text}")
-
-    def _find_success(self, action, player, lines):
-        """根据操作类型检查成功回显。返回成功消息或 None。"""
-        text = "\n".join(lines)
-        if action == "promote" or action == "demote":
-            # 匹配 "成功设置{player}的职位为{rank_name}!"
-            # 由于 rank_name 未知，我们只检查是否包含 "成功设置" 和 player
-            if f"成功设置{player}的职位为" in text:
-                return True
-        elif action == "kick":
-            # 匹配 "{player}被{admin}踢出{guild_name}公会！"
-            # 检查是否包含 f"{player}被" 和 "踢出" 和 "公会！"
-            if f"{player}被" in text and "踢出" in text and "公会！" in text:
-                return True
-        return False
-
-    def execute_action(self, action, player, retries=None):
-        """执行单条动作命令，支持重试。返回 (ok, error_text|None)。"""
-        logger.trace_code_location("execute_action.start", f"action={action} player={player}")
-        if retries is None:
-            retries = int(self.cfg.get("timeouts", {}).get("max_retries", 3))
-        cmd = build_command(self.cfg, action, player)
-
-        attempt = 0
-        while attempt < retries:
-            # ---- 暂停检查(锁外快查:暂停时直接阻塞等待,不占发送锁) ----
-            if self.stop_check and self.stop_check():
-                console("执行暂停，等待恢复...")
-                while self.stop_check():
-                    time.sleep(0.1)
-                continue   # 不消耗重试次数;恢复后的窗口重置由 _send_with_gate 内 reset_ui 完成
-
-            self._ensure_window()
-            if self.verbose:
-                print(f"  → 发送: {cmd} (尝试 {attempt+1}/{retries})")
-            # 带暂停门的串行发送(锁内:暂停阻塞→恢复重置→发送)
-            self._send_with_gate(cmd)
-            logger.trace_code_location("execute_action.sent", f"cmd={cmd} attempt={attempt+1}")
-            lines = self.watcher.read_until(timeout=self.error_check_window)
-            logger.trace_code_location("execute_action.received", f"lines={len(lines)}")
-
-            # 检查错误
-            error = None
-            for line in lines:
-                if "[CHAT]" in line:
-                    content = strip_chat_prefix(line)
-                    err = self._find_error(content)
-                    if err:
-                        error = err
-                        break
-            if error is not None:
-                logger.log_warning(f"执行失败 [{action}] {player}: {error} (尝试 {attempt+1})")
-                if attempt < retries - 1:
-                    time.sleep(1.0)
-                    attempt += 1
-                    continue
-                res = (False, error)
-                logger.trace_return("execute_action", res)
-                return res
-
-            # 检查成功
-            if self._find_success(action, player, lines):
-                res = (True, None)
-                logger.trace_return("execute_action", res)
-                return res
-
-            # 无错误无成功，重试
-            logger.log_debug(f"执行无回显 [{action}] {player} (尝试 {attempt+1})")
-            if attempt < retries - 1:
-                time.sleep(1.0)
-            attempt += 1
-
-        res = (False, "重试耗尽")
-        logger.trace_return("execute_action", res)
-        return res
-
-    def gc_broadcast_with_retry(self, text, retries=3, timeout=4.0):
-        """发送 /gc 广播，验证是否在日志中回显。返回 (success, error_msg)。"""
-        prefix = self.cfg.get("commands", {}).get("gc_prefix", "/gc")
-        full_cmd = f"{prefix} {text}"
-        for attempt in range(retries):
-            self.gc_broadcast(text)  # 发送
-            lines = self.watcher.read_until(timeout=timeout)
-
-            # 检查是否出现错误
-            error = None
-            for line in lines:
-                if "[CHAT]" in line:
-                    content = strip_chat_prefix(line)
-                    err = self._find_error(content)
-                    if err:
-                        error = err
-                        break
-            if error is not None:
-                if attempt < retries - 1:
-                    time.sleep(1.0)
-                    continue
-                return False, error
-
-            # 检查是否出现广播内容（去除前缀的文本是否出现在日志中）
-            # 注意：日志中广播内容可能带有 "公会 >" 等前缀，我们使用 strip_chat_prefix 后检查
-            found = False
-            for line in lines:
-                if "[CHAT]" in line:
-                    content = strip_chat_prefix(line)
-                    # 忽略可能的前缀（如 "公会 >某玩家: "），直接检查 text 是否在 content 中
-                    if text in content:
-                        found = True
-                        break
-            if found:
-                return True, None
-
-            if attempt < retries - 1:
-                time.sleep(1.0)
-        return False, "广播未在日志中回显"
-
-    def execute_actions(self, player, actions):
-        """执行一组动作;返回 [(action, ok, error)] 列表。"""
-        results = []
-        for action in actions:
-            ok, err = self.execute_action(action, player)
-            results.append((action, ok, err))
-            if not ok:
-                break  # 失败即停(如已踢出,后续动作无意义)
-            self.input.wait_between_commands()
-        return results

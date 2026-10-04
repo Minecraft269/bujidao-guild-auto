@@ -166,7 +166,7 @@ class TestPauseGate(unittest.TestCase):
             return [f"[CHAT] 成功设置{p}的职位为高活跃成员!"]
 
     def setUp(self):
-        import actions as actions_mod
+        import action_executor as actions_mod
         self.actions_mod = actions_mod
         # 打桩 activate_window / prepare_chat_state / pyautogui.press
         self.calls = []
