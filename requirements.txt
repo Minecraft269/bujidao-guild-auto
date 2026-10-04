@@ -1,0 +1,12 @@
+# 布吉岛公会管理脚本(全自动版)依赖库
+# 安装方式: pip install -r requirements.txt
+# 已在本机验证版本: pyautogui 0.9.54 / pynput 1.8.2 / pyperclip 1.11.0 / winsdk 1.0.0b10
+# 注:
+#   * pyautogui 会自动安装其依赖(pygetwindow/pyScreeze/pymsgbox 等),无需单独安装
+#   * winsdk 为【可选】依赖(游戏界面状态检测:菜单界面 OCR 识别并自动按 Esc 关闭);
+#     未安装时脚本自动降级为纯试错式发送,不影响其他功能
+
+pyautogui>=0.9.54
+pynput>=1.7.6
+pyperclip>=1.8.2
+winsdk>=1.0.0b10
