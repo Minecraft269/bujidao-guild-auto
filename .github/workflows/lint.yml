@@ -1,0 +1,73 @@
+name: "Lint"
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    # windows-latest 自带 Git Bash。pin 成 bash 而不是默认 pwsh：与
+    # test.yml / security.yml 保持一致，且 set +e / set -e 的退出码处理
+    # 语义在 bash 下无歧义。
+    shell: bash
+
+env:
+  # ruff 是静态分析，不需要装任何项目依赖（pyautogui / winsdk 等），所以这一步
+  # 只装 ruff 自己。
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  lint:
+    name: ruff
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          # ruff 本身是单个二进制 wheel，装得极快；这里挂 cache 主要为了跟
+          # test.yml / security.yml 共用同一个 pip 缓存条目（key 由
+          # requirements.txt 决定，三条流水线共享），顺带省掉首次下载。
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install ruff
+        # 固定版本以可复现：ruff 的规则集会随版本增删，同一 select 在不同版本下
+        # 命中数不同。这里钉的是"本地实测跑通的那个版本"，不是随便挑的一个。
+        # 若要换成别的版本，先本地跑一遍 notes 里的复核命令再改这里。
+        run: python -m pip install "ruff==0.16.10"
+
+      # 阻塞门禁。规则集与 line-length / target-version 全部来自 pyproject.toml
+      # 的 [tool.ruff]，CLI 不再重复传参，避免两处配置漂移。
+      - name: ruff check
+        run: ruff check --output-format=github .
+
+      # 暂不阻塞（continue-on-error）：仓库现有 27 个 .py 里 22 个会被 ruff
+      # format 重排，一次性重排会把整个 diff 打散成纯噪音。先只报不改，
+      # 跑 `ruff format .` 提交后再把 continue-on-error 摘掉。
+      # 不加 --diff：22 个文件的重排 diff 上千行，没人会在 CI 日志里读它，
+      # 维护者要 diff 自己本地跑一把即可。要看就加 --diff。
+      - name: ruff format --check
+        continue-on-error: true
+        run: |
+          set +e
+          ruff format --check .
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::ruff format --check 未通过（暂不阻塞）。本地跑 'ruff format .' 提交后可将本步骤改为阻塞。"
+          fi

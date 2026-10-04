@@ -1,0 +1,106 @@
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: PyInstaller (onefile + UPX)
+    runs-on: windows-latest
+    permissions:
+      # 仅 tag 构建需要写权限创建 Release；PR 构建用不到。
+      contents: write
+    env:
+      APP_NAME: '布吉岛公会管理脚本'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install UPX
+        # windows-latest 镜像不带 UPX，PyInstaller 检测不到就会静默跳过压缩
+        # （只打一条 warning，产物不减小）。这里显式安装并校验版本，
+        # 装不上就直接失败，而不是悄悄产出一个没压缩的 exe。
+        run: |
+          choco install upx --no-progress -y
+          upx --version
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        # 参数逐条复刻 布吉岛公会管理脚本.spec + build.bat 的 CLI 等价物。
+        # 原因：.gitignore 含 *.spec，该 spec 未纳入版本控制，CI 全新检出拿不到它。
+        # excludes = 原有 8 项 + 本次新增 6 项，均已逐一验证无用（见 notes）。
+        run: |
+          # 用数组传参而不是反引号续行：APP_NAME 含中文，反引号 + 嵌套引号
+          # 在 PowerShell 里容易踩转义坑，数组由运行时自行分词，最稳。
+          $pyinstaller_args = @(
+            "--onefile", "--clean", "--noconfirm",
+            "--name", $env:APP_NAME,
+            "--collect-all", "winsdk",
+            "--exclude-module", "tkinter",
+            "--exclude-module", "cv2",
+            "--exclude-module", "numpy",
+            "--exclude-module", "PyQt5",
+            "--exclude-module", "matplotlib",
+            "--exclude-module", "scipy",
+            "--exclude-module", "IPython",
+            "--exclude-module", "pandas",
+            "--exclude-module", "PIL.ImageTk",
+            "--exclude-module", "win32api",
+            "--exclude-module", "win32com",
+            "--exclude-module", "win32con",
+            "--exclude-module", "pythoncom",
+            "--exclude-module", "pywintypes",
+            "--exclude-module", "pytest",
+            "main.py"
+          )
+          pyinstaller @pyinstaller_args
+
+      - name: Report size
+        run: |
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw 'dist/ 下没有 .exe，构建未产出' }
+          $mb = [math]::Round($exe.Length / 1MB, 2)
+          "### Build artifact" >> $env:GITHUB_STEP_SUMMARY
+          "" >> $env:GITHUB_STEP_SUMMARY
+          "| File | Size |" >> $env:GITHUB_STEP_SUMMARY
+          "| --- | --- |" >> $env:GITHUB_STEP_SUMMARY
+          "| $($exe.Name) | $mb MB |" >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "产物: $($exe.FullName) ($($exe.Length) 字节, $mb MB)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.run_number }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Publish release
+        # 只在打 tag 时发 Release；PR / 手动触发只留 artifact。
+        if: "${{ startsWith(github.ref, 'refs/tags/') }}"
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true

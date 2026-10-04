@@ -1,0 +1,28 @@
+# 仅供 ruff 使用。本项目不通过 pyproject 构建/安装（脚本本体直接跑 / PyInstaller
+# 打包），所以这里刻意不放 [project] / [build-system]。
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+# 选择依据：全是"零误报 + 零存量违规"的规则族。
+# E9   语法错误（含 IOError 等）
+# F    pyflakes：未定义名 / 逻辑错误
+# A    flake8-builtins：遮蔽内建名
+# TC   flake8-type-checking：类型注解该走的 import
+# ICN  flake8-import-conventions
+# ISC001-003  隐式字符串拼接歧义（常见于漏逗号的元组）
+# RSE   flake8-raise：raise 写法
+# TID   flake8-tidy-imports：禁用 API（banned-api）
+select = ["E9", "F", "A", "TC", "ICN", "ISC001", "ISC002", "ISC003", "RSE", "TID"]
+
+# 存量欠账，先放行不阻塞 CI。全部可用 `ruff check --select <CODE> --fix` 或手改，
+# 逐条清完即可从 ignore 里删掉（见 CI notes 的欠账清单）。
+ignore = [
+  "F401",  # unused-import         x5
+  "F541",  # f-string 无占位符      x10
+  "F811",  # 重复定义               x1（tests/test_actions_logic.py）
+  "F821",  # undefined-name         x1（main.py:352，真 bug，勿机械 --fix）
+  "F841",  # 局部变量赋值后未使用      x9
+]

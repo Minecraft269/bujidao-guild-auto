@@ -1,0 +1,81 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # 每周一 04:27 UTC（避开整点，减少排队；cron 只在默认分支生效）
+    - cron: '27 4 * * 1'
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 默认最小权限：只读代码。各 job 按需提权（见各 job 的 permissions）。
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (python)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      # 上传 SARIF 到 Security 面板 / code scanning alerts
+      security-events: write
+      # 私有仓库读 actions 元数据，CodeQL 分析必需；公开仓库可删
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          # 纯解释型语言，无需 build 步骤（build-mode 默认即可）
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+
+  dependency-review:
+    name: Dependency review (PR only)
+    # 只在 PR 上有意义：需要 base 分支的依赖清单做 diff。
+    # push / schedule / workflow_dispatch 触发时整个 job 被跳过。
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v3
+
+  pip-audit:
+    name: pip-audit
+    # Windows：winsdk / pywin32 / pyscreeze 等依赖只有 Windows 上能正确解析，
+    # Linux runner 上 pip-audit 会因找不到发行版而误报或解析失败。
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
+
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip-audit
+
+      - name: Audit dependencies
+        # 发现已知漏洞时 pip-audit 以非 0 退出码结束 -> job 失败（硬门禁）
+        run: pip-audit -r requirements.txt

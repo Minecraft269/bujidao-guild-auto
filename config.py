@@ -481,13 +481,19 @@ def validate_config(cfg):
     d = cfg.get("delays", {})
     for k in ("min_send_interval", "max_send_interval"):
         check_num(d, k, "delays")
-    if d.get("min_send_interval", 0) > d.get("max_send_interval", 0):
+    # 只在两者都确实是数值时才比较:上面 check_num 可能已记下"非数字"错误,
+    # 若此处无条件比较会 TypeError 崩掉整个校验(用户把延时写成字符串即触发)。
+    _dmin, _dmax = d.get("min_send_interval"), d.get("max_send_interval")
+    if (isinstance(_dmin, (int, float)) and not isinstance(_dmin, bool)
+            and isinstance(_dmax, (int, float)) and not isinstance(_dmax, bool)
+            and _dmin > _dmax):
         issues.append(("error", "delays.min_send_interval 不能大于 max_send_interval"))
 
     t = cfg.get("timeouts", {})
     for k in ("response_wait", "max_retries"):
         check_num(t, k, "timeouts")
-    if t.get("max_retries", 0) < 0:
+    _mr = t.get("max_retries")
+    if isinstance(_mr, (int, float)) and not isinstance(_mr, bool) and _mr < 0:
         issues.append(("error", "timeouts.max_retries 不能为负"))
 
     scope = cfg.get("query_scope", "all")
@@ -532,7 +538,12 @@ def validate_config(cfg):
     # 贡献范围必须为长度为2的列表且 min <= max
     cr = cfg.get("debug", {}).get("simulation", {}).get("contribution_range")
     if cr is not None:
-        if not isinstance(cr, list) or len(cr) != 2 or cr[0] > cr[1]:
+        if not isinstance(cr, list) or len(cr) != 2:
+            issues.append(("error", "debug.simulation.contribution_range 应为 [min, max] 且 min <= max"))
+        elif not all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in cr):
+            # 元素非数值时不再比较(否则 TypeError),上面的长度错误已足够定位问题
+            issues.append(("error", "debug.simulation.contribution_range 应为 [min, max] 且 min <= max"))
+        elif cr[0] > cr[1]:
             issues.append(("error", "debug.simulation.contribution_range 应为 [min, max] 且 min <= max"))
 
     # 日志级别:必须为 1~6 的整数

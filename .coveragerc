@@ -1,0 +1,29 @@
+# .coveragerc —— 总体覆盖率门的排除规则
+#
+# 只被 CI 的 Gate 2/2（--cov-fail-under=85）使用，通过 COVERAGE_RCFILE 指向本文件。
+# Gate 1/2（核心层 ≥95%）用显式 --cov=<模块> 指定模块，不读本文件，
+# 因此核心层不会被这里的排除规则意外削弱。
+#
+# 为什么需要它：pytest-cov 没有 --cov-omit 参数，exclude 只能配在这里。
+
+[run]
+branch = True
+source = .
+omit =
+    tests/*
+    .claude/*
+    .omc/*
+    .remember/*
+    .memory/*
+    build/*
+    dist/*
+
+[report]
+# 与 CI 门禁同口径：只统计本项目自己的代码
+show_missing = True
+skip_empty = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    if TYPE_CHECKING:

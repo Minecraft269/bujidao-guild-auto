@@ -1,0 +1,113 @@
+name: "Tests & Coverage"
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# windows-latest ships Git Bash; pin it so POSIX env-prefixes
+# (COVERAGE_FILE=... python -m pytest) and `set -e` behave identically.
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The suite prints Chinese progress lines (tests/test_async_executor.py).
+  # On the runner stdout is a pipe with the runner's ANSI codepage (cp1252),
+  # where those prints raise UnicodeEncodeError and abort the test process.
+  # Measured locally: printing Chinese to a cp1252 pipe -> exit 1 + traceback.
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  test:
+    name: "py${{ matrix.python-version }}"
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest pytest-cov
+
+      # Exit code 5 == EXIT_NOTESTSCOLLECTED. Without this, a renamed/moved
+      # tests/ dir yields a silent green run with no coverage data at all.
+      - name: Guard against empty test collection
+        run: |
+          set +e
+          python -m pytest tests --collect-only -q
+          rc=$?
+          set -e
+          if [ "$rc" -eq 5 ]; then
+            echo "::error::pytest collected 0 tests (exit 5) - refusing to report green"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+
+      # Two independent coverage runs, separate data files, separate reports.
+      #   1) core layer : parsers / actions (decision engine) / config /
+      #                   reporter / async state machines          -> 95
+      #   2) overall    : all production source, tests/ excluded  -> 85
+      # `set +e` so BOTH runs always execute and always emit reports even when
+      # the first gate already failed - otherwise a core breach would hide the
+      # overall number, which is exactly what you need to triage it.
+      # Reports go under htmlcov/ (already in .gitignore) so running the gates
+      # locally cannot leave untracked xml/html behind.
+      #
+      # Core-layer membership note: async_system.py is the CURRENT async state
+      # machine (the spec's "main thread only sends, background verifies" one).
+      # async_executor.py is the LEGACY executor whose join()-blocking semantics
+      # the rewrite replaces, so it is deliberately NOT in the core gate - it is
+      # still measured by the overall run until the rewrite retires it.
+      - name: Coverage gates - core >= 95%, overall >= 85%
+        run: |
+          set +e
+
+          echo "### Gate 1/2: core layer (parsers, actions, config, reporter, async_system) >= 95%"
+          COVERAGE_FILE=.coverage.core python -m pytest tests -v --cov=parsers --cov=actions --cov=config --cov=reporter --cov=async_system --cov-report=term-missing --cov-report=xml:htmlcov/core.xml --cov-report=html:htmlcov/core --cov-fail-under=95
+          rc_core=$?
+
+          echo ""
+          echo "### Gate 2/2: overall production source >= 85% (tests/ + dot-dirs excluded)"
+          # omit 只能写在覆盖率配置里(pytest-cov 没有 --cov-omit 这个参数),
+          # 所以通过 COVERAGE_RCFILE 指向仓库根的 .coveragerc。
+          COVERAGE_FILE=.coverage.total COVERAGE_RCFILE=.coveragerc python -m pytest tests -v --cov=. --cov-report=term-missing --cov-report=xml:htmlcov/total.xml --cov-report=html:htmlcov/total --cov-fail-under=85
+          rc_total=$?
+
+          set -e
+
+          echo ""
+          echo "core gate exit=$rc_core (threshold 95) / overall gate exit=$rc_total (threshold 85)"
+          if [ "$rc_core" -ne 0 ] || [ "$rc_total" -ne 0 ]; then
+            echo "::error::Coverage gate failed (core exit=$rc_core, overall exit=$rc_total) - both must pass"
+            exit 1
+          fi
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: htmlcov/
+          if-no-files-found: warn
+          retention-days: 14

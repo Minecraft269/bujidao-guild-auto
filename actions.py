@@ -99,11 +99,16 @@ def new_rank_after(rank, actions):
         logger.trace_return("new_rank_after", rank)
         return rank
     # promote ×N
-    if rank in RANK_ORDER:
-        idx = RANK_ORDER.index(rank)
-        res = RANK_ORDER[min(idx + len(actions), len(RANK_ORDER) - 1)]
-        logger.trace_return("new_rank_after", res)
-        return res
+    # 只认 promote/demote/kick 三种已知动作;未知动作名(配置写错等)保守返回原等级,
+    # 绝不能落进 promote 分支被当升职 —— 那会让报告误报新等级,掩盖异常。
+    if actions[0] == "promote":
+        if rank in RANK_ORDER:
+            idx = RANK_ORDER.index(rank)
+            res = RANK_ORDER[min(idx + len(actions), len(RANK_ORDER) - 1)]
+            logger.trace_return("new_rank_after", res)
+            return res
+        logger.trace_return("new_rank_after", rank)
+        return rank
     logger.trace_return("new_rank_after", rank)
     return rank
 
