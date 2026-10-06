@@ -110,7 +110,7 @@ class _FakeImage:
         self.payload = payload
         self.saves = []
 
-    def save(self, buf, format=None):
+    def save(self, buf, format=None):  # noqa: A002 — 必须与 PIL.Image.save(fp, format) 签名一致,否则 mock 不真实
         self.saves.append((buf, format))
         buf.write(self.payload)
 
