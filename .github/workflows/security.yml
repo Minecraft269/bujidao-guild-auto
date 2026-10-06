@@ -78,4 +78,12 @@ jobs:
 
       - name: Audit dependencies
         # 发现已知漏洞时 pip-audit 以非 0 退出码结束 -> job 失败（硬门禁）
+        #
+        # PYTHONIOENCODING/PYTHONUTF8 是必需的，不是保险起见：pip-audit 会输出漏洞的
+        # 多语言描述（含中文），而 windows runner 的 stdout 是 cp1252 管道，
+        # 打印非 cp1252 字符时抛 UnicodeDecodeError 直接把 job 打死
+        # （实测 2026-10-05 的 schedule run 就是这样失败的 —— 不是漏洞，是编码）。
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
         run: pip-audit -r requirements.txt
