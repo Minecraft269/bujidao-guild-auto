@@ -1322,8 +1322,13 @@ def main():
                     player = r["player"]
                     for a in r["actions"]:
                         task_id = f"{player}@{a}"  # 唯一 ID(玩家+动作)
-                        k = async_executor.submit(a, task_id, _make_verify(a, player))
-                        action_keys.append((a, k))
+                        # 注意:submit() 的返回值是 True/False(入队是否成功),
+                        # **不是**结果 key。拿它当 key 会让 get_result_nowait()
+                        # 永远取到 None,于是每条动作都被误报成"后台重试中"。
+                        # 真正的 key 是 task_id(AsyncCommandExecutor 用它作 player 键)。
+                        if not async_executor.submit(a, task_id, _make_verify(a, player)):
+                            logger.log_warning(f"异步队列已满,丢弃: {task_id}")
+                        action_keys.append((a, task_id))
                     r["_async_action_keys"] = action_keys   # 记下供 finally 回填结果
                     r["_async_pending"] = True
                 else:
