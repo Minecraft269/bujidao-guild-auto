@@ -4,6 +4,28 @@
 > 完全继承原有业务规则(升职/降职/踢出的阈值、命令格式、通知文案、报告风格),逐项对照见 `docs/业务规则继承清单.md`。
 > 原有"人工复制名单 / 点击复制按钮 / 手动搬运文件"的环节全部由脚本自动完成。
 
+## CI 状态
+
+| 流水线 | 说明 |
+|---|---|
+| [![Lint](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/lint.yml/badge.svg)](.github/workflows/lint.yml) | ruff 风格检查 |
+| [![Tests & Coverage](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/test.yml/badge.svg)](.github/workflows/test.yml) | 测试 + 双档覆盖率门禁(核心层 ≥95% / 总体 ≥85%) |
+| [![Build](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/build.yml/badge.svg)](.github/workflows/build.yml) | PyInstaller 打包 Windows 可执行文件 |
+| [![Security](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/security.yml/badge.svg)](.github/workflows/security.yml) | CodeQL + 依赖审查 + pip-audit |
+
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| **`使用说明.md`** | **怎么用**：启动流程、两种模式差异、交互按键、CLI 参数、Debug 模式、日志排障 |
+| **`配置说明.md`** | 逐个配置项的作用与可填值 |
+| `覆盖率报告.md` | 分档覆盖率(核心层/硬件层/总体) + 硬件层 mock 策略 |
+| `本次变更声明.md` | 本轮改了什么、为什么、修了哪些缺陷 |
+| `更改声明.md` | 2026-08 历史变更记录 |
+| `docs/业务规则继承清单.md` | **业务规则真源**：阈值矩阵/命令格式/通知文案(零改动) |
+
+> 首次运行会自动生成带中文注释的 `config.json`,照着注释填即可。
+
 ## 版权声明
 
 版权所有 (c) 2026。本项目保留所有权利(All Rights Reserved)。
