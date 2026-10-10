@@ -30,6 +30,7 @@ import logger
 from config import console
 from game_state import GameStateDetector, prepare_chat_state
 from log_watcher import LogWatcher, detect_encoding
+import parsers
 from parsers import ParseError, parse_guild_list, parse_guild_member
 from reporter import write_action_report, write_contribution_report
 from window_input import HumanInput, activate_window, find_game_window
@@ -521,8 +522,16 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
 
 
 def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None):
-    """查询单个成员,返回 MemberInfo dict;重试耗尽返回 None。"""
+    """查询单个成员,返回 MemberInfo dict;重试耗尽返回 None。
+
+    网易屏蔽词玩家(名字被客户端换成整串星号)在**发命令之前**就能判定不可用:
+    命令发出去服务端一样拒,重试 3 次结果必然相同。这类直接以真实原因失败,
+    不去 burn 重试次数,报告里留着"查询重试耗尽"会让人以为是网络抖动。
+    """
     cmds = cfg["commands"]
+    if parsers.is_masked_name(pid):
+        logger.log_error(f"查询跳过(玩家名被网易屏蔽词替换为星号,身份不可读): {pid}")
+        return None
     cmd = cmds["guild_member"].format(player=pid)
     retries = int(cfg["timeouts"].get("max_retries", 3))
     timeout = float(cfg["timeouts"].get("response_wait", 12.0))
@@ -579,6 +588,10 @@ def async_query_member(cfg, watcher, human, hwnd, async_executor,
     try_times = int(cfg["timeouts"].get("try_times", 3))
 
     def verify(_cmd, _pid):
+        # 屏蔽词玩家:身份不可读,后台验证重发命令结果必然相同 —— 立即失败,
+        # 不占用 _worker 的重试配额(留着给真的网络抖动)
+        if parsers.is_masked_name(pid):
+            return False, "解析失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
         block, _interrupted = send_and_capture(
             watcher, human, hwnd, cmd, timeout,
             detector=detector, try_wait=try_wait, try_times=try_times,
@@ -939,8 +952,12 @@ def main():
                     info = query_member(cfg, watcher, human, hwnd, pid,
                                        detector=detector, stop_check=is_paused)
                     if info is None:
-                        failures.append({"player": pid, "rank": rk, "reason": "查询重试耗尽"})
-                        logger.log_error(f"查询失败(重试耗尽): {pid} ({cfg['rank_names'].get(rk, rk)})")
+                        # 屏蔽词玩家:身份不可读,报真实原因而非"查询重试耗尽"
+                        # 否则报告里看不出是网易过滤还是网络抖动
+                        reason = ("查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
+                                  if parsers.is_masked_name(pid) else "查询重试耗尽")
+                        failures.append({"player": pid, "rank": rk, "reason": reason})
+                        logger.log_error(f"查询失败({reason}): {pid} ({cfg['rank_names'].get(rk, rk)})")
                         continue
                     info["rank"] = rk
                     records.append(info)
