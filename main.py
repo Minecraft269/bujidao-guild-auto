@@ -236,14 +236,33 @@ def pending_path_of(cfg):
 
 
 def load_pending(path):
-    """读取待办文件;不存在或损坏返回空列表。"""
+    """读取待办文件;不存在或损坏返回空列表。
+
+    玩家名必须过 validate_player_name —— 待办文件是本地 JSON,可能被手改或损坏,
+    不过校验就会让任意字符串拼进 /guild kick 之类的命令(命令参数注入),
+    也可能让报告文件名穿越。非法项**丢弃并告警**,不让一条坏数据毁掉整个续做流程。
+    """
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         items = data.get("items", []) if isinstance(data, dict) else []
-        return [it for it in items if isinstance(it, dict) and it.get("player") and it.get("actions")]
+        raw = [it for it in items
+               if isinstance(it, dict) and it.get("player") and it.get("actions")]
     except (OSError, json.JSONDecodeError):
         return []
+
+    from parsers import ParseError, validate_player_name
+    safe, dropped = [], 0
+    for it in raw:
+        try:
+            it["player"] = validate_player_name(it["player"])
+            safe.append(it)
+        except ParseError as e:
+            dropped += 1
+            logger.log_warning(f"待办文件含非法玩家名,已跳过该条: {e}")
+    if dropped:
+        console(f"⚠ 待办文件有 {dropped} 条玩家名不合法,已跳过(详见日志)")
+    return safe
 
 
 def save_pending(path, guild_name, items):
