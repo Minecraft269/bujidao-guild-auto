@@ -22,12 +22,19 @@ Security 用白名单而非 ignore，因为它内含三个 job 且敏感面不�
 推一个**只改 `.md`** 的提交（比如只改本文件），预期四条流水线**全部不触发**。
 若 Build 仍跑了，说明 paths-ignore 没生效，需要排查。
 
-## 为什么值得验证
+## 验证结果（2026-10-11）
 
-本仓库迭代节奏里文档提交占比很高。实测记录：一次纯文档提交
-（README + 使用说明 + 覆盖率报告 + 变更声明，3 文件 437 行）
-曾触发全部 4 条流水线，包括全矩阵 3.10/3.11/3.12 的测试
-和 PyInstaller + UPX 的构建 —— 那是纯粹的浪费。
+提交 `0a0ca6b`（只改本文件，纯文档）：
+
+```
+gh run list --limit 15 --json headSha,workflowName,conclusion,status
+→ 四条流水线全部未触发 —— paths-ignore 验证通过
+```
+
+即：Lint / Tests & Coverage / Build / Security 都没跑。符合预期。
+
+> 对比：加规则之前的纯文档提交 `2b1dcab`（3 文件 437 行）触发了全部 4 条，
+> 包括全矩阵测试与 PyInstaller 构建。
 
 ## tag 触发不受影响
 
