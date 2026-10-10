@@ -49,6 +49,7 @@ import logger  # noqa: E402
 from actions import decide_actions  # noqa: E402
 from log_watcher import extract_chat_block, split_messages  # noqa: E402
 from parsers import (  # noqa: E402
+    MASKED_NAME_MAX_LEN,
     ParseError,
     is_masked_name,
     parse_guild_list,
@@ -298,6 +299,51 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
         actions, _ = decide_actions("entry", 0, THRESHOLDS)
         self.assertEqual(actions, ["kick"],
                          "test 自身的阈值假设变了?这条只是把危险链显式化")
+
+
+    def test_masked_name_has_length_cap(self):
+        """屏蔽名放行,但**不是无上限**。
+
+        704 星(网易把一整段名单抹平的真实产物)必须放行 ——
+        否则整个公会名单解析崩溃;但任意长的星号串会被一路带进
+        命令行参数与日志文件。上限由 MASKED_NAME_MAX_LEN 约束。
+
+        真实观测到的最长屏蔽名是 704 字符,所以上限远大于它,
+        只拦"非真实面板产物"那种滥用(如从伪造日志喂进 200KB 星号)。
+        """
+        for n, should_pass in ((8, True), (704, True),
+                               (MASKED_NAME_MAX_LEN, True),
+                               (MASKED_NAME_MAX_LEN + 1, False),
+                               (200_000, False)):
+            with self.subTest(length=n):
+                if should_pass:
+                    validate_player_name("*" * n)   # 不抛即通过
+                else:
+                    with self.assertRaises(ParseError):
+                        validate_player_name("*" * n)
+
+    def test_masked_name_704_still_parses_guild_list(self):
+        """回归护栏:704 星整段不得让整个公会名单解析崩溃。
+
+        这条锁死"真实形态必须放行"这一侧。只看上一条会让人误以为
+        收紧上限无代价 —— 收得太紧(让星号撞 48 上限)会让一次真实
+        运行里约 78 人名字从未进入 targets。
+        """
+        lines = [
+            "演示公会",
+            "-- 高活跃成员 --",
+            "正常玩家甲 ● 正常玩家乙 ●",
+            "-- 中等活跃成员 --",
+            "*" * 704,
+            "-- 低活跃成员 --",
+            "低活玩家丙 ●",
+        ]
+        RANK = {"leader": "会长", "vice_leader": "副会长", "admin": "管理员",
+                "high": "高活跃成员", "mid": "中等活跃成员",
+                "low": "低活跃成员", "entry": "入门成员"}
+        r = parse_guild_list(lines, RANK)
+        self.assertEqual(r["groups"]["high"], ["正常玩家甲", "正常玩家乙"])
+        self.assertEqual(r["groups"]["low"], ["低活玩家丙"])
 
 
 class TestMaskedShortAndPartialNames(unittest.TestCase):

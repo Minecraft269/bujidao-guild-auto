@@ -55,6 +55,10 @@ import re
 CHAT_TAG = "[CHAT]"        # 日志中聊天内容的标记
 BULLET = "●"              # /guild list 面板的条目分隔符
 MAX_NAME_LEN = 48          # 玩家 ID 长度上限(与游戏一致)
+# 整串星号(网易屏蔽词)名的长度上限。704 是**真实观测到**的最大值
+# (一次真实运行里,中等活跃段约 78 人名字被抹平连成一片的字符数),
+# 取 4096 留足余量;超过此值视为非真实面板产物,拒绝。
+MASKED_NAME_MAX_LEN = 4096
 WEEKLY_HEADER = "公会经验周贡献"   # 周贡献段标题
 
 # 分组标题:"-- 会长 --"(允许任意前导/尾随空白)
@@ -125,16 +129,25 @@ def is_masked_name(s):
 
 
 def validate_player_name(pid):
-    """校验玩家名安全性;空 / 整串星号(网易屏蔽词,放行) / 超长 / 危险字符。
+    """校验玩家名安全性;空 / 整串星号(网易屏蔽词,放行但有上限) / 超长 / 危险字符。
 
-    整串星号名先放行:704 星是网易把一整段名单抹平后的产物,不是注入,
-    不能让它去撞 MAX_NAME_LEN;返回原串让调用方带着真实原因失败,
-    而不是在发命令之前就被枪毙。
+    整串星号名要放行:704 星是网易把一整段名单抹平后的**真实**产物,
+    不是注入,不能让它去撞 MAX_NAME_LEN(48)就被枪毙 —— 否则整个公会
+    名单解析崩溃。返回原串让调用方带着真实原因失败(标"需人工确认"),
+    而不是在发命令之前就被当成非法输入。
+
+    但放行不等于无上限:星号名**仍**受 MASKED_NAME_MAX_LEN 约束。
+    少了这条,任意长的星号串(如从伪造日志喂进 200KB 星号)会一路
+    进到命令行参数与日志文件里。这是独立审查指出的真实缺口。
     """
     s = "" if pid is None else str(pid)
     if not s:
         raise ParseError("玩家名为空")
     if is_masked_name(s):
+        if len(s) > MASKED_NAME_MAX_LEN:
+            raise ParseError(
+                f"屏蔽词占位名异常超长({len(s)}>{MASKED_NAME_MAX_LEN}): "
+                f"疑似非真实面板产物,已拒绝")
         return s                      # 屏蔽词占位名:合法但不可用,原样放行
     if len(s) > MAX_NAME_LEN:
         raise ParseError(f"玩家名超长({len(s)}>{MAX_NAME_LEN}): {pid!r}")
