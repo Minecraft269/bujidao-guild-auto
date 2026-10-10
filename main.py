@@ -643,6 +643,35 @@ def async_broadcast(cfg, executor, async_executor, hwnd, detector, stop_check,
     return pid_key
 
 
+def build_targets(guild_groups, scope="all", skip_ranks=()):
+    """从公会名单构建查询目标 [(rank, pid)],**跨等级去重**。
+
+    为什么必须去重:面板异常或被伪造时,同一玩家可能出现在多个等级段。
+    不去重会导致查询两遍、判定两遍,执行阶段**重复发送**升职/踢出命令
+    —— 踢两次尤其致命。
+
+    去重策略:保留**首次出现**的等级(面板的等级段顺序即游戏展示顺序),
+    后续同名条目丢弃。返回 (targets, dropped_count)。
+
+    纯函数,无 I/O、无硬件依赖,便于单测。
+    """
+    skip = set(skip_ranks or ())
+    targets, seen = [], set()
+    dropped = 0
+    for rk, ids in guild_groups.items():
+        if rk in skip:
+            continue
+        if scope != "all" and rk != scope:
+            continue
+        for pid in ids:
+            if pid in seen:
+                dropped += 1
+                continue
+            seen.add(pid)
+            targets.append((rk, pid))
+    return targets, dropped
+
+
 def _random_name(prefix="Test_"):
     """生成 Test_ 开头，后接 3~6 个随机字符（含中文）"""
     chars = string.ascii_letters + string.digits + "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定行学法所民得经十三之进着等部度家电力里如水化高自二理起小物现实加量都两体制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社义事平形相全表间样与关各重新线内数正心反你明看原又么利比或但质气第向道命此变条只没结解问意建月公无系军很情者最立代想已通并提直题党程展五果料象员革位入常文总次品式活设及管特件长求老头基资边流路级少图山统接知较将组见计别她手角期根论运农指几九区强放决西被干做必战先回则任取据处队南给色光门即保治北造百规热领七海口东导器压志世金增争济阶油思术极交受联什认六共权收证改清己美再采转更单风切打白教速花带安场身车例真务具万每目至达走积示议声报斗完类八离华名确才科张信马节话米整空元况今集温传土许步群广石记需段研界拉林律叫且究观越织装影算低持音众书布复容儿须际商非验连断深难近矿千周委素技备半办青省列习响约支般史感劳便团往酸历市克何除消构府称太准精值号率族维划选标写存候毛亲快效斯院查江型眼王按格养易置派层片始却专状育厂京识适属圆包火住调满县局照参红细引听该铁价严龙飞"
@@ -1059,15 +1088,16 @@ def main():
         for rk, ids in guild["groups"].items():
             console(f"  {cfg['rank_names'].get(rk, rk)}: {len(ids)} 人")
 
-        # 4. 查询范围过滤
+        # 4. 查询范围过滤 + 跨等级去重(见 build_targets docstring)
         scope = cfg.get("query_scope", "all")
         skip = set(cfg.get("skip_ranks", []))
-        targets = []  # [(rank, pid)]
-        for rk, ids in guild["groups"].items():
-            if rk in skip:
-                continue
-            if scope == "all" or rk == scope:
-                targets.extend((rk, pid) for pid in ids)
+        targets, dup_dropped = build_targets(guild["groups"], scope=scope,
+                                            skip_ranks=skip)
+        if dup_dropped:
+            logger.log_warning(
+                f"阶段2: 丢弃 {dup_dropped} 个跨等级重复玩家(同一名字出现在多个等级段,"
+                f"只保留首次出现的等级,避免重复执行升/降/踢)")
+            console(f"⚠ 有 {dup_dropped} 个玩家名字重复出现在多个等级,已按首次出现处理")
         logger.log_info(f"阶段2 起点: 逐人查询 targets={len(targets)} 范围={scope} 跳过={sorted(skip)}")
         console(f"[2/5] 逐人查询: 共 {len(targets)} 名玩家(范围 {scope},跳过 {sorted(skip)})")
 
