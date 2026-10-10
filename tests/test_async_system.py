@@ -187,6 +187,54 @@ class TestSubmitDoesNotBlock(unittest.TestCase):
 class TestWaitAllCompletionSignal(unittest.TestCase):
     """完成信号 + 超时保险。"""
 
+    def test_wait_all_returns_false_when_nothing_submitted(self):
+        """**空任务集护栏** —— 一个任务都没提交时,wait_all 必须超时返回 False。
+
+        为什么单测这条:把 `_all_tasks_terminal()` 的空集分支从 `return False`
+        改回 `return True`(原始 bug 形态),39 项既有测试**无一变红** ——
+        即这个修复此前没有任何回归防护,任何人都能在 CI 全绿的情况下把它改回去。
+
+        真实后果:主线程尚未 submit 任何指令就调 wait_all(timeout=2.0)
+        → 立即返回 True(0.000s)→ 调用方据此判定「后台工作已完成」并收尾,
+        实际一条指令都没发、零验证发生。
+
+        这里断言两件事:结果必须是 False,且必须真的等满超时
+        (立即返回 False 与超时返回 False 是两回事 —— 前者说明短路了)。
+        """
+        s = AsyncVerifySystem(verify_fn=None, poll_interval=0.02, task_timeout=5)
+        s.attach_sender(lambda c, p, m: None)
+        s.start()
+        try:
+            t0 = time.time()
+            got = s.wait_all(timeout=1.0)
+            elapsed = time.time() - t0
+            self.assertFalse(got, "空任务集被判为'已完成' —— 调用方会提前收尾")
+            self.assertGreaterEqual(elapsed, 0.95,
+                                    f"等待 {elapsed:.3f}s 就返回,疑似短路而非等到超时")
+        finally:
+            s.stop()
+
+    def test_all_tasks_terminal_is_false_for_empty_set(self):
+        """直接锁死 `_all_tasks_terminal()` 对空集的取值。
+
+        上面那条测 wait_all 的外显行为;这条测内部判定本身。
+        两层都拦,改哪一层都能被发现。
+        """
+        s = AsyncVerifySystem(verify_fn=None)
+        self.assertFalse(
+            s._all_tasks_terminal(),
+            "空任务集被判为'全部完成' —— 验证线程会在启动瞬间退出,"
+            "之后 submit 的任务永远无人验证")
+        # 反向确认:这个方法确实会返回 True(否则上面那条断言可能恒真)
+        s.attach_sender(lambda c, p, m: None)
+        s.start()
+        try:
+            s.submit("/c", "P")
+            s.wait_all(timeout=3)
+            self.assertTrue(s._all_tasks_terminal())
+        finally:
+            s.stop()
+
     def test_wait_all_returns_true_when_all_ok(self):
         s = AsyncVerifySystem(verify_fn=_ok(), poll_interval=0.02, task_timeout=5)
         s.attach_sender(lambda c, p, m: None)
