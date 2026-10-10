@@ -190,7 +190,7 @@ class TestMixedStarNamesStillRejected(unittest.TestCase):
 
     def test_real_names_with_spaces_unaffected(self):
         """真实样本存在"带空格 名字",放行屏蔽名不得波及它们。"""
-        for good in ("暴躁的星球跳芭蕾", "_络绎不绝", "灰________灰", "123463278"):
+        for good in ("暴躁的合成星球跳合成芭蕾", "_合成络绎合成", "演示________演示", "1234000078"):
             with self.subTest(good=good):
                 self.assertEqual(validate_player_name(good), good)
 
@@ -222,12 +222,13 @@ class TestMaskedNameInGuildList(unittest.TestCase):
         lines = [
             "演示公会",
             "-- 中等活跃成员 --",
-            "天越awa ● " + MASKED_8 + " ● Ao_yuzhi ●",
+            "合成中等甲awa ● " + MASKED_8 + " ● 合成中等乙_Mc ●",
             "成员总数: 3",
             "在线成员数: 1",
         ]
         r = parse_guild_list(lines, RANK_NAMES)
-        self.assertEqual(r["groups"]["mid"], ["天越awa", MASKED_8, "Ao_yuzhi"])
+        self.assertEqual(r["groups"]["mid"],
+                         ["合成中等甲awa", MASKED_8, "合成中等乙_Mc"])
         self.assertEqual(len(r["groups"]["mid"]), 3,
                          "屏蔽条目把相邻的真名字吞掉了")
 
