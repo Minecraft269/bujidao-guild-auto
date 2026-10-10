@@ -40,6 +40,11 @@ parsers.py —— 游戏日志 → 公会数据 的纯解析层
 拒绝 路径分隔符 / Windows 非法字符 / ● 条目分隔符 / 花括号(format 注入面) /
 方括号 / 控制字符,长度上限 MAX_NAME_LEN。用途:防伪造面板注入幽灵条目、
 命令参数错位、报告文件名穿越与 format 注入。
+
+例外:网易客户端会把敏感词(玩家名/聊天/公会名)统一替换成一整串星号
+(真实样本长度 3~704 不等,同一玩家不同次渲染长度都不同)。这是真实存在的
+UI 显示而非注入,由 is_masked_name 单独放行 —— 否则"中等活跃成员"整段被遮成
+一行 704 星就能把整个花名册炸掉,该段 78 人连查询都轮不到。
 """
 
 import re
@@ -68,7 +73,11 @@ _ANY_EXP_RE = re.compile(r"([\d,]+)\s*公会经验")
 _JOINED_RE = re.compile(r"加入时间\s*[:：]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 _LAST_ONLINE_RE = re.compile(r"上次在线\s*[:：]\s*([^\n(]*)")
 # 玩家名黑名单:路径分隔符 / Windows 非法字符 / ● / 花括号 / 方括号 / 控制字符
+# 注意:*(星号)刻意保留 —— 只有"整串纯星号"由 is_masked_name 放行,
+# "*x*"/"a*b" 这类混串仍在这里被拒,glob 通配符注入不会因此破防。
 _NAME_FORBIDDEN_RE = re.compile(r'[\\/:*?"<>|●{}\[\]\r\n\t\x00-\x1f]')
+# 网易屏蔽词产物:敏感词被客户端整串替换成 \* 星号(长度 3~704 不定)
+_MASKED_NAME_RE = re.compile(r"^\*+$")
 
 
 class ParseError(ValueError):
@@ -105,11 +114,28 @@ def _to_int(raw, line):
         raise ParseError(f"面板数值无法解析为整数: {line!r}") from None
 
 
+def is_masked_name(s):
+    """整串都是 * = 网易屏蔽词占位(名字被客户端遮住,可见但不可读)。
+
+    这是**合法但不可用**的名字:服务器端认得这个人,只是不肯把名字回显。
+    必须与"玩家名本来就含 *"区分 —— 后者(如 "*x*"/"a*b")仍由黑名单拒绝,
+    所以 * 继续留在 _NAME_FORBIDDEN_RE 里,glob 注入仍被挡住。
+    """
+    return bool(s) and _MASKED_NAME_RE.match(str(s)) is not None
+
+
 def validate_player_name(pid):
-    """校验玩家名安全性;空 / 超长(>MAX_NAME_LEN) / 含危险字符 → ParseError。"""
+    """校验玩家名安全性;空 / 整串星号(网易屏蔽词,放行) / 超长 / 危险字符。
+
+    整串星号名先放行:704 星是网易把一整段名单抹平后的产物,不是注入,
+    不能让它去撞 MAX_NAME_LEN;返回原串让调用方带着真实原因失败,
+    而不是在发命令之前就被枪毙。
+    """
     s = "" if pid is None else str(pid)
     if not s:
         raise ParseError("玩家名为空")
+    if is_masked_name(s):
+        return s                      # 屏蔽词占位名:合法但不可用,原样放行
     if len(s) > MAX_NAME_LEN:
         raise ParseError(f"玩家名超长({len(s)}>{MAX_NAME_LEN}): {pid!r}")
     bad = _NAME_FORBIDDEN_RE.search(s)
@@ -268,12 +294,21 @@ def parse_guild_member(block_lines, expected_id=None):
                 "weekly_total", "daily"},见模块 docstring。
     expected_id 非空时:先过黑名单校验(查询目标名也可能是被注入的),再要求它确实
     出现在面板里——否则很可能是面板输出未完成,或误捕获了别人的面板。
+
+    硬安全线(约束:破坏性操作不得建在猜测上):expected_id 是网易屏蔽词占位名
+    (整串星号)时**必然抛 ParseError**,即使面板里出现了同样长度的星号也不例外。
+    "谁"在这个面板上根本不可读,拿它的周贡献去升/降/踢就是猜 —— 宁可漏一人,
+    不可错踢一人。上层据此把该玩家标为需人工确认,而不是当成有效记录走判定。
     """
     rows = [_strip_all(l) for l in block_lines]
     rows = [r for r in rows if r]
 
     if expected_id:
         pid = validate_player_name(expected_id)
+        if is_masked_name(pid):
+            raise ParseError(
+                f"玩家名被网易屏蔽词替换为星号({len(pid)} 个 *),无法确认身份:"
+                f"不做任何升/降/踢判定,需人工确认")
         if not any(pid in row for row in rows):
             raise ParseError(
                 f"响应块中未找到目标玩家 [{pid}]:面板输出未完成,或误捕获了其他内容")
