@@ -731,7 +731,7 @@ class Runtime:
 
     def __init__(self, cfg, watcher=None, human=None, executor=None, detector=None,
                  hwnd=None, ask_confirm=None, sleep=None, listener=None,
-                 async_executor=None):
+                 async_executor=None, async_enabled=False):
         self.cfg = cfg
         self.watcher = watcher
         self.human = human
@@ -740,6 +740,9 @@ class Runtime:
         self.hwnd = hwnd
         self.listener = listener
         self.async_executor = async_executor
+        # 异步(后台)模式开关:默认 False = 串行(流程规格的默认模式)。
+        # True 时主线程"只发不验",验证交给 async_system 的后台线程。
+        self.async_enabled = bool(async_enabled)
         # 用户确认点:默认走终端 input();测试注入可控的假实现
         self.ask_confirm = ask_confirm if ask_confirm is not None else _default_confirm
         # 时间源可注入,避免测试真的等 N 秒
@@ -957,25 +960,18 @@ def main():
         # 在"恢复后首次发送前"执行 Esc+OCR 菜单重置(与 main.reset_window_state_after_pause 同源标志)
         executor.set_reset_hook(_consume_reset_flag)
 
-        # ---- 初始化异步执行器(若启用) ----
+        # ---- 异步(后台)模式开关 ----
+        # 默认**串行**(async.enabled 默认 False)。规格:异步系统用于更快地发送指令,
+        # 主线程不验证、不读取、不解析,全靠后台系统返回结果。
+        # 注意这与旧 AsyncCommandExecutor 的语义**相反**(那是"主线程发一条、
+        # 后台验一条、主线程 join 等结果"),故异步分支改用 async_system.AsyncVerifySystem,
+        # 不沿用旧的 join 阻塞编排。
         async_cfg = cfg.get("async", {})
-        async_executor = None
-        if async_cfg.get("enabled", True):
-            # 游戏命令经模拟键盘串行发送,多线程会交叉输入 → 强制单 worker
-            n_workers = max(1, int(async_cfg.get("num_workers", 1)))
-            if n_workers != 1:
-                logger.log_warning(f"async.num_workers={n_workers} > 1 会交叉发送键盘输入,已强制为 1")
-                n_workers = 1
-            async_executor = AsyncCommandExecutor(
-                num_workers=n_workers,
-                max_queue_size=int(async_cfg.get("max_queue_size", 100)),
-                max_retries=int(async_cfg.get("max_retries", 3)),
-                retry_delay=float(async_cfg.get("retry_delay", 1.0)),
-            )
-            async_executor.start()
-            logger.log_info(f"异步执行器已启动 (后台逐一执行验证,重试 {async_cfg.get('max_retries', 3)} 次)")
+        rt.async_enabled = bool(async_cfg.get("enabled", False))
+        if rt.async_enabled:
+            logger.log_info("异步(后台)模式已启用:主线程只发不验,验证由后台系统承担")
         else:
-            logger.log_info("异步执行器未启用,使用串行模式")
+            logger.log_info("异步模式未启用,使用串行模式(逐条发送、逐条读日志验证)")
 
         # ---- 以下为新增：待办处理 + 统一提示 + 倒计时 ----
         # 1. 先处理待办（run_pending 内部已有自己的询问，但不会触发这里的提示）
