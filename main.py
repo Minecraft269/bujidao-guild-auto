@@ -705,6 +705,149 @@ def parse_args():
     return ap.parse_args()
 
 
+class Runtime:
+    """编排层依赖容器 —— main.py 从"不可测"变"可测"的关键。
+
+    背景:旧 main() 在函数体内直接调 LogWatcher / GameStateDetector /
+    find_game_window / start_pause_listener / input(),硬件依赖与流程编排缠死,
+    导致 main.py 覆盖率只有 8%,而它占了项目总体覆盖率缺口的 95% ——
+    总体门禁(≥85%)无论如何都过不去。
+
+    做法:把**所有与外界交互的东西**收进这个容器,并允许整体注入替换:
+      * watcher     日志读取(真实读 latest.log)
+      * human       键鼠输入(真实按键/剪贴板)
+      * executor    命令执行与回显验证
+      * detector    OCR 界面检测
+      * hwnd        游戏窗口句柄
+      * ask_confirm 用户确认(默认 input();测试注入返回 True/False 的可调用)
+      * sleep       休眠(默认 time.sleep;测试注入 no-op 让用例秒级完成)
+
+    阶段函数只拿 Runtime 当参数,不再自己 import 硬件模块 ——
+    于是每个阶段都能用假 Runtime 单独驱动。
+
+    注意:confirm() 返回 False 时,调用方必须**放弃后续操作直接返回**,
+    不得继续发送任何命令。这是"每个阶段推进前等用户确认"的执行点。
+    """
+
+    def __init__(self, cfg, watcher=None, human=None, executor=None, detector=None,
+                 hwnd=None, ask_confirm=None, sleep=None, listener=None,
+                 async_executor=None):
+        self.cfg = cfg
+        self.watcher = watcher
+        self.human = human
+        self.executor = executor
+        self.detector = detector
+        self.hwnd = hwnd
+        self.listener = listener
+        self.async_executor = async_executor
+        # 用户确认点:默认走终端 input();测试注入可控的假实现
+        self.ask_confirm = ask_confirm if ask_confirm is not None else _default_confirm
+        # 时间源可注入,避免测试真的等 N 秒
+        self.sleep = sleep if sleep is not None else time.sleep
+
+    def confirm(self, prompt, default=False):
+        """统一的阶段确认点。
+
+        返回 True 表示用户同意继续;False 表示拒绝 —— 调用方必须立即停止后续操作
+        (尤其是升/降/踢这类破坏性操作)。
+
+        ask_confirm 契约:接收 (prompt, default),返回 bool。
+        default=True 时(如"按回车继续"),空输入视为同意。
+        """
+        try:
+            return bool(self.ask_confirm(prompt, default))
+        except (EOFError, KeyboardInterrupt):
+            # 终端被关闭 / 用户按 Ctrl+C:一律按"拒绝"处理 ——
+            # 宁可停下,也不能在状态不明时继续发命令
+            return False
+
+    def close(self):
+        """释放本 Runtime 持有的资源(幂等,异常不外抛)。"""
+        for name in ("watcher", "async_executor", "listener"):
+            obj = getattr(self, name, None)
+            if obj is None:
+                continue
+            try:
+                obj.stop(timeout=3) if name == "async_executor" else obj.close()
+            except Exception as e:
+                logger.log_debug(f"Runtime.close: {name} 释放异常 {e!r}")
+
+
+def _default_confirm(prompt, default=False):
+    """默认的终端确认实现。空输入时按 default 取值。"""
+    suffix = " [Y/n] " if default else " [y/N] "
+    try:
+        ans = input(prompt + suffix).strip().lower()
+    except EOFError:
+        return False
+    if not ans:
+        return default
+    return ans in ("y", "yes", "是", "好", "确认")
+
+
+def build_runtime(cfg, console_fn=None):
+    """构造**真实** Runtime:接真实日志、真实键鼠、真实 OCR。
+
+    单独抽出来的目的:让 main() 不再亲手碰硬件 —— main() 只接受一个
+    已构造好的 Runtime,于是测试可以传假 Runtime 驱动完整流程。
+
+    console_fn 可注入输出函数(默认 config.console),便于测试捕获提示文本。
+
+    失败(SystemExit / 异常)由调用方处理;本函数不吞异常。
+    """
+    console_fn = console_fn or console
+    watcher = LogWatcher(
+        cfg["game_log"],
+        encoding=cfg.get("log_encoding", "auto"),
+        poll_interval_ms=int(cfg.get("timeouts", {}).get("poll_interval_ms", 300)),
+    )
+    watcher.open()
+    console_fn(f"日志已连接: {cfg['game_log']} (编码 {watcher.encoding})")
+
+    def is_paused():
+        return _paused
+
+    human = HumanInput(cfg, stop_check=is_paused)
+    console_fn(f"聊天键: {human.chat_key}(来自 {'options.txt' if cfg['chat_key']=='auto' else '配置'})")
+
+    # 聊天键是 enter 时警告但不拒绝:网易版 enter 是发送键不是开聊天栏键
+    if human.chat_key == "enter":
+        console_fn("⚠ 警告:聊天键设置为 'enter',网易版 enter 是发送键不是开聊天栏键,")
+        console_fn("  可能导致 _open_chat 按下后聊天栏未开,后续重试死循环")
+        console_fn("  建议:config.json chat_key 改为 't' 或 '/' 之类(读取开聊天栏的键)")
+        console_fn("  仍然继续运行——若发生死循环,可按 u 暂停/Ctrl+C 退出")
+
+    # 界面状态检测器(菜单 OCR;不可用自动降级为纯试错式发送)
+    detector = None
+    sc = cfg.get("state_check", {})
+    if sc.get("enabled", True):
+        detector = GameStateDetector(
+            sc.get("menu_keywords"), sc.get("chat_bar_keywords"),
+            float(sc.get("cache_seconds", 3.0)),
+            chat_bar_state=sc.get("chat_bar_state", "auto"),
+        )
+        if not detector.available:
+            console_fn("⚠ 界面状态检测不可用(缺少 winsdk/系统OCR),使用试错式发送")
+        else:
+            console_fn("界面状态检测已启用(菜单界面自动 Esc;发送:首条直接粘贴试探,"
+                       "无响应自动开聊天栏重试,仍失败暂停等待用户)")
+
+    hwnd = find_game_window(cfg["window_keywords"])
+    if hwnd:
+        console_fn("游戏窗口已找到(将在倒计时结束后自动置前)")
+    else:
+        console_fn("⚠ 未找到游戏窗口(请确认游戏已启动、窗口标题包含关键词)")
+
+    executor = ActionExecutor(cfg, human, watcher, hwnd=hwnd, detector=detector,
+                              stop_check=is_paused)
+    # 注入暂停恢复标志的消费函数:reset_ui / _send_with_gate 内部据此在
+    # "恢复后首次发送前"执行 Esc+OCR 菜单重置
+    executor.set_reset_hook(_consume_reset_flag)
+
+    return Runtime(cfg=cfg, watcher=watcher, human=human, executor=executor,
+                   detector=detector, hwnd=hwnd)
+
+
 def main():
     # 初始化 is_paused
     def is_paused():
@@ -781,39 +924,19 @@ def main():
     console("=" * 56)
 
     # 2. 初始化(异常时释放已打开的资源)
-    watcher = None
     listener = None
     async_executor = None
-    detector = None
-    hwnd = None
     gname = ""     # 公会名(第二 try 块赋值;finally 写待办时兜底引用)
     records = []   # 查询记录(第二 try 块赋值;finally 中断兜底补扫引用,提前退出时为空)
     failures = []
     try:
-        watcher = LogWatcher(cfg["game_log"], encoding=cfg.get("log_encoding", "auto"), poll_interval_ms=int(cfg["timeouts"].get("poll_interval_ms", 300)))
-        watcher.open()
-        console(
-            f"日志已连接: {cfg['game_log']} (编码 {watcher.encoding})")
-
-        human = HumanInput(cfg, stop_check=is_paused)
-        console(f"聊天键: {human.chat_key}(来自 {'options.txt' if cfg['chat_key']=='auto' else '配置'})")
-
-        # 检查聊天键是否为 enter——仅警告不拒绝(用户可能已配置 enter 故意走"试探+回车"路径)
-        if human.chat_key == "enter":
-            console("⚠ 警告:聊天键设置为 'enter',网易版 enter 是发送键不是开聊天栏键,")
-            console("  可能导致 _open_chat 按下后聊天栏未开,后续重试死循环")
-            console("  建议:config.json chat_key 改为 't' 或 '/' 之类(读取开聊天栏的键)")
-            console("  仍然继续运行——若发生死循环,可按 u 暂停/Ctrl+C 退出")
-
-        # 界面状态检测器(菜单 OCR;不可用自动降级为纯试错式发送)
-        detector = None
-        sc = cfg.get("state_check", {})
-        if sc.get("enabled", True):
-            detector = GameStateDetector(sc.get("menu_keywords"), sc.get("chat_bar_keywords"), float(sc.get("cache_seconds", 3.0)), chat_bar_state=sc.get("chat_bar_state", "auto"))
-            if not detector.available:
-                console("⚠ 界面状态检测不可用(缺少 winsdk/系统OCR),使用试错式发送")
-            else:
-                console("界面状态检测已启用(菜单界面自动 Esc;发送:首条直接粘贴试探,无响应自动开聊天栏重试,仍失败暂停等待用户)")
+        # 真实硬件构造收口在 build_runtime();此处只负责把失败时的资源释放做对
+        rt = build_runtime(cfg)
+        watcher = rt.watcher
+        human = rt.human
+        executor = rt.executor
+        detector = rt.detector
+        hwnd = rt.hwnd
 
         # 1. 只查找窗口，暂不激活
         hwnd = find_game_window(cfg["window_keywords"])
@@ -863,14 +986,20 @@ def main():
             return
 
         # 2. 只有决定继续新的统计时才显示提示和倒计时（仅一次）
-        try:
-            input("按回车开始运行,3 秒后启动...")
-        except EOFError:
-            pass
+        #    流程规格:启动前等用户回车确认;按流程规格,此时必须已提示
+        #    "请保证游戏正在运行且在主大厅(防止 AFK)"与"按下回车后不要操作键鼠"
+        rt.async_executor = async_executor
+        if not rt.confirm(
+                "请保证游戏正在运行且在主大厅(防止 AFK)。\n"
+                "按回车键运行;按下回车后请不要操作键盘和鼠标,脚本会自动前置游戏窗口",
+                default=True):
+            console("已取消,未开始运行")
+            return
         console("3 秒后开始运行(请将鼠标移开,不要操作键盘)...")
+        console("请不要操作键盘和鼠标,脚本会自动前置游戏窗口")
         for _i in (3, 2, 1):
             console(f"  脚本将在{_i}秒后运行，请不要动鼠标/键盘")
-            time.sleep(1)
+            rt.sleep(1)
 
         # 3. 倒计时结束, 此时才激活窗口并启动暂停监听
         if hwnd:

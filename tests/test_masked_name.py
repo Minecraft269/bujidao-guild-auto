@@ -23,17 +23,31 @@ test_masked_name.py —— 网易屏蔽词(星号名)专项
      "谁"在这个面板上根本不可读,拿它的周贡献去升/降/踢就是猜 ——
      宁可漏一人,不可错踢一人。
 
+三层修复各自的落点都有测试:
+  第 1 层 parsers.py(根因)  → TestIsMaskedName / ...PassesValidation /
+                              ...StillRejected / ...InGuildList /
+                              ...NeverYieldsRecord
+  第 2 层 main.py(错误回显)  → TestMainQueryMemberEarlyExit /
+                              TestMainAsyncVerifyEarlyExit /
+                              TestFailureReasonWiringInMain
+  第 3 层 可见性报告         → ...test_..._flows_into_action_report
+
 所有数据均为合成值,不含任何真实玩家名/公会名/群号/本机路径。
 """
 
+import ast
+import inspect
 import os
 import sys
+import tempfile
+import textwrap
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logger  # noqa: E402
 from actions import decide_actions  # noqa: E402
+from log_watcher import extract_chat_block, split_messages  # noqa: E402
 from parsers import (  # noqa: E402
     ParseError,
     is_masked_name,
@@ -41,6 +55,7 @@ from parsers import (  # noqa: E402
     parse_guild_member,
     validate_player_name,
 )
+from reporter import write_action_report  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):
@@ -63,6 +78,7 @@ THRESHOLDS = {"mid_promote": 30000, "mid_demote": 5000,
 # 真实样本里的两种长度:整段名单被抹平 → 704;单个玩家被遮 → 8
 MASKED_704 = "*" * 704
 MASKED_8 = "*" * 8
+MASKED_3 = "***"
 
 
 def _member_block(player="合成玩家甲", weekly_today=0):
@@ -76,6 +92,37 @@ def _member_block(player="合成玩家甲", weekly_today=0):
         f"    今天           : {weekly_today} 公会经验",
         "    2026-10-09: 0 公会经验",
     ]
+
+
+def _physical_panel_line(guild_name, groups, total=4, online=3):
+    """把面板块拼成网易版的**一条物理行**(内部换行是字面 \\n)。
+
+    真实形态:网易客户端把整个 /guild list 面板写成一条日志行,
+    block_lines 的换行是字面 "\\n",必须能走 split_messages → extract_chat_block
+    → parse_guild_list 这条真实链路 —— 只喂 list[str] 会把"单行 + 字面 \\n"
+    这个真实前提漏掉。
+    """
+    body = [guild_name, ""]
+    for title, members in groups:
+        body.append(f"-- {title} --")
+        body.append(f" {' ● '.join(members)} ●")
+        body.append("")
+    body += [f"成员总数: {total}", f"在线成员数: {online}"]
+    panel = "\n".join(["--------------------公会---------------------", *body,
+                       "-------------------------------------------- [C]"])
+    return ("[148月2026 21:55:41.046] [Render thread/INFO] "
+            "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
+            + panel)
+
+
+def _panel_block(guild_name, groups, total=4, online=3):
+    """真实形态 → block_lines:走与 test_real_fixtures.py 相同的提取链路。"""
+    msgs = split_messages([_physical_panel_line(guild_name, groups, total, online)])
+    self_check = [m for m in msgs if m]
+    assert len(self_check) == 1, "真实形态必须切成 1 条消息"
+    block = extract_chat_block(self_check[0])
+    assert block is not None, "未能从真实形态里切出面板"
+    return block
 
 
 class TestIsMaskedName(unittest.TestCase):
@@ -250,6 +297,409 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
         actions, _ = decide_actions("entry", 0, THRESHOLDS)
         self.assertEqual(actions, ["kick"],
                          "test 自身的阈值假设变了?这条只是把危险链显式化")
+
+
+class TestMaskedShortAndPartialNames(unittest.TestCase):
+    """第 1 层的其余真实形态:短星号 / 部分被遮 / 公会名被遮 / 合法含 * 名。
+
+    真实日志里同一批数据混着四种形态:整段 704 星、单条 8 星、只把名字
+    **某个词**遮成 3 星(如"正常名***尾巴")、以及名字本来就合法含 * 的玩家。
+    前三种是网易屏蔽词产物,最后一种是真实玩家名 —— 边界必须画在
+    "整串纯星号"上,不能把合法含 * 的玩家一起误判。
+    """
+
+    def test_short_three_star_mask_treated_as_masked(self):
+        """真实形态:只遮单个玩家时是 3 星(最短见过 3 个)。"""
+        self.assertTrue(is_masked_name(MASKED_3))
+        self.assertEqual(validate_player_name(MASKED_3), MASKED_3)
+
+    def test_partial_mask_is_not_masked_and_is_rejected(self):
+        """部分名字被替换(如「正常名***尾巴」)→ 不是"整串纯星号",
+        仍走黑名单被拒。这类名字发出去也查不到人,必须让查询失败走
+        人工确认,而不是拿它当目标名发命令。"""
+        for partial in ("正常名***尾巴", "***尾巴", "正***名", "甲**乙**丙"):
+            with self.subTest(name=partial):
+                self.assertFalse(is_masked_name(partial))
+                with self.assertRaises(ParseError):
+                    validate_player_name(partial)
+
+    def test_partial_mask_in_guild_list_fails_loudly(self):
+        """部分名字被替换(如「正常名***尾巴」)→ 整个名单解析失败(响亮)。
+
+        这种名字不是"整串纯星号",所以不走 is_masked_name 放行,而是撞
+        `*` 黑名单被拒。已知取舍:一条部分屏蔽条目会让**整张** /guild list
+        抛 ParseError(main 会重发 3 次),而不是让其它玩家静默通过。
+        选择"响亮失败"而非"悄悄跳过该条",是因为 glob 注入防线是安全边界
+        (Windows 通配符),为可用性放松它会把 `*x*` 这类注入名一起放行。
+        响亮失败至少会被运维看见;静默漏人才是事故。
+        """
+        lines = [
+            "演示公会",
+            "-- 入门成员 --",
+            "演示入门甲 ● 正常名***尾巴 ● 演示入门乙 ●",
+            "成员总数: 3",
+            "在线成员数: 1",
+        ]
+        with self.assertRaises(ParseError) as ctx:
+            parse_guild_list(lines, RANK_NAMES)
+        self.assertIn("非法字符", str(ctx.exception),
+                      f"失败原因必须指向黑名单校验,实际: {ctx.exception}")
+
+    def test_partial_mask_never_yields_record_even_with_good_panel(self):
+        """部分屏蔽名即使面板回显完美,也拿不到记录 → 不可能被踢。
+
+        query_member 会把面板交给 parse_guild_member(expected_id=该名),
+        而 expected_id 先过 validate_player_name —— 混串星号在这里被拒,
+        所以无论面板长什么样,记录都拿不到,判定根本不会被调用。
+        """
+        with self.assertRaises(ParseError):
+            parse_guild_member(_member_block("合成玩家甲"),
+                               expected_id="正常名***尾巴")
+
+    def test_partial_mask_not_early_exited_in_query_member(self):
+        """部分屏蔽名**不**走 main 的 is_masked_name 早退(边界认知)。
+
+        早退只对"整串纯星号"生效;混串名仍然走完整 3 次重试再由
+        parse_guild_member 拒掉。这条锁住"早退条件没有被无意放宽成
+        所有含 * 的名字"—— 放宽就等于把 glob 注入防线也让给可用性。
+        """
+        main = _import_main()
+        sent = []
+
+        def fake_send_and_capture(watcher, human, hwnd, cmd, timeout, **kw):
+            sent.append(cmd)
+            return None, False
+        orig = main.send_and_capture
+        main.send_and_capture = fake_send_and_capture
+        self.addCleanup(lambda: setattr(main, "send_and_capture", orig))
+
+        info = main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
+                                 None, "正常名***尾巴")
+        self.assertIsNone(info)
+        self.assertEqual(len(sent), _MIN_CFG["timeouts"]["max_retries"],
+                         f"混串名应走满 3 次重试,实际 {len(sent)} 次")
+
+    def test_guild_name_itself_masked_does_not_crash_panel(self):
+        """真实形态:公会名行被遮成 *** —— 面板仍要能解析出成员。"""
+        lines = [
+            MASKED_3,
+            "-- 入门成员 --",
+            "演示入门甲 ●",
+            "成员总数: 1",
+            "在线成员数: 1",
+        ]
+        r = parse_guild_list(lines, RANK_NAMES)
+        self.assertEqual(r["guild_name"], MASKED_3)
+        self.assertEqual(r["groups"]["entry"], ["演示入门甲"])
+
+    def test_legit_name_containing_star_is_not_treated_as_masked(self):
+        """反向护栏:名字本来就合法含 * 的玩家不能被误判成"被屏蔽"。"""
+        for legit in ("Star*Player", "名*字", "a*b"):
+            with self.subTest(name=legit):
+                self.assertFalse(is_masked_name(legit))
+                with self.assertRaises(ParseError):
+                    validate_player_name(legit)
+
+    def test_masked_player_cannot_reach_demote_decision(self):
+        """同 test_masked_player_cannot_reach_kick_decision,锚 mid → demote。"""
+        panel = _member_block(player=MASKED_8, weekly_today=0)
+        with self.assertRaises(ParseError):
+            parse_guild_member(panel, expected_id=MASKED_8)
+        actions, _ = decide_actions("mid", 0, THRESHOLDS)
+        self.assertEqual(actions, ["demote"],
+                         "test 自身的阈值假设变了?这条只是把危险链显式化")
+
+
+class TestMaskedNameInRealShapedPanel(unittest.TestCase):
+    """704 星形态必须走**真实单物理行**链路,而不是只喂 list[str]。
+
+    网易版面板是"一条物理行 + 内部字面 \\n",真实事故里那条 704 星
+    就是从这种形态里提取出来的。只测 list[str] 会漏掉
+    "提取 → 解析"整条链上的回归。
+    """
+
+    def test_704_star_segment_survives_real_shaped_extraction(self):
+        block = _panel_block(
+            "演示公会",
+            [("高活跃成员", ["演示高活跃甲", "演示高活跃乙"]),
+             ("中等活跃成员", [MASKED_704]),
+             ("入门成员", ["演示入门甲"])],
+            total=4, online=3,
+        )
+        r = parse_guild_list(block, RANK_NAMES)
+        self.assertEqual(r["groups"]["high"], ["演示高活跃甲", "演示高活跃乙"])
+        self.assertEqual(r["groups"]["mid"], [MASKED_704],
+                         "真实形态下整段被遮的名单必须保留为一条星号条目")
+        self.assertEqual(r["groups"]["entry"], ["演示入门甲"])
+        self.assertEqual(r["total"], 4)
+        self.assertEqual(r["online"], 3)
+
+    def test_partial_mask_in_real_shaped_panel_fails_loudly(self):
+        """真实链路下的混串星号 → 响亮失败(glob 防线是安全边界,不让步)。"""
+        # 部分替换的条目与 704 星条目同批出现:704 星那条能被 is_masked_name
+        # 识别,部分替换那条撞黑名单 → 整张表抛错
+        with self.assertRaises(ParseError):
+            parse_guild_list(_panel_block(
+                "演示公会",
+                [("高活跃成员", ["演示高活跃甲", "演示高活跃乙"]),
+                 ("中等活跃成员", ["正常名***尾巴", MASKED_704])],
+                total=3, online=2,
+            ), RANK_NAMES)
+
+    def test_normal_players_unaffected_by_masked_segment_in_real_panel(self):
+        """混合面板:被屏蔽条目不能让同一批里的正常玩家消失。"""
+        block = _panel_block(
+            "演示公会",
+            [("中等活跃成员", ["演示中等甲", MASKED_8, "演示中等乙"]),
+             ("低活跃成员", ["演示低活跃甲", "演示低活跃乙"])],
+            total=5, online=2,
+        )
+        r = parse_guild_list(block, RANK_NAMES)
+        self.assertEqual(r["groups"]["mid"],
+                         ["演示中等甲", MASKED_8, "演示中等乙"])
+        self.assertEqual(r["groups"]["low"], ["演示低活跃甲", "演示低活跃乙"])
+        # 整张表仍有正常玩家可查(main 的阶段2 targets 非空)
+        normal = [p for g in r["groups"].values() for p in g
+                  if not is_masked_name(p)]
+        self.assertIn("演示中等甲", normal)
+        self.assertIn("演示低活跃乙", normal)
+
+    def test_block_start_and_end_lines_stripped(self):
+        """守卫 fixture 本身:分隔线/复制标记必须已被剥掉,否则测的不是真实链。"""
+        block = _panel_block(
+            "演示公会", [("入门成员", [MASKED_3])], total=1, online=1)
+        joined = "\n".join(block)
+        self.assertNotIn("--------------------", joined)
+        self.assertNotIn("[C]", joined)
+        self.assertEqual(block[0], "演示公会")
+
+
+def _import_main():
+    """导入真实 main.py(不 import 会跳过本组测试 —— main 依赖 pynput/pyautogui)。"""
+    try:
+        import main
+        return main
+    except Exception as e:      # pragma: no cover - 无 GUI 依赖时跳过
+        raise unittest.SkipTest(f"无法导入 main.py(缺 GUI 依赖?): {e}")
+
+
+class _StubHuman:
+    """最小 HumanInput 替身:query_member 只用到 wait_between_commands。"""
+
+    def wait_between_commands(self):
+        pass
+
+
+class _StubWatcher:
+    """最小 LogWatcher 替身:query_member 只用到 discard_buffer。"""
+
+    def discard_buffer(self):
+        pass
+
+
+_MIN_CFG = {
+    "commands": {"guild_list": "/guild list",
+                 "guild_member": "/guild member {player}"},
+    "timeouts": {"max_retries": 3, "response_wait": 0.1,
+                 "try_wait": 0.1, "try_times": 1},
+    "switches": {"verbose_log": False},
+    "rank_names": {"entry": "入门成员"},
+    "guild_name": "",
+    "skip_ranks": [],
+}
+
+
+class TestMainQueryMemberEarlyExit(unittest.TestCase):
+    """第 2 层:query_member 必须在**发命令之前**就判定屏蔽名不可用。
+
+    真实事故:屏蔽名玩家发了 3 次 /guild member,每次都被服务端拒,
+    报告写"查询重试耗尽",看起来像网络抖动。修法是早退,不发命令。
+    """
+
+    def setUp(self):
+        self.main = _import_main()
+        self.cmds = []
+        self.logs = []
+
+        def fake_send_and_capture(watcher, human, hwnd, cmd, timeout, **kw):
+            self.cmds.append(cmd)
+            return None, False       # 永远超时:正常玩家应发满 max_retries 次
+        # 猴子补丁:不 key 真模块状态,tearDown 显式还原
+        self._orig = self.main.send_and_capture
+        self.main.send_and_capture = fake_send_and_capture
+        self.addCleanup(self._restore)
+        # logger 换成记录器:test_logger_levels_mock 会把真实 handler 指向
+        # 已删除的临时目录,直接用真实 logger 会 FileNotFoundError(测试顺序污染)
+        self._orig_log = logger.log_error
+        logger.log_error = lambda msg, *a, **k: self.logs.append(str(msg))
+        self.addCleanup(lambda: setattr(logger, "log_error", self._orig_log))
+
+    def _restore(self):
+        self.main.send_and_capture = self._orig
+
+    def test_masked_pid_sends_zero_commands(self):
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
+                                      None, MASKED_8)
+        self.assertIsNone(info, "屏蔽名查询必须返回 None(不可用)")
+        self.assertEqual(self.cmds, [],
+                         f"屏蔽名查询不该发任何命令,却发了 {self.cmds}")
+        # 早退必须留痕:否则运维在日志里看不到为什么跳过
+        self.assertTrue(self.logs, "屏蔽名跳过时没有写任何错误日志")
+        self.assertIn("屏蔽词", self.logs[0])
+
+    def test_704_star_pid_sends_zero_commands(self):
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
+                                      None, MASKED_704)
+        self.assertIsNone(info)
+        self.assertEqual(self.cmds, [])
+
+    def test_partial_mask_pid_sends_three_times(self):
+        """部分星号名**不**走早退:早退只覆盖"整串纯星号"。
+
+        边界认知:混串名仍然走完整 3 次重试(每次都被 parse_guild_member 拒),
+        最后仍返回 None。这条与 test_masked_pid_sends_zero_commands 合起来,
+        锁住早退条件没被无意放宽成"所有含 * 的名字"—— 放宽就等于把
+        glob 注入防线也让给可用性。
+        """
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
+                                      None, "正常名***尾巴")
+        self.assertIsNone(info)
+        self.assertEqual(len(self.cmds), _MIN_CFG["timeouts"]["max_retries"],
+                         f"混串名应走满 3 次重试,实际 {len(self.cmds)} 次")
+
+    def test_normal_pid_still_sends_three_times(self):
+        """回归护栏:正常玩家的 3 次重试时序未被早退改变。"""
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
+                                      None, "合成玩家甲")
+        self.assertIsNone(info)
+        self.assertEqual(len(self.cmds), _MIN_CFG["timeouts"]["max_retries"],
+                         f"正常玩家应发满 3 次,实际 {len(self.cmds)} 次")
+        self.assertTrue(all("合成玩家甲" in c for c in self.cmds),
+                        f"发出的命令不是查这个玩家: {self.cmds}")
+
+
+class TestMainAsyncVerifyEarlyExit(unittest.TestCase):
+    """第 2 层异步路径:verify 闭包同样不得 burn _worker 的重试配额。"""
+
+    def setUp(self):
+        self.main = _import_main()
+
+    def test_async_masked_pid_does_not_send_commands(self):
+        sent = []
+
+        def fake_send_and_capture(watcher, human, hwnd, cmd, timeout, **kw):
+            sent.append(cmd)
+            return None, False
+
+        class _StubExecutor:
+            def submit(self, cmd, pid, verify):
+                # 直接同步调用 verify —— 与 AsyncCommandExecutor 的契约一致
+                self.result = verify(cmd, pid)
+
+        orig = self.main.send_and_capture
+        self.main.send_and_capture = fake_send_and_capture
+        self.addCleanup(lambda: setattr(self.main, "send_and_capture", orig))
+
+        ex = _StubExecutor()
+        ok = self.main.async_query_member(
+            _MIN_CFG, _StubWatcher(), _StubHuman(), None, ex, None,
+            lambda: False, MASKED_8)
+        self.assertTrue(ok, "已入队应返回 True")
+        self.assertEqual(sent, [],
+                         f"屏蔽名不该发出任何命令,却发了 {sent}")
+        ok_flag, payload = ex.result
+        self.assertFalse(ok_flag, "屏蔽名后台验证必须失败")
+        self.assertIn("屏蔽词", payload)
+        self.assertIn("需人工确认", payload)
+
+    def test_async_failure_reason_mentions_manual_confirm(self):
+        """文案回归:报告里必须看得出是网易过滤,而不是网络抖动。"""
+        class _StubExecutor:
+            def submit(self, cmd, pid, verify):
+                self.result = verify(cmd, pid)
+
+        orig = self.main.send_and_capture
+        self.main.send_and_capture = (
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("屏蔽名不该走到发送")))
+        self.addCleanup(lambda: setattr(self.main, "send_and_capture", orig))
+
+        ex = _StubExecutor()
+        self.main.async_query_member(
+            _MIN_CFG, _StubWatcher(), _StubHuman(), None, ex, None,
+            lambda: False, MASKED_704)
+        ok_flag, payload = ex.result
+        self.assertFalse(ok_flag)
+        self.assertIn("屏蔽词", payload)
+        self.assertIn("需人工确认", payload)
+
+
+class TestFailureReasonWiringInMain(unittest.TestCase):
+    """第 2 层的报告分流:屏蔽名报真实原因,正常玩家仍报"查询重试耗尽"。
+
+    直接读 main.main 的源码结构 —— 这条分流在 700 行的编排函数内部,
+    跑不了端到端(要窗口+日志),但它必须是可发现的:任何人把
+    `查询重试耗尽` 挪回去,这条测试就红。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.main = _import_main()
+        cls.src = textwrap.dedent(inspect.getsource(cls.main.main))
+        cls.tree = ast.parse(cls.src)
+
+    def _branch_texts(self):
+        """收集 main() 源码里所有含'屏蔽词'的字符串字面量。"""
+        return [n.value for n in ast.walk(self.tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and "屏蔽词" in n.value]
+
+    def test_failure_reason_branches_on_masked_name(self):
+        texts = self._branch_texts()
+        self.assertTrue(texts, "main() 里找不到'屏蔽词'分支(报告分流被删了?)")
+        joined = "\n".join(texts)
+        self.assertIn("需人工确认", joined,
+                      "屏蔽名失败原因必须写明'需人工确认'")
+        # 分流必须是 IfExp:屏蔽名 reason + 正常玩家 reason 同时存在,
+        # 而不是把"查询重试耗尽"替换掉(替换会让正常玩家失去原有文案)
+        self.assertTrue(any(isinstance(n, ast.IfExp) or isinstance(n, ast.If)
+                            for n in ast.walk(self.tree)
+                            if "屏蔽词" in ast.dump(n)),
+                        "屏蔽词 reason 必须与'查询重试耗尽'构成条件分支")
+        normal_reasons = [n.value for n in ast.walk(self.tree)
+                          if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                          and "查询重试耗尽" in n.value]
+        self.assertTrue(normal_reasons,
+                        "main() 里正常玩家的'查询重试耗尽'分支被删了")
+
+    def test_masked_name_failure_reason_flows_into_action_report(self):
+        """可见性回归:该 reason 必须显示在报告【未执行】区。
+
+        真实事故里报告只写"查询重试耗尽",运维看不出是网易过滤还是网络抖动。
+        main.py 把 failures 展开成 action_records(补 actions=[] 与 error=reason),
+        reporter 只负责原样印出 —— 这条按 main 的同一种展开方式构造输入,
+        把 failures → report 的最后一环也锚住。
+        """
+        failures = [{"player": MASKED_8, "rank": "entry",
+                     "reason": "查询失败: 玩家名被网易屏蔽词过滤(星号),"
+                               "无法确认身份,需人工确认"}]
+        # 与 main.py 报告前对 failures 的展开方式一致
+        action_records = [dict(f, new_rank=f.get("rank"), actions=[],
+                               error=f.get("reason") or "查询失败")
+                          for f in failures]
+        with tempfile.TemporaryDirectory() as d:
+            p = write_action_report(d, "演示公会", action_records,
+                                    {"contact_text": "联系人{admin}",
+                                     "admin": "管理员X"})
+            content = open(p, encoding="utf-8").read()
+        self.assertIn("【未执行】", content,
+                      f"失败原因没进报告【未执行】区:\n{content}")
+        self.assertIn("屏蔽词", content)
+        self.assertIn("需人工确认", content)
+        self.assertIn(MASKED_8, content)
+        # 屏蔽名玩家不参与判定,公告里不得出现它的"踢出"计数
+        self.assertNotIn("被踢出（1人）", content)
+        self.assertIn("被踢出（0人）", content)
 
 
 if __name__ == "__main__":
