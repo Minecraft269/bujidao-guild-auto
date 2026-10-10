@@ -2,7 +2,24 @@ name: "Tests & Coverage"
 
 on:
   push:
+    # 只在**代码**变更时跑：纯文档改动不影响测试结果，
+    # 让它跑一遍是白烧 CI 分钟数（本项目是全矩阵 3.10/3.11/3.12，一次跑等于三份）。
+    # 注意 paths-ignore 的语义是「本次推送匹配到的变更全在忽略列表里，才跳过」——
+    # 一次提交既改 .py 又改 .md 时仍然会跑，这是想要的行为。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
   pull_request:
+    # PR 同样处理：review 文档改动时不跑全量测试。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:

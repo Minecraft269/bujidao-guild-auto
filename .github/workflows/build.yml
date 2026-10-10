@@ -7,10 +7,25 @@ on:
   # 等于"构建流水线存在但从未实际触发"。
   push:
     branches: ['**']
+    # 只在代码变更时构建 —— 这是四条里最贵的一条(约 1m46s + PyInstaller + UPX),
+    # 纯文档改动不改变任何可打包内容,跑了纯属浪费。
+    # tag 触发**不受 paths-ignore 影响**,所以打 tag 发 Release 的路径仍然畅通。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
   workflow_dispatch:
-  # 打 tag 时也会经上面的 push 触发,由 Publish release 步骤的
-  # startsWith(github.ref, 'refs/tags/') 守卫决定是否发 Release。
+  # 打 tag 时也会触发。GitHub Actions 对 tag 推送**不应用** paths-ignore,
+  # 因此 Publish release 步骤一定会在 tag 构建中执行到。
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}

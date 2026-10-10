@@ -3,10 +3,26 @@ name: Security
 on:
   push:
     branches: [main]
+    # 用 paths **白名单**（不是 ignore）:只有代码或依赖清单变了才扫。
+    # 三个 job 的敏感面不同（CodeQL 看 .py、pip-audit 看 requirements.txt），
+    # 白名单比 ignore 更安全 —— 以后新增配置类文件也不会被误扫。
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/**'
   pull_request:
+    # 同上。dependency-review job 自身还有 PR-only 的 if 守卫。
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/**'
   workflow_dispatch:
   schedule:
     # 每周一 04:27 UTC（避开整点，减少排队；cron 只在默认分支生效）
+    # 定期扫描是兜底：即使没有新提交，也可能有新披露的 CVE。
+    # 它刻意**不受**上面的 paths 白名单约束 —— 跑的是全量。
     - cron: '27 4 * * 1'
 
 concurrency:
@@ -20,6 +36,9 @@ permissions:
 jobs:
   codeql:
     name: CodeQL (python)
+    # CodeQL 只分析 *.py，文档变更不会引入代码缺陷，跑了是空转。
+    # 这里的 paths 与 on.push.paths 成对：push/PR 都不看文档，
+    # 而 schedule / workflow_dispatch 不受 paths 约束，仍跑全量兜底扫描。
     runs-on: windows-latest
     permissions:
       contents: read

@@ -2,7 +2,20 @@ name: "Lint"
 
 on:
   push:
+    # 只在代码变更时跑：ruff 只看 .py，纯文档改动跑了也是空转。
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE'
   workflow_dispatch:
 
 concurrency:
