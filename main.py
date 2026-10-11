@@ -1289,18 +1289,19 @@ def main():
             records = _generate_debug_records(cfg, guild, targets, decide_skipped=("decide" in debug.get("skip_stages", [])))
         else:
             records = []
-            # 异步模式:仅向后台提交任务,不阻塞等待验证返回;
-            # 失败/重试/补做全部在后台 _worker 内部完成(走 _send_with_gate 锁内串行)
-            use_async = async_executor is not None
-            for idx, (rk, pid) in enumerate(targets, 1):
-                wait_if_paused()
-                console(f"[{idx}/{len(targets)}] 查询 {pid} ({cfg['rank_names'].get(rk, rk)})")
-                if use_async:
-                    async_query_member(cfg, watcher, human, hwnd, async_executor,
-                                       detector, is_paused, pid)
-                else:
+            if rt.async_enabled:
+                # 异步(后台)模式:主线程只发不验,验证全部交给后台系统
+                # (流程规格 B→D→E,见 stage_query_async docstring)
+                console("[2/5] 逐人查询(异步模式:主线程快速发送,后台验证)...")
+                records, async_failures = stage_query_async(rt, targets, cfg)
+                failures.extend(async_failures)
+            else:
+                # 默认串行模式:逐条发送 → 逐条读日志验证
+                for idx, (rk, pid) in enumerate(targets, 1):
+                    wait_if_paused()
+                    console(f"[{idx}/{len(targets)}] 查询 {pid} ({cfg['rank_names'].get(rk, rk)})")
                     info = query_member(cfg, watcher, human, hwnd, pid,
-                                       detector=detector, stop_check=is_paused)
+                                        detector=detector, stop_check=is_paused)
                     if info is None:
                         # 屏蔽词玩家:身份不可读,报真实原因而非"查询重试耗尽"
                         # 否则报告里看不出是网易过滤还是网络抖动
@@ -1313,34 +1314,6 @@ def main():
                     records.append(info)
                     if sw.get("verbose_log", True):
                         console(f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} | 上次在线: {info['last_online']}")
-            if use_async:
-                # 阶段门控:主线程快速 submit 完所有 player → 等异步线程补完整 records。
-                # 用户原话"主线程等异步线程 等完整records"——
-                # 阶段 2 循环已经 submit 全部 targets(快速,只入队不等响应);
-                # 这里 join 一次等后台串行执行+重试,所有 player 必有最终结果
-                # (成功入 _player_results,失败入 retry_queue);然后再次 get_result_nowait
-                # 收集全部 records(已就绪 + 刚就绪)。重试耗尽的 player 标记"查询失败"
-                # 留到阶段 9 报告,不全填 records(避免判定时基于不完整数据)。
-                _join_with_progress(async_executor, "阶段2 查询", expected_n=len(targets))
-                ok_n = 0
-                for rk, pid in targets:
-                    res = async_executor.get_result_nowait(pid)
-                    if res is not None and res.get("status") == "ok":
-                        info = res.get("data")
-                        if isinstance(info, dict):
-                            info["rank"] = rk
-                            records.append(info)
-                            ok_n += 1
-                            if sw.get("verbose_log", True):
-                                console(f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} | 上次在线: {info['last_online']}")
-                        continue
-                    # join 后仍未 ok:失败(重试耗尽),记入 failures 供报告用,不进 records
-                    err = (res or {}).get("error", "重试耗尽")
-                    failures.append({"player": pid, "rank": rk, "reason": err})
-                    logger.log_error(f"查询失败(重试耗尽): {pid} ({cfg['rank_names'].get(rk, rk)})")
-                retry_q = async_executor.get_retry_tasks()
-                logger.log_info(f"查询阶段: ok={ok_n} 失败={len(failures)} retry_queue={len(retry_q)} "
-                                 f"(主线程已等异步补完整 records)")
 
         # 6. 判定(继承规则)
         logger.log_info(f"阶段3 起点: 判定 records={len(records)}")
