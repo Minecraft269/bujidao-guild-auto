@@ -19,10 +19,23 @@ import logger
 # 文件名安全化:公会名来自日志解析,替换路径分隔符与 Windows 非法字符,
 # 防止 "..\..\evil" 之类名字把报告写到 report_dir 之外
 _UNSAFE_FNAME_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
+# 报告文件名里的公会名上限。公会名来自日志解析(不可信),不限长会让
+# open() 抛 OSError [Errno 22] —— 报告是流程最后一步,崩在这里
+# 会让用户丢掉全部查询结果(独立审查指出,实测 560 字符名即崩)。
+# 60 字符远大于任何真实公会名,又能把完整路径压在系统上限内。
+_MAX_GUILD_NAME_LEN = 60
 
 
 def _safe_guild_name(guild_name):
+    """把公会名净化成可安全用于文件名的片段。
+
+    三重处理:替换路径/Windows 非法字符 -> 去掉首尾点与空格
+    -> 截断到 _MAX_GUILD_NAME_LEN。截断用省略号收尾,避免两个
+    不同长名被截成同一个文件名而互相覆盖。
+    """
     cleaned = _UNSAFE_FNAME_RE.sub("_", str(guild_name or "")).strip(". ")
+    if len(cleaned) > _MAX_GUILD_NAME_LEN:
+        cleaned = cleaned[:_MAX_GUILD_NAME_LEN].rstrip() + "…"
     return cleaned or "unknown"
 
 # 贡献报告的分组标题(与原脚本输出一致:高/中/低不带"成员",入门带)

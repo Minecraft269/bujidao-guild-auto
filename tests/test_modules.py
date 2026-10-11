@@ -258,6 +258,39 @@ class TestSecurityHardening(unittest.TestCase):
         self.assertEqual(_safe_guild_name(""), "unknown")        # 空兜底
         self.assertEqual(_safe_guild_name(None), "unknown")
 
+    def test_long_guild_name_does_not_break_report_writes(self):
+        """超长公会名不得让报告写入崩溃。
+
+        独立审查发现 + 实测:_safe_guild_name 原来不限长,560 字符的公会名
+        会让 write_contribution_report 抛 OSError [Errno 22]。
+        报告是流程**最后一步**,崩在这里会让用户丢掉全部查询结果。
+
+        公会名来自日志解析(不可信输入),所以这是真实健壮性边界。
+        """
+        import shutil
+        import tempfile
+        from reporter import (_MAX_GUILD_NAME_LEN, _safe_guild_name,
+                              write_action_report, write_contribution_report)
+        tmp = tempfile.mkdtemp()
+        try:
+            long_name = "超长公会名演示" * 80    # 640 字符,远超真实公会名
+            safe = _safe_guild_name(long_name)
+            self.assertLessEqual(len(safe), _MAX_GUILD_NAME_LEN + 1,
+                                 f"未截断: {len(safe)} 字符")
+            recs = [{"player": "合成玩家甲", "rank": "entry",
+                     "weekly_total": 100, "actions": []}]
+            act = [{"player": "合成玩家甲", "rank": "entry", "new_rank": "low",
+                    "weekly_total": 1, "actions": ["promote"],
+                    "executed": True, "error": None}]
+            # 两份报告都必须写成功(不抛 OSError)
+            p1 = write_contribution_report(tmp, long_name, recs, "演示管理员")
+            p2 = write_action_report(tmp, long_name, act,
+                                     {"contact_text": "c{admin}", "admin": "A"})
+            self.assertTrue(os.path.exists(p1))
+            self.assertTrue(os.path.exists(p2))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_log_rotation_seeks_to_end(self):
         from log_watcher import LogWatcher
         d = tempfile.mkdtemp()
