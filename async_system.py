@@ -307,17 +307,34 @@ class AsyncVerifySystem:
         with self._retry_lock:
             return list(self._retry_queue)
 
-    def archive_finished(self, task_ids):
-        """把指定任务从 _tasks 中移出(结果已被主线程取走)。
+    def get_stranded(self):
+        """仍在途的任务(状态为 PENDING/SENT)—— 尚未拿到验证结果。
 
-        用于闭环收尾:避免下一轮把上一轮的残留结果再算一遍。返回移出的数量。"""
+        wait_all 超时时返回的就是这些。它们**不能**被归档掉,
+        否则指令从系统里静默消失。
+        """
+        with self._tasks_lock:
+            return [t.snapshot() for t in self._tasks.values()
+                    if t.state in (PENDING, SENT)]
+
+    def archive_finished(self, task_ids):
+        """把指定任务中**已到终态**(OK/STOPPED)的从 _tasks 移出。
+
+        用于闭环收尾:避免下一轮把上一轮的残留结果再算一遍。返回移出数量。
+
+        ⚠ 只归档终态任务。若把 SENT/PENDING 也一并归档,这些在途指令会从
+        系统里消失 —— 主线程再也拿不到结果,后台线程仍在处理一个已被遗忘的
+        任务(独立审查指出)。失败/未完成的留在 _tasks 里,由 get_stranded() 暴露。
+        """
         ids = set(task_ids)
         with self._tasks_lock:
-            victims = [tid for tid in ids if tid in self._tasks]
+            victims = [tid for tid in ids
+                       if tid in self._tasks
+                       and self._tasks[tid].state in TERMINAL_STATES]
             for tid in victims:
                 del self._tasks[tid]
         if victims:
-            logger.log_trace(f"TRACE_QUEUE archive_finished | 移出 {len(victims)} 条已完成任务")
+            logger.log_trace(f"TRACE_QUEUE archive_finished | 移出 {len(victims)} 条终态任务")
             # 归档后若已无在途任务,主动置完成信号,让此刻正在 wait_all() 的
             # 主线程立即返回,不必空等到超时(否则多轮闭环每轮都多等一个 timeout)。
             with self._tasks_lock:
@@ -538,9 +555,25 @@ def run_async_round(system, commands, send_fn, max_retries=3):
             final_failed.append(s)
             seen_ids.add(s["task_id"])
 
-    # 归档本闭环全部任务:结果已被主线程取走,移出 _tasks 防止下一轮重复计数,
-    # 同时让 _all_tasks_terminal() 能正确判定"本 system 暂无在途任务"。
-    system.archive_finished(all_round_ids)
+    # 归档**已到终态**的任务:结果已被主线程取走,移出 _tasks 防止下一轮
+    # 重复计数,同时让 _all_tasks_terminal() 能判定"本 system 暂无在途任务"。
+    #
+    # ⚠ 不能无条件归档全部:若 wait_all 超时(后台卡住),仍有 SENT/PENDING
+    # 任务在途,把它们一并归档等于**从系统里抹掉** —— 主线程再也拿不到结果,
+    # 指令静默丢失(无补做、无告警)。故此处只归档 OK/STOPPED,
+    # 在途任务保留 + 计入 final_failed 让主线程看见。
+    archived = system.archive_finished(all_round_ids)
+    stranded = system.get_stranded()
+    if stranded:
+        logger.log_warning(
+            f"(异步系统)⚠ {len(stranded)} 条指令在 wait_all 超时后仍未验证完成,"
+            f"已保留在系统内并计入失败清单(指令未静默丢弃): "
+            f"{[s['player'] for s in stranded][:5]}")
+        seen = {(s["command"], s["player"]) for s in final_failed}
+        for s in stranded:
+            if (s["command"], s["player"]) not in seen:
+                final_failed.append(s)
+                seen.add((s["command"], s["player"]))
 
     # 收尾:某条指令若在后续轮次验证成功过,就不该同时留在"最终失败"里 ——
     # 重试会为同一 (command, player) 产生多个 task_id,前几轮的 FAILED 只是

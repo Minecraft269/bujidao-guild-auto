@@ -469,6 +469,65 @@ class TestVerifyFnException(unittest.TestCase):
         finally:
             s.stop()
 
+    def test_archive_keeps_stranded_tasks(self):
+        """归档**只**移终态任务,在途任务(SENT/PENDING)必须留下。
+
+        独立审查发现:wait_all 超时后 run_async_round 无条件归档全部任务,
+        仍在 SENT 的指令会从系统里消失 —— 主线程再也拿不到结果,
+        后台线程还在处理一个已被遗忘的任务,指令静默丢失。
+
+        这里用挂死的 verify 制造"超时后仍在途"的真实场景。
+        """
+        def hang(cmd, p, meta):
+            time.sleep(30)          # 远超 wait_all 超时
+            return True, None, None
+        s = AsyncVerifySystem(verify_fn=hang, poll_interval=0.02, task_timeout=2)
+        s.attach_sender(lambda c, p, m: None)
+        s.start()
+        try:
+            ids = [s.submit(f"/c{i}", f"P{i}") for i in range(3)]
+            self.assertFalse(s.wait_all(timeout=0.5), "后台挂死却报完成")
+            # 关键断言:归档后,"在途"任务仍在系统里,且能被 get_stranded 看见
+            s.archive_finished(ids)
+            self.assertEqual(len(s.get_stranded()), 3,
+                             "在途任务被归档抹掉了 —— 指令会静默丢失")
+            self.assertEqual(len(s.get_results()), 3, "在途任务从 _tasks 消失")
+            # 它们也不能被算成成功/失败(还没验证完)
+            self.assertEqual(s.get_completed(), [])
+            self.assertEqual(s.get_failed(), [])
+        finally:
+            s.stop(timeout=1)
+
+    def test_get_stranded_empty_after_normal_completion(self):
+        """正常跑完时不应有在途任务(否则 get_stranded 一直非空,无意义)。"""
+        s = AsyncVerifySystem(verify_fn=_ok(), poll_interval=0.02, task_timeout=3)
+        s.attach_sender(lambda c, p, m: None)
+        s.start()
+        try:
+            s.submit_many([(f"/c{i}", f"P{i}") for i in range(3)])
+            s.wait_all(timeout=5)
+            self.assertEqual(s.get_stranded(), [])
+        finally:
+            s.stop()
+
+    def test_archive_finished_removes_terminal_only(self):
+        """直接锁 archive_finished 的选择条件:OK 移出,SENT 留下。"""
+        s = AsyncVerifySystem(verify_fn=None, poll_interval=0.02)
+        s.attach_sender(lambda c, p, m: None)
+        s.start()
+        try:
+            ok_id = s.submit("/ok", "OK")
+            sent_id = s.submit("/sent", "SENT")
+            s._tasks[ok_id].mark_verified(True)      # 终态
+            s._tasks[sent_id].mark_sent()            # 在途
+            removed = s.archive_finished([ok_id, sent_id])
+            self.assertEqual(removed, 1,
+                             f"只应移出 1 条终态任务,实际 {removed}")
+            self.assertIn(sent_id, s._tasks, "SENT 任务被误归档")
+            self.assertNotIn(ok_id, s._tasks, "OK 任务未被归档")
+        finally:
+            s.stop()
+
     def test_verify_exception_marks_failed_not_crash(self):
         def boom(cmd, p, meta):
             raise ValueError("解析炸了")
