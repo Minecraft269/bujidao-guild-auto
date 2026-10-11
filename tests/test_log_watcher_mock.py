@@ -691,5 +691,69 @@ class TestBlockHelpers(unittest.TestCase):
         self.assertFalse(_starts_with_block([chat_line("普通聊天")]))
 
 
+class TestRotationWindowRetry(unittest.TestCase):
+    """轮转窗口期(旧文件已删/新文件未建)不得抛 FileNotFoundError。
+
+    独立审查发现:read_new_lines 里裸 `open(self.path, "rb")`,而
+    _reopen_if_rotated 在文件不存在时返回 True 会走到那行 ——
+    轮转窗口期直接抛 FileNotFoundError 给调用方。
+
+    read_new_lines 本身是 while True 轮询循环,遇到瞬时文件缺失
+    本该重试。这里用 mock 制造"前 N 次 open 失败"的窗口。
+    """
+
+    def _watcher(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        p = os.path.join(d, "latest.log")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("[01月2026 10:00:00.000] [main/INFO]: [CHAT] 初始内容\n")
+        w = lw.LogWatcher(p, encoding="utf-8", poll_interval_ms=20)
+        w.open()
+        w.close()
+        self.addCleanup(w.close)
+        return w
+
+    def test_open_retries_then_succeeds(self):
+        """前 2 次 FileNotFoundError,第 3 次成功 → 必须重试到成功。"""
+        w = self._watcher()
+        real_open = open
+        calls = {"n": 0}
+
+        def flaky(*a, **k):
+            i = calls["n"]
+            calls["n"] += 1
+            if i < 2:
+                raise FileNotFoundError("轮转窗口")
+            return real_open(*a, **k)
+
+        with mock.patch("builtins.open", side_effect=flaky), \
+                mock.patch("time.sleep", return_value=None):
+            ok = w._open_existing(wait_seconds=5)
+        self.assertTrue(ok, "重试后仍报失败")
+        self.assertGreaterEqual(calls["n"], 3, f"只试了 {calls['n']} 次,没有重试")
+
+    def test_open_gives_up_after_timeout_without_raising(self):
+        """一直失败 → 超时返回 False(**不抛异常**)并清空句柄。"""
+        w = self._watcher()
+        with mock.patch("builtins.open", side_effect=FileNotFoundError("轮转中")), \
+                mock.patch("time.sleep", return_value=None):
+            ok = w._open_existing(wait_seconds=0.5)
+        self.assertFalse(ok, "文件始终不存在却报成功")
+        self.assertIsNone(w._fh, "超时后应清空句柄,避免调用方用到失效句柄")
+
+    def test_read_new_lines_survives_missing_file(self):
+        """read_new_lines 在文件暂缺时不得抛 FileNotFoundError。"""
+        w = self._watcher()
+        with mock.patch.object(w, "_reopen_if_rotated", return_value=True), \
+                mock.patch("time.sleep", return_value=None):
+            try:
+                lines = w.read_new_lines(block=False)
+            except FileNotFoundError:
+                self.fail("read_new_lines 抛了 FileNotFoundError —— "
+                          "轮询循环遇到瞬时文件缺失本该重试而非崩掉")
+        self.assertIsInstance(lines, list)
+
+
 if __name__ == "__main__":
     unittest.main()

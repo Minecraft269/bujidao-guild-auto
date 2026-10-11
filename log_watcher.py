@@ -89,6 +89,30 @@ class LogWatcher:
                 pass
             self._fh = None
 
+    def _open_existing(self, wait_seconds=30.0):
+        """打开日志文件,轮转窗口期(文件暂缺)等待后重试。
+
+        返回 True 表示已打开(self._fh 可用);False 表示等了 wait_seconds
+        仍未出现 —— 此时 read_new_lines 返回已读到的行,不抛异常。
+
+        为什么需要:轮转时旧 latest.log 被删、新的还没建,裸 open() 会抛
+        FileNotFoundError。read_new_lines 是 while True 轮询循环,
+        遇到瞬时文件缺失本该重试而不是崩掉(独立审查指出)。
+        """
+        deadline = time.time() + wait_seconds
+        while True:
+            try:
+                self._fh = open(self.path, "rb")
+                return True
+            except FileNotFoundError:
+                if time.time() >= deadline:
+                    logger.log_warning(
+                        f"日志文件 {wait_seconds:.0f} 秒内未重新出现"
+                        f"(可能仍在轮转): {self.path}")
+                    self._fh = None
+                    return False
+                time.sleep(0.2)
+
     # ---- 读取新行 ----
     def discard_buffer(self):
         """first_command=True 时调用:丢弃"前次命令残留"的日志。
@@ -140,7 +164,12 @@ class LogWatcher:
         out = []
         while True:
             if self._fh is None or self._reopen_if_rotated():
-                self._fh = open(self.path, "rb")
+                # 轮转窗口期:旧 latest.log 已删、新的还没建 -> open 会抛
+                # FileNotFoundError。这是**瞬时状态**,轮询循环本就该重试,
+                # 不该把异常抛给调用方(独立审查指出)。等待后重试,
+                # 直到文件重新出现或超出等待上限。
+                if not self._open_existing():
+                    return out
                 # 轮转/重开后从头读新文件(seek 0):
                 #  - 新文件是轮转后刚建的,通常很小,无内存尖峰;
                 #  - 若 seek 到末尾会连"重开前已写入的首批新日志"一起跳过(丢行);
