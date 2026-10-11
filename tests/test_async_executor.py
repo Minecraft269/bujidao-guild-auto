@@ -465,19 +465,53 @@ class TestBroadcastKeyUnique(unittest.TestCase):
         print(f"broadcast key 唯一 PASS: key1!=key2 / 各自结果独立(修复 hash 撞 key bug)")
 
     def test_same_player_two_broadcasts_dont_collide(self):
-        """同一玩家两条 msg(升职/降职不同模板)用不同 player+seq 区分"""
+        """同一玩家两条 msg(升职/降职不同模板)必须用不同 key。
+
+        独立审查发现:原测试的 key1/key2 是**测试自己拼的字面量**
+        (f"__broadcast__:P1:0"),assert key1 != key2 恒为真,对
+        main.async_broadcast 零覆盖(连 main 都没 import)。
+
+        现在改为真正调产品函数取 key —— 判别力来自"同 player 不同 msg"
+        这一真实场景(若产品用 hash(msg) 或只按 player 做键,两条会撞)。
+        """
+        import main
+        from unittest.mock import MagicMock
         from async_executor import AsyncCommandExecutor
         ex = AsyncCommandExecutor(num_workers=1, max_retries=1, retry_delay=0.01)
         ex.start()
-        # 用 player+seq 后,即使同一玩家两条 broadcast 也会用不同 key
-        key1 = f"__broadcast__:P1:0"
-        key2 = f"__broadcast__:P1:1"
-        ex.submit("升职", key1, lambda *_: (True, None))
-        ex.submit("降职", key2, lambda *_: (True, None))
-        ex.join()
-        assert ex.get_result_nowait(key1) is not ex.get_result_nowait(key2)
-        ex.stop(timeout=2)
-        print("同玩家多 broadcast 独立 PASS")
+        try:
+            # 同一玩家、两条不同文案(模板不同 -> 正文不同)
+            key1 = main.async_broadcast(
+                {"commands": {}}, MagicMock(), ex, None, None, lambda: False,
+                "演示甲 这周贡献为:100 执行操作:升职(1次)", "P1", 1, 1.0)
+            key2 = main.async_broadcast(
+                {"commands": {}}, MagicMock(), ex, None, None, lambda: False,
+                "演示甲 这周贡献为:50 执行操作:降职", "P1", 1, 1.0)
+            self.assertNotEqual(key1, key2,
+                                f"同一玩家两条不同广播撞 key:{key1} == {key2}")
+            ex.join()
+            r1, r2 = ex.get_result_nowait(key1), ex.get_result_nowait(key2)
+            self.assertIsNotNone(r1, f"key1 {key1} 取不到结果")
+            self.assertIsNotNone(r2, f"key2 {key2} 取不到结果")
+            self.assertIsNot(r1, r2, "两条结果不应互相覆盖")
+        finally:
+            ex.stop(timeout=2)
+
+    def test_different_players_get_different_keys(self):
+        """不同玩家的广播 key 也必须不同(产品函数产出的 key 才具判别力)。"""
+        import main
+        from unittest.mock import MagicMock
+        from async_executor import AsyncCommandExecutor
+        ex = AsyncCommandExecutor(num_workers=1, max_retries=1, retry_delay=0.01)
+        ex.start()
+        try:
+            k1 = main.async_broadcast({"commands": {}}, MagicMock(), ex,
+                                      None, None, lambda: False, "同一段文案", "PA", 1, 1.0)
+            k2 = main.async_broadcast({"commands": {}}, MagicMock(), ex,
+                                      None, None, lambda: False, "同一段文案", "PB", 1, 1.0)
+            self.assertNotEqual(k1, k2, "不同 player 撞 key")
+        finally:
+            ex.stop(timeout=2)
 
 
 

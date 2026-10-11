@@ -10,6 +10,7 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 首次运行自动生成 config.json;所有业务参数均在配置中,请阅读《配置说明.md》。
 """
 import argparse
+import itertools
 import json
 import os
 import re
@@ -36,6 +37,10 @@ from reporter import write_action_report, write_contribution_report
 from window_input import HumanInput, activate_window, find_game_window
 
 DEFAULT_CONFIG_FILE = "config.json"
+
+# 广播 key 自增序号:同一玩家可能被广播多次(summary + per_player),
+# 只用 player 做键会让后一条结果覆盖前一条。进程内单调即可,无需持久化。
+_BROADCAST_SEQ = itertools.count(1)
 
 # ---------------------------------------------------------------------------
 # 暂停机制(原脚本继承:pynput 全局监听)
@@ -633,12 +638,21 @@ def async_query_member(cfg, watcher, human, hwnd, async_executor,
 def async_broadcast(cfg, executor, async_executor, hwnd, detector, stop_check,
                      msg, player, retries, timeout):
     """纯提交式异步广播:仅 submit,主线程不阻塞等验证;后台失败/重试/补做自动处理。
-    返回 key(player+seq 唯一),主线程最后用 get_result_nowait(key) 取回结果。"""
+    返回 key(player+seq 唯一),主线程最后用 get_result_nowait(key) 取回结果。
+
+    key 必须含**自增 seq** 而不能只用 player:同一玩家可能被广播多次
+    (summary 总广播 + per_player 逐条通知),只用 player 做键会让后一条
+    结果覆盖前一条 —— 主线程取回的是错的那条,通知状态遂不可信
+    (原测试断言的是自己拼的字面量所以恒真;改成真调本函数后立刻抓到
+    两条 key 都是 __broadcast__:P1)。
+
+    seq 用 itertools.count 保证进程内单调;CPython 下 next() 对 int 自增是
+    原子的,多线程调用不需额外加锁。
+    """
     def verify(_cmd, _pid):
         ok, err = executor.gc_broadcast_with_retry(msg, retries=retries, timeout=timeout)
         return ok, err
-    # player+seq 组合避免 hash(msg) 碰撞(summry 与 per_player 文本相似时撞)
-    pid_key = f"__broadcast__:{player}"
+    pid_key = f"__broadcast__:{player}:{next(_BROADCAST_SEQ)}"
     async_executor.submit(f"/gc broadcast({len(msg)}字->{player})", pid_key, verify)
     return pid_key
 

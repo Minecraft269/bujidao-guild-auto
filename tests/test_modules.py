@@ -187,6 +187,33 @@ class TestReports(unittest.TestCase):
         p = write_action_report(self.d, "G", recs, {"contact_text": "c{admin}", "admin": "A"})
         self.assertIn("【未执行】(1人)", open(p, encoding="utf-8").read())
 
+    def test_action_display_unknown_action_is_not_a_real_op(self):
+        """未知动作名不得显示成任何具体操作 —— reporter 侧护栏。
+
+        独立审查发现:全 tests/ 对 action_display 零直接调用,
+        reporter 的 return "未知" 从未被测(变异体:改成 return "升职"
+        能让 748 项测试全绿)。
+
+        现在钉住这个兜底值。它与 test_actions_logic 的
+        test_unknown_action_kind_keeps_rank / test_unknown_action_raises
+        对称 —— 三个下游(reporter / new_rank_after / build_command)
+        各有护栏,未来任一处退化都会被抓到。
+
+        审查明确建议"补断言而非改产品代码":"未知"本就是不可达分支的
+        合理兜底,改它反而是在给死分支加行为。
+        """
+        from reporter import action_display
+        self.assertEqual(action_display(["unknown_action"]), "未知")
+        self.assertEqual(action_display([]), "无")
+
+    def test_action_display_real_operations(self):
+        """正向:四种真实操作的展示文本与报告口径一致。"""
+        from reporter import action_display
+        self.assertEqual(action_display(["promote"]), "升职(1次)")
+        self.assertEqual(action_display(["promote"] * 3), "升职(3次)")
+        self.assertEqual(action_display(["demote"]), "降职")
+        self.assertEqual(action_display(["kick"]), "踢出")
+
 
 class TestConfigContract(unittest.TestCase):
     """config: JSONC round-trip、深合并向前兼容、校验。"""
