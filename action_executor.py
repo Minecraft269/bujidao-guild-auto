@@ -125,9 +125,36 @@ class ActionExecutor:
         self._ensure_window()
         self._send_with_gate(f"{prefix} {text}")
 
+    @staticmethod
+    def _guild_block_lines(lines):
+        """只取**公会的会面板**内的 [CHAT] 正文。
+
+        为什么必须过滤载体:真实回显由服务端以面板块下发 —— 两条分隔线
+        (--------------------公会---------------------)夹着中间内容。而任意玩家
+        在公屏/公会频道打一句同样的字,没有这层包裹。若不区分载体,
+        任何人打一句 "甲被管理员踢出演示公会！" 就能让脚本把没踢掉的
+        玩家记成已成功(假成功 → 漏踢,而报告会说"已执行")。
+
+        实现直接复用 log_watcher.extract_chat_block —— 它已处理网易版
+        "整块面板是一条物理行 + 内部字面 \\n" 的形态。自己再写一份解析
+        必然漏掉某个真实形态(我第一版就是这么写错的:漏了 \\n 还原,
+        导致所有真实面板都取不到内容)。
+        """
+        try:
+            from log_watcher import extract_chat_block, split_messages
+            block = extract_chat_block(split_messages(list(lines))[0]) \
+                if split_messages(list(lines)) else None
+        except Exception:
+            return []
+        return list(block) if block else []
+
     def _find_success(self, action, player, lines):
-        """根据操作类型检查成功回显。返回成功消息或 None。"""
-        text = "\n".join(lines)
+        """根据操作类型检查成功回显。返回 True/False。
+
+        只认**公会的会面板**内的回显(见 _guild_block_lines)——
+        公屏任意聊天行不能当成功证据,否则可被伪造成"已踢出/已降职"。
+        """
+        text = "\n".join(self._guild_block_lines(lines))
         if action == "promote" or action == "demote":
             # 匹配 "成功设置{player}的职位为{rank_name}!"
             # 由于 rank_name 未知，我们只检查是否包含 "成功设置" 和 player

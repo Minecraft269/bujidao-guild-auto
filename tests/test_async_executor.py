@@ -160,10 +160,20 @@ class TestPauseGate(unittest.TestCase):
             self.player_holder = player_holder or {}
 
         def read_until(self, timeout=4.0):
-            # 模拟游戏回显:返回含"当前执行玩家"成功标记的行
+            # 模拟游戏回显:返回含"当前执行玩家"成功标记的行。
+            # 必须是**真实面板形态**(两条分隔线夹内容)——
+            # executor._find_success 只认面板块内的回显,公屏裸行会被
+            # 当伪造行过滤掉(独立审查加固的公屏伪造防护)。
             time.sleep(0.05)
             p = self.player_holder.get("current", "PX")
-            return [f"[CHAT] 成功设置{p}的职位为高活跃成员!"]
+            panel = "\\n".join([
+                "--------------------公会---------------------",
+                f"成功设置{p}的职位为高活跃成员!",
+                "--------------------------------------------",
+            ])
+            return ["[148月2026 21:55:41.046] [Render thread/INFO] "
+                    "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
+                    + panel + " [C]"]
 
     def setUp(self):
         import action_executor as actions_mod

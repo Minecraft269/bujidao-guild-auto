@@ -181,10 +181,19 @@ def parse_weekly_exp(lines):
       * 段内非日期、非今天的其它数值行也计入(面板新增字段,与原脚本一致)。
 
     daily: [(日期 或 "今天", 数值), ...],只含能识别出标签的行(供报告展示)。
+
+    **数据缺失与真实零贡献必须区分**:若段内标题存在却一行有效数值都解析不出
+    (全部被网易遮成 *** / ??? 之类),抛 ParseError 而不是返回 0。
+    否则 0 会被当成真实周贡献 —— entry 玩家 0 < 3500 直接判定踢出,
+    mid 玩家 0 < 5000 判定降职。宁可漏一人,不可错踢一人(独立审查指出)。
+
+    注:这不改 §4 的计算口径,只补"解析不出时不得伪装成 0"这一层保护 ——
+    继承清单规定的是怎么加总,没规定加不出东西时该假装有结果。
     """
     total = 0
     daily = []
     in_section = False
+    parsed_any = False
     for raw in lines:
         s = _strip_all(raw)
         if not s:
@@ -210,8 +219,13 @@ def parse_weekly_exp(lines):
                 label, number = None, mf.group(1)
         value = _to_int(number, s)
         total += value
+        parsed_any = True
         if label is not None:
             daily.append((label, value))
+    if in_section and not parsed_any:
+        raise ParseError(
+            "周贡献段存在但一行有效数值都没解析到(可能被网易屏蔽词遮成 *** 或 ???): "
+            "无法区分「真实零贡献」与「数据缺失」,不做任何升/降/踢判定,需人工确认")
     return total, daily
 
 

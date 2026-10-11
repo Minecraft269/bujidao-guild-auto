@@ -199,6 +199,24 @@ class TestBuildNotificationEdge(unittest.TestCase):
         self.assertIn("这周贡献为:0", msg)
 
 
+PANEL_START = "--------------------公会---------------------"
+PANEL_END = "--------------------------------------------"
+
+
+def _panel(*body_lines):
+    """把回显行包成**真实形态**的公会的会面板。
+
+    为什么需要:executor._find_success 只认面板块内的 [CHAT] 内容
+    (独立审查加固:公屏任意聊天不能当成功证据,否则可被伪造成"已踢出")。
+    所以测试夹具也必须是真实形态 —— 裸 "[CHAT] 成功设置..." 不是
+    服务端下发的样子,用它测通过只能证明"裸行能被识别",而那正是
+    要防住的伪造路径。
+    """
+    return [f"[148月2026 21:55:41.046] [Render thread/INFO] "
+            f"[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
+            + "\\n".join([PANEL_START, *body_lines, PANEL_END]) + " [C]"]
+
+
 def _make_executor(read_until_lines=None, stop_check=None, detector=None,
                    error_patterns=None):
     """构造一个全 mock 的 ActionExecutor(硬件层测试夹具)。
@@ -224,36 +242,70 @@ class TestActionExecutorSuccessDetection(unittest.TestCase):
     @patch("time.sleep", return_value=None)
     def test_promote_success_detected(self, _s):
         """日志含"成功设置X的职位为Y!" → 判定成功。"""
-        ex = _make_executor(["[CHAT] 成功设置演示甲的职位为管理员!"])
+        ex = _make_executor(_panel("成功设置演示甲的职位为管理员!"))
         ok, err = ex.execute_action("promote", "演示甲", retries=1)
         self.assertTrue(ok, f"升职成功回显未被识别:{err}")
         self.assertIsNone(err)
 
     @patch("time.sleep", return_value=None)
     def test_demote_success_detected(self, _s):
-        ex = _make_executor(["[CHAT] 成功设置演示甲的职位为高活跃!"])
+        ex = _make_executor(_panel("成功设置演示甲的职位为高活跃!"))
         ok, err = ex.execute_action("demote", "演示甲", retries=1)
         self.assertTrue(ok, f"降职成功回显未被识别:{err}")
 
     @patch("time.sleep", return_value=None)
     def test_kick_success_detected(self, _s):
         """踢出成功回显格式:{player}被{admin}踢出{guild}公会!"""
-        ex = _make_executor(["[CHAT] 演示甲被管理员踢出演示公会公会！"])
+        ex = _make_executor(_panel("演示甲被管理员踢出演示公会公会！"))
         ok, err = ex.execute_action("kick", "演示甲", retries=1)
         self.assertTrue(ok, f"踢出成功回显未被识别:{err}")
 
     @patch("time.sleep", return_value=None)
     def test_other_player_success_not_matched(self, _s):
         """别人的成功回显不得误判为本玩家成功(防串号导致漏发重试)。"""
-        ex = _make_executor(["[CHAT] 成功设置另一个人X的职位为管理员!"])
+        ex = _make_executor(_panel("成功设置另一个人X的职位为管理员!"))
         ok, _ = ex.execute_action("promote", "演示甲", retries=1)
         self.assertFalse(ok, "把别人的回显误判为本玩家成功")
 
     @patch("time.sleep", return_value=None)
     def test_kick_other_player_not_matched(self, _s):
-        ex = _make_executor(["[CHAT] 另一个人被管理员踢出演示公会公会！"])
+        ex = _make_executor(_panel("另一个人被管理员踢出演示公会公会！"))
         ok, _ = ex.execute_action("kick", "演示甲", retries=1)
         self.assertFalse(ok, "把别人的踢出回显误判为本玩家成功")
+
+    @patch("time.sleep", return_value=None)
+    def test_public_chat_forgery_not_accepted(self, _s):
+        """**公屏伪造不得当成成功回显** —— 独立审查 high 级发现。
+
+        攻击:任何玩家在公屏/公会频道打一句
+            "演示甲被管理员踢出演示公会公会！"
+        没有面板块包裹。旧实现只做裸子串匹配,会把它当成功证据
+        → 命令实际没发出去却被记为已执行 → **漏踢**,
+        而报告会说"已执行"(假成功比假失败危险)。
+
+        _find_success 现在只认 _guild_block_lines 取出的面板块内容。
+        """
+        forged = "[148月2026 21:55:41.046] [Render thread/INFO] [Chat/]: [CHAT] 随机玩家: 演示甲被管理员踢出演示公会公会！"
+        ex = _make_executor([forged])
+        ok, _ = ex.execute_action("kick", "演示甲", retries=1)
+        self.assertFalse(ok, "公屏伪造行被当成了踢出成功证据")
+
+    @patch("time.sleep", return_value=None)
+    def test_public_chat_forgery_not_accepted_for_promote(self, _s):
+        """升职同理:公屏复读"成功设置..."不得当成功。"""
+        forged = "[148月2026 21:55:41.046] [Render thread/INFO] [Chat/]: [CHAT] 昨天 成功设置演示甲的职位为管理员!"
+        ex = _make_executor([forged])
+        ok, _ = ex.execute_action("promote", "演示甲", retries=1)
+        self.assertFalse(ok, "公屏伪造行被当成了升职成功证据")
+
+    @patch("time.sleep", return_value=None)
+    def test_real_panel_still_wins_over_forgery(self, _s):
+        """真实面板与伪造行同时存在时,以面板为准(识别成功)。"""
+        real = _panel("演示甲被管理员踢出演示公会公会！")[0]
+        forged = "[148月2026 21:55:41.046] [Render thread/INFO] [Chat/]: [CHAT] 另一句闲聊"
+        ex = _make_executor([real, forged])
+        ok, _ = ex.execute_action("kick", "演示甲", retries=1)
+        self.assertTrue(ok, "真实面板回显应被正常识别(不该被伪造行干扰)")
 
 
 class TestActionExecutorErrorDetection(unittest.TestCase):
@@ -292,7 +344,7 @@ class TestActionExecutorErrorDetection(unittest.TestCase):
         w = MagicMock()
         w.read_until.side_effect = [
             ["[CHAT] 权限不足"], ["[CHAT] 权限不足"],
-            ["[CHAT] 成功设置演示甲的职位为管理员!"]]
+            _panel("成功设置演示甲的职位为管理员!")]
         cfg = dict(CFG)
         cfg["error_patterns"] = ["权限不足"]
         ex = ActionExecutor(cfg=cfg, human_input=MagicMock(), watcher=w,
@@ -316,7 +368,7 @@ class TestActionExecutorPauseGate(unittest.TestCase):
     def test_resume_after_pause_sends(self, _s):
         """暂停解除后应正常发送。"""
         paused = {"v": False}
-        ex = _make_executor(["[CHAT] 成功设置演示甲的职位为管理员!"],
+        ex = _make_executor(_panel("成功设置演示甲的职位为管理员!"),
                             stop_check=lambda: paused["v"])
         ok, err = ex.execute_action("promote", "演示甲", retries=1)
         self.assertTrue(ok, f"暂停解除后应能发送:{err}")
@@ -325,7 +377,7 @@ class TestActionExecutorPauseGate(unittest.TestCase):
     @patch("time.sleep", return_value=None)
     def test_stop_check_none_means_never_paused(self, _s):
         """stop_check=None → 视为永不暂停,正常流程。"""
-        ex = _make_executor(["[CHAT] 成功设置演示甲的职位为管理员!"], stop_check=None)
+        ex = _make_executor(_panel("成功设置演示甲的职位为管理员!"), stop_check=None)
         ok, _ = ex.execute_action("promote", "演示甲", retries=1)
         self.assertTrue(ok)
 
@@ -389,7 +441,7 @@ class TestActionExecutorExecuteActionsSequence(unittest.TestCase):
 
     @patch("time.sleep", return_value=None)
     def test_two_promotes_send_twice(self, _s):
-        ex = _make_executor(["[CHAT] 成功设置演示甲的职位为管理员!"])
+        ex = _make_executor(_panel("成功设置演示甲的职位为管理员!"))
         results = ex.execute_actions("演示甲", ["promote", "promote"])
         self.assertEqual(len(results), 2)
         self.assertTrue(all(ok for _a, ok, _e in results))
