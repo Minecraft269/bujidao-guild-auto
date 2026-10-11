@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 main.py —— 布吉岛公会管理脚本(全自动版)入口
 =============================================
@@ -34,6 +34,7 @@ from log_watcher import LogWatcher, detect_encoding
 import parsers
 from parsers import ParseError, parse_guild_list, parse_guild_member
 from reporter import write_action_report, write_contribution_report
+from stages import stage_confirm_execution, stage_notify, stage_query_async
 from window_input import HumanInput, activate_window, find_game_window
 
 DEFAULT_CONFIG_FILE = "config.json"
@@ -43,19 +44,22 @@ DEFAULT_CONFIG_FILE = "config.json"
 _BROADCAST_SEQ = itertools.count(1)
 
 # ---------------------------------------------------------------------------
-# 暂停机制(原脚本继承:pynput 全局监听)
+# 暂停机制(pynput 全局监听)
 # ---------------------------------------------------------------------------
-_paused = False
-_pause_lock = threading.Lock()
-_reset_needed = False          # 暂停恢复后需要重置界面
-_reset_lock = threading.Lock()  # 保护重置标志
-# 暂停事件:主线程后台链路在 wait/IO 阻塞时也会被 _toggle_pause 置位,
-# wait_if_paused / wait_for_chat_block 等通过 _pause_event.wait() 立即响应。
-# 修复"pynput on_press 里 raise KeyboardInterrupt 会被 pynput 静默吞掉"的根因:
-# pynput 监听线程对回调抛出的异常只 log 不重抛,导致主线程根本收不到 KeyboardInterrupt。
-# 现在 on_press 仅设事件,主线程的阻塞调用通过 event.wait() 主动感知。
-_pause_event = threading.Event()
-
+# 暂停状态的单一所有者是 runtime.py(pynput 监听线程写、主线程/后台读)。
+# 这里 re-export 给历史调用方,新代码请直接 import runtime。
+from runtime import (  # noqa: E402
+    _pause_event,
+    _pause_key,
+    _pause_key_name,
+    _pause_lock,
+    _paused,
+    _reset_lock,
+    _reset_needed,
+    consume_reset_flag,
+    is_paused,
+    set_reset_needed,
+)
 
 def _toggle_pause():
     # 修复"暂停键失效":按 u 后 pynput on_press 回调里 raise KeyboardInterrupt 会被 pynput
@@ -598,148 +602,6 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
     return None
 
 
-def stage_query_async(rt, targets, cfg):
-    """异步(后台)模式的查询阶段 —— 流程规格 B→D→E 的落地。
-
-    规格语义(plan.txt 第 21-24 行):
-        B → 逐条发送指令:脚本【不读日志、不验证】→ 全部发送完毕后等待 → D
-        B → 后台系统读日志并验证 → 成功的:忽略并抛弃;失败的:记录结果等待 → E
-        E → D:若有失败且需重试则重试(仅发送一次,后台继续验证)→ B(必须防死锁)
-
-    与旧实现的根本区别:旧 async_query_member 把 send_and_capture(含读日志+解析)
-    投给 AsyncCommandExecutor 的 worker,主线程再 _join_with_progress 等它 ——
-    "发送节奏仍被后台验证速度拖住",没有达到规格要的"发得更快"。
-
-    本函数按规格实现:
-      1. send_fn 只负责**把指令发出去**(_send_only,不读日志、不解析);
-      2. verify_fn 由后台验证线程调用(读日志 → extract → parse → 判定);
-      3. 主线程只调 run_async_round,内部"只发不验 + 后台验证 + 失败重试";
-
-    返回 (records, failures)。records 供阶段3 判定,failures 进报告。
-    """
-    from async_system import AsyncVerifySystem, run_async_round
-
-    cmds = cfg["commands"]
-    timeout = float(cfg["timeouts"].get("response_wait", 12.0))
-    sw = cfg.get("switches", {})
-
-    # ---- 发送器:主线程侧只"发出去",不读日志、不验证 ----
-    watcher = rt.watcher
-
-    def send_only(cmd, player, meta):
-        """只发送指令。**不读日志、不解析、不判定** —— 规格的核心要求。"""
-        wait_if_paused()
-        rt.reset_window_state_after_pause(rt.hwnd, rt.detector)
-        if sw.get("verbose_log", True):
-            console(f"  → {cmd}")
-        rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
-        rt.human.wait_between_commands()
-
-    # ---- 验证器:后台线程调用,负责读日志 + 解析 + 判定 ----
-    def verify(cmd, player, meta):
-        """后台验证一条已发送的查询指令。
-
-        这是"所有指令发送后必须有读取日志并验证操作"(验收第7条)在异步模式
-        下的承担者。成功返回 (True, None, info_dict);失败返回 (False, reason, None)。
-        """
-        block = watcher.wait_for_chat_block(timeout=timeout, stop_check=rt.is_paused)
-        if block is None:
-            return False, "等待响应超时", None
-        try:
-            info = parse_guild_member(block, expected_id=player)
-        except ParseError as e:
-            return False, f"解析失败:{e}", None
-        return True, None, info
-
-    system = AsyncVerifySystem(verify_fn=verify, task_timeout=timeout + 5.0)
-    system.attach_sender(send_only)
-
-    commands = [(cmds["guild_member"].format(player=pid), pid) for _rk, pid in targets]
-    rank_of = {pid: rk for rk, pid in targets}
-
-    logger.log_info(f"(异步)阶段2 查询: {len(commands)} 条指令,主线程只发不验")
-    ok_snaps, failed_snaps = run_async_round(
-        system, commands, send_only,
-        max_retries=int(cfg.get("timeouts", {}).get("max_retries", 3)))
-    system.stop()
-
-    records, failures = [], []
-    for snap in ok_snaps:
-        info = snap.get("data")
-        if isinstance(info, dict):
-            info["rank"] = rank_of.get(snap["player"], snap["player"])
-            records.append(info)
-            if sw.get("verbose_log", True):
-                console(f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} "
-                        f"| 上次在线: {info['last_online']}")
-    for snap in failed_snaps:
-        pid = snap["player"]
-        reason = snap.get("error") or "查询失败"
-        if parsers.is_masked_name(pid):
-            reason = "查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
-        failures.append({"player": pid, "rank": rank_of.get(pid, ""), "reason": reason})
-        logger.log_error(f"(异步)查询失败({reason}): {pid}")
-
-    logger.log_info(f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)}")
-    return records, failures
-
-
-def stage_confirm_execution(rt, records, cfg):
-    """执行前的两道用户确认 —— 验收第 9 条 + kick 二次确认。
-
-    流程规格:
-        执行阶段:执行前需用户确认(kick 需二次确认)
-
-    两道门:
-      1) 总确认      —— 列出升/降/踢人数,输入 y 或回车=执行,n=跳过(只出报告)
-      2) kick 二次确认 —— 踢出不可逆,需输入 kick-confirm,任何其他输入都跳过全部踢出
-                          (升/降照常;被跳过的 kick 标 error,不会被再次执行)
-
-    返回 (execution_enabled, skipped_kicks):
-      execution_enabled   False 表示用户拒绝执行(只输出报告)
-      skipped_kicks       True 表示 kick 被跳过(总确认可能仍通过)
-
-    纯逻辑:所有输入都走 rt.confirm()(可注入),不直接碰 input(),
-    于是"用户拒绝时不得执行任何命令"这条能被测试锁死。
-    """
-    sw = cfg.get("switches", {})
-    actionable = [r for r in records if r.get("actions")]
-    execution_enabled = bool(sw.get("execution_enabled", True))
-
-    # 没有可执行项时不做任何确认(不拿无意义的提示打扰用户)
-    if not actionable:
-        return execution_enabled, False
-
-    n_p = sum(1 for r in actionable if r["actions"][0] == "promote")
-    n_d = sum(1 for r in actionable if r["actions"][0] == "demote")
-    n_k = sum(1 for r in actionable if r["actions"][0] == "kick")
-    console(f"待执行操作: 升职 {n_p} 人, 降职 {n_d} 人, 踢出 {n_k} 人")
-
-    # ---- 门 1:总确认 ----
-    ans = rt.ask("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(仅输出报告)",
-                 default=True)
-    if not ans:
-        console("已跳过执行(仅输出报告)")
-        execution_enabled = False
-
-    # ---- 门 2:kick 二次确认(踢出不可逆) ----
-    pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
-    skipped_kicks = False
-    if execution_enabled and pending_kicks and cfg.get("kick_confirm", True):
-        console(f"⚠ 即将踢出 {len(pending_kicks)} 人(不可逆): "
-                f"{[r['player'] for r in pending_kicks]}")
-        ans = rt.ask("确认执行踢出?输入 kick-confirm 后回车执行,其他输入跳过踢出",
-                     default=False)
-        if not ans:
-            console("已跳过全部踢出(其他操作照常执行)")
-            for r in pending_kicks:
-                r["executed"] = True   # 标记已处理,防止执行循环再次执行(不可逆操作)
-                r["error"] = "kick 已按确认要求跳过"
-                r["new_rank"] = r["rank"]
-            skipped_kicks = True
-
-    return execution_enabled, skipped_kicks
-
 
 def async_query_member(cfg, watcher, human, hwnd, async_executor,
                        detector, stop_check, pid):
@@ -908,178 +770,6 @@ def parse_args():
     ap.add_argument("--debug", action="store_true", help="启用 debug 模式（覆盖配置）")
     ap.add_argument("--debug-skip", default=None, help="跳过的阶段列表，逗号分隔，如 'list,member'")
     return ap.parse_args()
-
-
-class Runtime:
-    """编排层依赖容器 —— main.py 从"不可测"变"可测"的关键。
-
-    背景:旧 main() 在函数体内直接调 LogWatcher / GameStateDetector /
-    find_game_window / start_pause_listener / input(),硬件依赖与流程编排缠死,
-    导致 main.py 覆盖率只有 8%,而它占了项目总体覆盖率缺口的 95% ——
-    总体门禁(≥85%)无论如何都过不去。
-
-    做法:把**所有与外界交互的东西**收进这个容器,并允许整体注入替换:
-      * watcher     日志读取(真实读 latest.log)
-      * human       键鼠输入(真实按键/剪贴板)
-      * executor    命令执行与回显验证
-      * detector    OCR 界面检测
-      * hwnd        游戏窗口句柄
-      * ask_confirm 用户确认(默认 input();测试注入返回 True/False 的可调用)
-      * sleep       休眠(默认 time.sleep;测试注入 no-op 让用例秒级完成)
-
-    阶段函数只拿 Runtime 当参数,不再自己 import 硬件模块 ——
-    于是每个阶段都能用假 Runtime 单独驱动。
-
-    注意:confirm() 返回 False 时,调用方必须**放弃后续操作直接返回**,
-    不得继续发送任何命令。这是"每个阶段推进前等用户确认"的执行点。
-    """
-
-    def __init__(self, cfg, watcher=None, human=None, executor=None, detector=None,
-                 hwnd=None, ask_confirm=None, sleep=None, listener=None,
-                 async_executor=None, async_enabled=False, stop_check=None):
-        self.cfg = cfg
-        self.watcher = watcher
-        self.human = human
-        self.executor = executor
-        self.detector = detector
-        self.hwnd = hwnd
-        self.listener = listener
-        self.async_executor = async_executor
-        # 异步(后台)模式开关:默认 False = 串行(流程规格的默认模式)。
-        # True 时主线程"只发不验",验证交给 async_system 的后台线程。
-        self.async_enabled = bool(async_enabled)
-        # 用户确认点:默认走终端 input();测试注入可控的假实现
-        self.ask_confirm = ask_confirm if ask_confirm is not None else _default_confirm
-        # 时间源可注入,避免测试真的等 N 秒
-        self.sleep = sleep if sleep is not None else time.sleep
-        # 暂停查询:默认读 main 模块级 _paused(供 send_only/verify 用);
-        # 测试可注入恒 False 的回调。
-        self.is_paused = stop_check if stop_check is not None else (lambda: _paused)
-
-    def reset_window_state_after_pause(self, hwnd=None, detector=None):
-        """发送前重置窗口状态(暂停恢复后有残留菜单时)。
-
-        委托给模块级同名函数;hwnd/detector 可覆盖(测试隔离用)。
-        """
-        return reset_window_state_after_pause(
-            self.hwnd if hwnd is None else hwnd,
-            self.detector if detector is None else detector)
-
-    def confirm(self, prompt, default=False):
-        """统一的阶段确认点。
-
-        返回 True 表示用户同意继续;False 表示拒绝 —— 调用方必须立即停止后续操作
-        (尤其是升/降/踢这类破坏性操作)。
-
-        ask_confirm 契约:接收 (prompt, default),返回 bool。
-        default=True 时(如"按回车继续"),空输入视为同意。
-        """
-        try:
-            return bool(self.ask_confirm(prompt, default))
-        except (EOFError, KeyboardInterrupt):
-            # 终端被关闭 / 用户按 Ctrl+C:一律按"拒绝"处理 ——
-            # 宁可停下,也不能在状态不明时继续发命令
-            return False
-
-    def ask(self, prompt, default=False):
-        """向用户提问,返回 True=是 / False=否(或未确认)。
-
-        与 confirm() 的区别:confirm 面向"阶段边界是否继续",语义是
-        "默认同意、拒绝即停";ask 面向"要一个明确的是/否答案",
-        默认值由调用方给(kick 二次确认默认 False = 不输字样就不执行)。
-
-        同样兜底 EOF/Ctrl+C → False(拒绝),绝不在状态不明时继续发命令。
-        """
-        try:
-            return bool(self.ask_confirm(prompt, default))
-        except (EOFError, KeyboardInterrupt):
-            return False
-
-    def close(self):
-        """释放本 Runtime 持有的资源(幂等,异常不外抛)。"""
-        for name in ("watcher", "async_executor", "listener"):
-            obj = getattr(self, name, None)
-            if obj is None:
-                continue
-            try:
-                obj.stop(timeout=3) if name == "async_executor" else obj.close()
-            except Exception as e:
-                logger.log_debug(f"Runtime.close: {name} 释放异常 {e!r}")
-
-
-def _default_confirm(prompt, default=False):
-    """默认的终端确认实现。空输入时按 default 取值。"""
-    suffix = " [Y/n] " if default else " [y/N] "
-    try:
-        ans = input(prompt + suffix).strip().lower()
-    except EOFError:
-        return False
-    if not ans:
-        return default
-    return ans in ("y", "yes", "是", "好", "确认")
-
-
-def build_runtime(cfg, console_fn=None):
-    """构造**真实** Runtime:接真实日志、真实键鼠、真实 OCR。
-
-    单独抽出来的目的:让 main() 不再亲手碰硬件 —— main() 只接受一个
-    已构造好的 Runtime,于是测试可以传假 Runtime 驱动完整流程。
-
-    console_fn 可注入输出函数(默认 config.console),便于测试捕获提示文本。
-
-    失败(SystemExit / 异常)由调用方处理;本函数不吞异常。
-    """
-    console_fn = console_fn or console
-    watcher = LogWatcher(
-        cfg["game_log"],
-        encoding=cfg.get("log_encoding", "auto"),
-        poll_interval_ms=int(cfg.get("timeouts", {}).get("poll_interval_ms", 300)),
-    )
-    watcher.open()
-    console_fn(f"日志已连接: {cfg['game_log']} (编码 {watcher.encoding})")
-
-    def is_paused():
-        return _paused
-
-    human = HumanInput(cfg, stop_check=is_paused)
-    console_fn(f"聊天键: {human.chat_key}(来自 {'options.txt' if cfg['chat_key']=='auto' else '配置'})")
-
-    # 聊天键是 enter 时警告但不拒绝:网易版 enter 是发送键不是开聊天栏键
-    if human.chat_key == "enter":
-        console_fn("⚠ 警告:聊天键设置为 'enter',网易版 enter 是发送键不是开聊天栏键,")
-        console_fn("  可能导致 _open_chat 按下后聊天栏未开,后续重试死循环")
-        console_fn("  建议:config.json chat_key 改为 't' 或 '/' 之类(读取开聊天栏的键)")
-        console_fn("  仍然继续运行——若发生死循环,可按 u 暂停/Ctrl+C 退出")
-
-    # 界面状态检测器(菜单 OCR;不可用自动降级为纯试错式发送)
-    detector = None
-    sc = cfg.get("state_check", {})
-    if sc.get("enabled", True):
-        detector = GameStateDetector(
-            sc.get("menu_keywords"), sc.get("chat_bar_keywords"),
-            float(sc.get("cache_seconds", 3.0)),
-            chat_bar_state=sc.get("chat_bar_state", "auto"),
-        )
-        if not detector.available:
-            console_fn("⚠ 界面状态检测不可用(缺少 winsdk/系统OCR),使用试错式发送")
-        else:
-            console_fn("界面状态检测已启用(菜单界面自动 Esc;发送:首条直接粘贴试探,"
-                       "无响应自动开聊天栏重试,仍失败暂停等待用户)")
-
-    hwnd = find_game_window(cfg["window_keywords"])
-    if hwnd:
-        console_fn("游戏窗口已找到(将在倒计时结束后自动置前)")
-    else:
-        console_fn("⚠ 未找到游戏窗口(请确认游戏已启动、窗口标题包含关键词)")
-
-    executor = ActionExecutor(cfg, human, watcher, hwnd=hwnd, detector=detector,
-                              stop_check=is_paused)
-    # 注入暂停恢复标志的消费函数:reset_ui / _send_with_gate 内部据此在
-    # "恢复后首次发送前"执行 Esc+OCR 菜单重置
-    executor.set_reset_hook(_consume_reset_flag)
-
-    return Runtime(cfg=cfg, watcher=watcher, human=human, executor=executor,
-                   detector=detector, hwnd=hwnd)
 
 
 def prepare_config(args, console_fn=None, exit_fn=None):
@@ -1404,81 +1094,9 @@ def main():
             # 确保所有记录都有 actions（已在 generate 中设置）
             pass
 
-        # 7. 通知(/gc,查询完成后、执行前)
-        # debug skip notify:跳过真实广播(模拟数据不得发进真实公会频道)
-        debug_notify_skipped = (debug.get("enabled")
-                                and "notify" in debug.get("skip_stages", []))
-        if sw["notify_enabled"] and not debug_notify_skipped:
-            logger.log_info("阶段4 起点: 发送 /gc 通知")
-            logger.log_info(f"阶段3 完成: 判定完成 actionable={sum(1 for r in records if r.get('actions'))}")
-            console("[4/5] 发送 /gc 通知 ...")
-            logger.log_info(f"准备发送 {len(records)} 条通知(模式: {sw.get('notify_mode', 'summary')})")
-            if not records:
-                console("  无玩家需要通知，跳过 /gc")
-            else:
-                mode = sw.get("notify_mode", "summary")
-                retries = int(cfg["timeouts"].get("max_retries", 3))
-                timeout = float(cfg["timeouts"].get("error_check_window", 4.0))
-
-                if mode == "summary":
-                    wait_if_paused()
-                    reset_window_state_after_pause(hwnd, detector)
-                    msg = build_summary_message(records, cfg)
-                    if async_executor is not None:
-                        # 原始要求"主线程不进行任何验证 快速完成所有指令和操作由异步系统进行验证"
-                        # ——不 join:主线程 submit 后立即推报告。失败由后台 retry_queue 兜底,finally 收尾。
-                        bc_key = async_broadcast(cfg, executor, async_executor, hwnd, detector,
-                                                is_paused, msg, "summary", retries, timeout)
-                        res = async_executor.get_result_nowait(bc_key)
-                        bc_status = "(后台重试中)" if res is None else (
-                            "验证成功" if res.get("status") == "ok" else f"失败: {res.get('error', '结果缺失')}")
-                        console(f"  /gc {msg} {bc_status}")
-                        if res is not None and res.get("status") != "ok":
-                            logger.log_warning(f"/gc 广播失败: {res.get('error', '结果缺失')}")
-                    else:
-                        ok, err = executor.gc_broadcast_with_retry(msg, retries=retries, timeout=timeout)
-                        if ok:
-                            console(f"  /gc {msg} (验证成功)")
-                        else:
-                            console(f"  /gc 广播失败: {err}")
-                else:  # per_player —— 继承清单 §3:对每个查询成功成员发送(含无操作玩家)
-                    if async_executor is not None:
-                        # 纯提交式:仅向后台队列提交任务,主线程不阻塞等验证
-                        # 循环提交完后阶段内 join 一次等所有 retries 完成
-                        bc_keys = []
-                        for r in records:
-                            wait_if_paused()
-                            reset_window_state_after_pause(hwnd, detector)
-                            msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
-                            bc_keys.append(async_broadcast(cfg, executor, async_executor, hwnd, detector,
-                                                          is_paused, msg, r["player"], retries, timeout))
-                            human.wait_between_commands()
-                        # 原始要求"主线程不进行任何验证 快速完成所有指令和操作由异步系统进行验证"
-                        # ——不 join:submit 后立即推下一阶段(执行)。失败入 retry_queue 兜底,finally 收尾。
-                        for r, key in zip(records, bc_keys):
-                            res = async_executor.get_result_nowait(key)
-                            bc_status = "(后台重试中)" if res is None else (
-                                "验证成功" if res.get("status") == "ok" else f"失败: {res.get('error')}")
-                            console(f"  /gc {r['player']}: 周贡献 {r['weekly_total']} → /gc 发送 {bc_status}")
-                            if res is not None and res.get("status") != "ok":
-                                logger.log_warning(f"/gc 广播失败 [{r['player']}]: {res.get('error', '结果缺失')}")
-                    else:
-                        for r in records:
-                            wait_if_paused()
-                            reset_window_state_after_pause(hwnd, detector)
-                            msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
-                            ok, err = executor.gc_broadcast_with_retry(msg, retries=retries, timeout=timeout)
-                            if ok:
-                                console(f"  /gc {msg} (验证成功)")
-                            else:
-                                console(f"  /gc 广播失败: {err}")
-                                logger.log_warning(f"/gc 广播失败 [{r['player']}]: {err}")
-                            human.wait_between_commands()
-        else:
-            if debug_notify_skipped:
-                console("Debug: 跳过通知(notify 在 skip_stages,不向真实频道广播)")
-            else:
-                console("[4/5] 通知已关闭,跳过 /gc")
+        # 7. 通知(/gc,查询完成后、执行前) —— 见 stage_notify
+        notify_failures = stage_notify(rt, records, cfg, debug_notify_skipped)
+        failures.extend(notify_failures)
 
         # 8. 执行(先询问是否执行)
         logger.log_info("阶段5 起点: 执行操作")
