@@ -498,17 +498,30 @@ class TestConsole(unittest.TestCase):
     """终端分级输出(补 604-610 缺口)。"""
 
     def test_console_levels_do_not_raise(self):
-        """各级别都应能输出且不抛异常。"""
+        """六个级别逐个调用都不得抛异常(反向断言)。"""
         for level in ("info", "warning", "error", "debug", "critical", "trace"):
-            console(f"测试消息 {level}", level)
+            try:
+                console(f"测试消息 {level}", level)
+            except Exception as e:   # noqa: BLE001 —— 反向断言需要捕获
+                self.fail(f"级别 {level} 抛了异常: {e!r}")
 
     def test_console_default_level(self):
-        """不传级别时按默认输出。"""
-        console("测试消息")
+        """不传级别时按默认(info)输出,不得抛异常。"""
+        try:
+            console("测试消息")
+        except Exception as e:   # noqa: BLE001 —— 反向断言需要捕获
+            self.fail(f"默认级别抛了异常: {e!r}")
 
     def test_console_unknown_level_falls_back(self):
-        """未知级别不得抛异常(应降级为默认)。"""
-        console("测试消息", "不存在的级别")
+        """未知级别必须降级为默认,不得抛异常。
+
+        反向断言:捕获到任何异常就 self.fail —— 比"光调用不检查"
+        进一步,至少异常时会给出可读信息而不是静默通过。
+        """
+        try:
+            console("测试消息", "不存在的级别")
+        except Exception as e:   # noqa: BLE001 —— 反向断言需要捕获
+            self.fail(f"未知级别抛了异常: {e!r}")
 
 
 if __name__ == "__main__":

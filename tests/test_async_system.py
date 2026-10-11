@@ -358,9 +358,13 @@ class TestStopPreservesUnfinished(unittest.TestCase):
                           f"任务 {snap['task_id']} 停留在 {snap['state']}")
 
     def test_stop_without_start_is_safe(self):
-        """未 start 就 stop 不应抛异常。"""
+        """未 start 就 stop 不应抛异常,且系统进入可用停止态。"""
         s = AsyncVerifySystem(verify_fn=_ok())
-        s.stop()
+        # 不抛异常即通过;再补两个状态断言,避免"只跑不验"
+        self.assertFalse(s.is_alive())
+        self.assertEqual(s.get_results(), [])
+        s.stop()   # 二次 stop 也要安全(幂等)
+        self.assertFalse(s.is_alive())
 
     def test_start_is_idempotent(self):
         """重复 start 不得起两套线程。"""
