@@ -439,5 +439,49 @@ class TestActionExecutorSendGateSerializes(unittest.TestCase):
                          f"发送未串行化,最大并发={inside['max']}(剪贴板/键盘会串)")
 
 
+class TestZeroHardcoding(unittest.TestCase):
+    """守卫 CLAUDE.md 第 1 条:业务数据零硬编码。
+
+    为什么需要这类测试:硬编码文案/命令格式会在配置被用户修改后
+    悄悄覆盖他的设置,"文案不得改动"这条红线就失效了。
+    这类回归**看不出症状**(输出照样是对的,只是用的不是用户配置),
+    必须用测试锁死。
+
+    做法:故意从配置里删掉键,若代码返回了结果而不是抛错,
+    说明它在用硬编码兜底。
+    """
+
+    def test_missing_template_raises_not_falls_back(self):
+        """缺 notify_templates 时必须抛 KeyError,不能用硬编码文案兜底。"""
+        for kind, actions in (("none", []), ("kick", ["kick"]),
+                             ("demote", ["demote"]), ("promote", ["promote"])):
+            with self.subTest(template=kind):
+                cfg = {"notify_templates": {}, "guild_qq": "G"}
+                with self.assertRaises(KeyError):
+                    build_notification("演示甲", 100, actions, cfg)
+
+    def test_missing_command_raises_not_falls_back(self):
+        """缺 commands 时必须抛 KeyError,不能拼一条硬编码命令。"""
+        for action in ("promote", "demote", "kick"):
+            with self.subTest(action=action):
+                with self.assertRaises(KeyError):
+                    build_command({"commands": {}}, action, "演示甲")
+
+    def test_config_edit_is_actually_used(self):
+        """正向验证:改配置必须改变输出(否则说明代码没在读配置)。"""
+        cfg = {
+            "notify_templates": {"none": "自定义无操作:{player}/{weekly}"},
+            "guild_qq": "G",
+        }
+        msg = build_notification("演示甲", 42, [], cfg)
+        self.assertEqual(msg, "自定义无操作:演示甲/42",
+                         "改配置后输出没变 —— 代码没读配置或用了硬编码")
+
+    def test_command_edit_is_actually_used(self):
+        """正向验证:改命令格式配置必须改变输出。"""
+        cfg = {"commands": {"guild_promote": "/gp {player}"}}
+        self.assertEqual(build_command(cfg, "promote", "演示甲"), "/gp 演示甲")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

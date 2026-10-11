@@ -899,33 +899,42 @@ def build_runtime(cfg, console_fn=None):
                    detector=detector, hwnd=hwnd)
 
 
-def main():
-    # 初始化 is_paused
-    def is_paused():
-        # 仅看 _paused(暂停)——_force_stop 由 signal handler raise KeyboardInterrupt 直接
-        # 冒泡到 main() 顶层 except 接住进菜单;链路不停(避免后台链路提前 return)
-        return _paused
+def prepare_config(args, console_fn=None, exit_fn=None):
+    """流程第一步:检测配置文件 → 加载 → 校验 → 初始化日志。
 
-    args = parse_args()
+    对应流程规格(两个模式相同的启动段):
+        启动脚本 → 检测同目录下是否有配置文件
+           ├─ 无 → 创建配置文件(每项有详细描述) → 提示查看修改
+           │       → 提示"回车关闭脚本" → 用户回车 → 脚本关闭
+           └─ 有 → 加载 → 校验 → (校验失败则退出)
 
-    # 1. 配置
+    返回 cfg;配置校验失败时调用 exit_fn(默认 sys.exit)退出。
+
+    抽成函数的目的:这段含 3 个退出分支(首次创建、校验失败)与
+    日志初始化副作用,是流程里**最需要被测试**的一段 ——
+    否则"配置文件缺失时会不会创建""校验失败会不会退出"
+    只能靠人工点。console_fn / exit_fn 可注入,测试不真的退出。
+    """
+    console_fn = console_fn or console
+    exit_fn = exit_fn or sys.exit
+
     created = config_mod.ensure_default_config(args.config)
     if created:
         # 首次运行:提醒先查看配置,回车退出;下次启动配置文件存在则不再提醒
-        console(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
-        console("请先查看并修改该配置文件——每个配置键前都有 '//' 中文注释,说明作用与取值范围")
-        console("重点确认:管理员名(留空自动识别)、日志路径、聊天键、升/降/踢阈值、各开关")
-        console("详细说明见同目录《配置说明.md》")
+        console_fn(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
+        console_fn("请先查看并修改该配置文件——每个配置键前都有 '//' 中文注释,说明作用与取值范围")
+        console_fn("重点确认:管理员名(留空自动识别)、日志路径、聊天键、升/降/踢阈值、各开关")
+        console_fn("详细说明见同目录《配置说明.md》")
         try:
             input("按回车退出...")
         except EOFError:
             pass
-        sys.exit(0)
+        exit_fn(0)
 
     cfg = config_mod.load_config(args.config)
     config_mod.apply_cli_overrides(cfg, args)
 
-    # 1.5 初始化日志系统(在校验前,使配置校验错误也能记录到日志)
+    # 初始化日志系统(在校验前,使配置校验错误也能记录到日志)
     log_cfg = cfg.get("log", {})
     logger.init_logger(
         log_dir=log_cfg.get("dir", "logs"),
@@ -935,7 +944,7 @@ def main():
     logger.log_info(f"脚本启动 (日志级别 {logger.current_level()}, "
                     f"{'启用' if logger.is_enabled() else '禁用'})")
 
-    # 合并 debug 配置（命令行覆盖）
+    # 合并 debug 配置(命令行覆盖)
     debug_cfg = cfg.get("debug", {})
     if args.debug:
         debug_cfg["enabled"] = True
@@ -945,34 +954,89 @@ def main():
 
     if args.dry_run:
         cfg["switches"]["execution_enabled"] = False
-        console("※ dry-run 模式:只查询+通知+输出报告,不执行任何升/降/踢")
+        console_fn("※ dry-run 模式:只查询+通知+输出报告,不执行任何升/降/踢")
+
     # 管理员名:配置已填用之;否则自动从日志 --username 启动参数识别
     auto_admin = auto_detect_admin(cfg)
     if auto_admin:
-        if not cfg.get("admin") and not args.admin:
-            console(f"管理员: {auto_admin}(自动识别自游戏日志 --username)")
+        if not cfg.get("admin") and not getattr(args, "admin", None):
+            console_fn(f"管理员: {auto_admin}(自动识别自游戏日志 --username)")
         cfg["admin"] = auto_admin
     elif not cfg.get("admin"):
-        console("⚠ 未识别到管理员名(配置 admin 留空且日志无 --username 行),公告联系人将不完整")
+        console_fn("⚠ 未识别到管理员名(配置 admin 留空且日志无 --username 行),公告联系人将不完整")
 
     issues = config_mod.validate_config(cfg)
     errors = [m for lvl, m in issues if lvl == "error"]
     for lvl, m in issues:
-        console(f"  [{'错误' if lvl == 'error' else '警告'}] {m}",
-                level="error" if lvl == "error" else "warning")
+        console_fn(f"  [{'错误' if lvl == 'error' else '警告'}] {m}",
+                   level="error" if lvl == "error" else "warning")
     if errors:
-        console("配置校验失败,请修正后重试(参考《配置说明.md》)", level="error")
-        sys.exit(1)
+        console_fn("配置校验失败,请修正后重试(参考《配置说明.md》)", level="error")
+        exit_fn(1)
 
     sw = cfg["switches"]
-    console("=" * 56)
-    console("布吉岛公会管理脚本(全自动版)")
-    console(f"  管理员: {cfg.get('admin') or '(未设置,建议 --admin 或配置)'}")
-    console(f"  公会群: {cfg.get('guild_qq')}")
-    console(f"  开关: 升职{'✓' if sw['promote_enabled'] else '✗'} 降职{'✓' if sw['demote_enabled'] else '✗'} "
-            f"踢出{'✓' if sw['kick_enabled'] else '✗'} 执行{'✓' if sw['execution_enabled'] else '✗(dry-run)'} "
-            f"通知{'✓' if sw['notify_enabled'] else '✗'}")
-    console("=" * 56)
+    console_fn("=" * 56)
+    console_fn("布吉岛公会管理脚本(全自动版)")
+    console_fn(f"  管理员: {cfg.get('admin') or '(未设置,建议 --admin 或配置)'}")
+    console_fn(f"  公会群: {cfg.get('guild_qq')}")
+    console_fn(f"  开关: 升职{'✓' if sw['promote_enabled'] else '✗'} 降职{'✓' if sw['demote_enabled'] else '✗'} "
+               f"踢出{'✓' if sw['kick_enabled'] else '✗'} 执行{'✓' if sw['execution_enabled'] else '✗(dry-run)'} "
+               f"通知{'✓' if sw['notify_enabled'] else '✗'}")
+    console_fn("=" * 56)
+    return cfg
+
+
+def count_actions(records):
+    """统计各动作人数(供 summary 广播文案用)。
+
+    返回 {"promote": n, "demote": n, "kick": n}。
+    以 actions[0] 为准 —— 一个玩家的动作列表第一个元素即其主要操作
+    (promote ×N 表示升 N 级,仍算"被升职 1 人")。
+    """
+    counts = {"promote": 0, "demote": 0, "kick": 0}
+    for r in records:
+        acts = r.get("actions") or []
+        if not acts:
+            continue
+        kind = acts[0]
+        if kind in counts:
+            counts[kind] += 1
+    return counts
+
+
+def build_summary_message(records, cfg):
+    """渲染 summary 模式的总广播文案(继承清单 §3)。
+
+    业务规则:文案模板**只能来自配置** cfg["notify_templates"]["summary"],
+    代码里不放兜底串 —— 硬编码文案会在配置被修改后悄悄覆盖用户设置,
+    且让"文案不得改动"这条红线失去唯一真源。缺配置则抛 KeyError
+    让问题在启动阶段就暴露。
+
+    数值由 count_actions 实统计得出,不能用 records 长度代替
+    (那会把"无操作"玩家也算进升降踢人数)。
+    """
+    c = count_actions(records)
+    templates = cfg.get("notify_templates", {})
+    if "summary" not in templates:
+        raise KeyError(
+            "配置缺少 notify_templates.summary —— 业务文案必须由配置提供,"
+            "代码不提供兜底串(硬编码文案会覆盖用户修改)")
+    tmpl = templates["summary"]
+    return tmpl.format(promote=c["promote"], demote=c["demote"], kick=c["kick"],
+                       admin=cfg.get("admin") or "管理员")
+
+
+def main():
+    # 初始化 is_paused
+    def is_paused():
+        # 仅看 _paused(暂停)——_force_stop 由 signal handler raise KeyboardInterrupt 直接
+        # 冒泡到 main() 顶层 except 接住进菜单;链路不停(避免后台链路提前 return)
+        return _paused
+
+    args = parse_args()
+
+    # 流程第一步:配置检测/生成/校验/日志初始化(见 prepare_config)
+    cfg = prepare_config(args)
 
     # 2. 初始化(异常时释放已打开的资源)
     listener = None
@@ -1196,9 +1260,6 @@ def main():
             if not records:
                 console("  无玩家需要通知，跳过 /gc")
             else:
-                n_promote = sum(1 for r in records if r["actions"] and r["actions"][0] == "promote")
-                n_demote = sum(1 for r in records if r["actions"] and r["actions"][0] == "demote")
-                n_kick = sum(1 for r in records if r["actions"] and r["actions"][0] == "kick")
                 mode = sw.get("notify_mode", "summary")
                 retries = int(cfg["timeouts"].get("max_retries", 3))
                 timeout = float(cfg["timeouts"].get("error_check_window", 4.0))
@@ -1206,9 +1267,7 @@ def main():
                 if mode == "summary":
                     wait_if_paused()
                     reset_window_state_after_pause(hwnd, detector)
-                    tmpl = cfg["notify_templates"].get("summary",
-                        "本周公会清人结果:升职 {promote} 人,降职 {demote} 人,踢出 {kick} 人,执行人:{admin},详情见群文件")
-                    msg = tmpl.format(promote=n_promote, demote=n_demote, kick=n_kick, admin=cfg.get("admin") or "管理员")
+                    msg = build_summary_message(records, cfg)
                     if async_executor is not None:
                         # 原始要求"主线程不进行任何验证 快速完成所有指令和操作由异步系统进行验证"
                         # ——不 join:主线程 submit 后立即推报告。失败由后台 retry_queue 兜底,finally 收尾。

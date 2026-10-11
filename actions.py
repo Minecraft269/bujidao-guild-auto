@@ -168,37 +168,36 @@ def build_notification(player, weekly, actions, cfg, count=None):
       actions: decide_actions 的返回值
       cfg:     配置字典(读 notify_templates / guild_qq)
     返回:可直接作为 /gc 广播正文的中文字符串。
+
+    **零硬编码**:模板只认 cfg["notify_templates"],代码不提供兜底文案。
+    缺键时抛 KeyError 让问题在启动阶段就暴露 —— 静默用硬编码兜底会在
+    用户改过配置后悄悄覆盖他的设置,使"文案不得改动"失去唯一真源
+    (见 CLAUDE.md 第 1 条)。
     """
     logger.trace_code_location("build_notification.start", f"player={player} weekly={weekly} actions={actions}")
     templates = cfg.get("notify_templates", {})
     guild_qq = cfg.get("guild_qq", "")
+
+    def _tpl(key):
+        try:
+            return templates[key]
+        except KeyError:
+            raise KeyError(
+                f"配置缺少 notify_templates.{key} —— 业务文案必须由配置提供,"
+                f"代码不提供兜底串") from None
+
     if not actions:
-        tmpl = templates.get(
-            "none",
-            "{player} 这周贡献为:{weekly} 执行操作:无 非常感谢你对公会做出的贡献 公会群:{guild_qq}",
-        )
+        tmpl = _tpl("none")
         res = tmpl.format(player=player, weekly=weekly, guild_qq=guild_qq)
         logger.trace_return("build_notification", res)
         return res
     kind = actions[0]
     if kind == "kick":
-        tmpl = templates.get(
-            "kick",
-            "{player} 这周贡献为:{weekly} 执行操作:踢出 未完成这周最低标准 "
-            "若有异议请去群里寻找执行管理员 公会群:{guild_qq}",
-        )
+        tmpl = _tpl("kick")
     elif kind == "demote":
-        tmpl = templates.get(
-            "demote",
-            "{player} 这周贡献为:{weekly} 执行操作:降职 "
-            "若有异议请去群里找执行此操作的管理员 公会群:{guild_qq}",
-        )
+        tmpl = _tpl("demote")
     else:
-        tmpl = templates.get(
-            "promote",
-            "{player} 这周贡献为:{weekly} 执行操作:升职({count}次) "
-            "非常感谢你对公会做出的贡献 公会群:{guild_qq}",
-        )
+        tmpl = _tpl("promote")
     if count is None:
         count = len(actions)
     res = tmpl.format(player=player, weekly=weekly, count=count, guild_qq=guild_qq)
@@ -221,15 +220,22 @@ def build_command(cfg, action, player):
     出一条指令:猜错会把一条查询发成破坏性操作。宁可中断也不误发。
 
     玩家 ID 原样嵌入,不做 strip/转义 —— 真实样本存在含空格的玩家名。
+
+    **零硬编码**:命令格式与 kick_reason 全部取自 cfg["commands"],
+    缺键抛 KeyError(见 CLAUDE.md 第 1 条)。
     """
     cmds = cfg.get("commands", {})
+
+    def _cmd(key):
+        try:
+            return cmds[key]
+        except KeyError:
+            raise KeyError(f"配置缺少 commands.{key} —— 命令格式必须由配置提供") from None
+
     if action == "promote":
-        return cmds.get("guild_promote", "/guild promote {player}").format(player=player)
+        return _cmd("guild_promote").format(player=player)
     if action == "demote":
-        return cmds.get("guild_demote", "/guild demote {player}").format(player=player)
+        return _cmd("guild_demote").format(player=player)
     if action == "kick":
-        reason = cmds.get("kick_reason", "未完成一周最低标准")
-        return cmds.get("guild_kick", "/guild kick {player} {reason}").format(
-            player=player, reason=reason
-        )
+        return _cmd("guild_kick").format(player=player, reason=_cmd("kick_reason"))
     raise ValueError(f"未知动作: {action}")
