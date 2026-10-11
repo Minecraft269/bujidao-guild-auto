@@ -238,11 +238,21 @@ def _join_truncated_names(rows, is_structural):
     成员行以 ● 结尾 = 完整,直接收;不以 ● 结尾 = 名字被面板折行,续行在下一行,
     继续接到"以 ● 结尾 / 空行 / 结构行(公会名、分组标题、统计行)/ 块尾"为止。
     结构行与空行永远不会并进名字里。
+
+    **空行必须保留成 None 哨兵,不能预先删掉**:它是"名字到这里结束"的
+    终止符。删掉空行后,一段被网易抹平的星号串(不以 ● 结尾)会把紧随的
+    真实玩家名一并吞掉 —— 拼出 '******** 真名甲' 这种既超长又含 * 的名字,
+    直接让**整张公会名单**解析崩溃(独立审查发现并复现)。
     """
     out = []
     pending = ""
-    for row in rows:                          # rows 已剔除空行
-        if is_structural(row):                # 结构行:打断续行,但先保住未收齐的名字
+    for row in rows:
+        if row is None:                        # 空行:打断续行,但不进 out
+            if pending:
+                out.append(pending)
+                pending = ""
+            continue
+        if is_structural(row):                 # 结构行:打断续行,先保住未收齐的名字
             if pending:
                 out.append(pending)
                 pending = ""
@@ -263,10 +273,12 @@ def parse_guild_list(block_lines, rank_names):
     返回 dict: {"guild_name", "groups", "total", "online"},见模块 docstring。
     无公会名 / 未登记的分组标题 / 一个玩家都没解析到 → ParseError。
     """
-    rows = [r for r in (_strip_all(l) for l in block_lines) if r]   # 剔除空行与复制标记残留
-    if not rows:
+    # 空行保留为 None 哨兵(见 _join_truncated_names):它是折行名字的终止符,
+    # 删掉会让被网易抹平的星号串吞并后续真实玩家名。
+    rows = [r if r else None for r in (_strip_all(l) for l in block_lines)]
+    if not any(r is not None for r in rows):
         raise ParseError("guild list 输出为空:未捕获到公会面板内容")
-    guild_name = rows[0]
+    guild_name = next(r for r in rows if r is not None)
 
     title_to_key = {str(v).strip(): k for k, v in (rank_names or {}).items()}
 

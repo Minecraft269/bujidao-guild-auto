@@ -346,6 +346,59 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
         self.assertEqual(r["groups"]["low"], ["低活玩家丙"])
 
 
+    def test_blank_line_stops_name_merge(self):
+        """空行必须终止折行拼接 —— 否则星号串会吞掉后面的真实玩家名。
+
+        独立审查发现:parse_guild_list 原来把空行全部丢掉,而
+        _join_truncated_names 的契约是"空行终止续行"。契约失效后,
+        一段被网易抹平的星号串(不以 ● 结尾)会把紧随的真实玩家名
+        一并吞掉,拼出既超长又含 * 的名字 → **整张公会名单**解析崩溃。
+
+        修复:空行保留为 None 哨兵传给 _join_truncated_names。
+
+        两侧都测:既不能让星号吞掉真名,也不能让空行本身产出空条目。
+        """
+        RANK = {"leader": "会长", "vice_leader": "副会长", "admin": "管理员",
+                "high": "高活跃成员", "mid": "中等活跃成员",
+                "low": "低活跃成员", "entry": "入门成员"}
+        for masked_len in (8, 704):
+            with self.subTest(masked_len=masked_len):
+                lines = [
+                    "演示公会",
+                    "-- 高活跃成员 --",
+                    "正常玩家甲 ●",
+                    "-- 中等活跃成员 --",
+                    "*" * masked_len,
+                    "",                       # ← 关键:空行必须在这里断开
+                    "真实玩家乙 ●",
+                    "-- 低活跃成员 --",
+                    "低活玩家丙 ●",
+                ]
+                r = parse_guild_list(lines, RANK)
+                mid = r["groups"]["mid"]
+                # 1) 真名必须作为**独立条目**存在(没被吞进星号串)
+                self.assertIn("真实玩家乙", mid,
+                              f"真实玩家名被星号串吞掉了: {mid}")
+                # 2) 不得出现"星号串 + 真名"的拼接产物
+                for name in mid:
+                    if name != "真实玩家乙":
+                        self.assertNotIn("真实玩家乙", name,
+                                        f"拼接产物泄漏: {name[:40]}...")
+                # 3) 其余组的玩家不受影响
+                self.assertEqual(r["groups"]["high"], ["正常玩家甲"])
+                self.assertEqual(r["groups"]["low"], ["低活玩家丙"])
+
+    def test_blank_line_does_not_create_empty_entry(self):
+        """反向护栏:空行本身不得产出空玩家条目。"""
+        RANK = {"high": "高活跃成员", "mid": "中等活跃成员"}
+        r = parse_guild_list(
+            ["演示公会", "-- 高活跃成员 --", "", "玩家甲 ●", "",
+             "-- 中等活跃成员 --", "玩家乙 ●"],
+            RANK)
+        self.assertEqual(r["groups"]["high"], ["玩家甲"])
+        self.assertEqual(r["groups"]["mid"], ["玩家乙"])
+
+
 class TestMaskedShortAndPartialNames(unittest.TestCase):
     """第 1 层的其余真实形态:短星号 / 部分被遮 / 公会名被遮 / 合法含 * 名。
 
