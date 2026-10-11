@@ -334,6 +334,19 @@ class AsyncVerifySystem:
         with self._count_lock:
             return self._pending_count
 
+    def _dec_pending(self):
+        """递减待验证计数(幂等:不会减到负数)。
+
+        提取成方法的理由:发送异常路径与验证线程路径**都要**递减。
+        曾把递减逻辑内联在验证线程里,而发送路径调用了一个不存在的方法名
+        `_dec_pending()`(AttributeError 被 _sender_loop 的 except 吞掉),
+        结果计数只增不减 —— wait_all 的「仍有 N 条未验证」永久虚高。
+        现在两条路径共用同一处实现。
+        """
+        with self._count_lock:
+            if self._pending_count > 0:
+                self._pending_count -= 1
+
     def wait_all(self, timeout=None):
         """主线程**全部工作完成后**才调用:等待后台返回完成信号。
 
@@ -385,6 +398,10 @@ class AsyncVerifySystem:
         except Exception as e:  # 发送异常 → 记失败,由主线程决定重试
             logger.log_error(f"(异步系统)发送异常 player={task.player}: {e!r}")
             task.mark_verified(False, error=f"send failed: {e!r}")
+            # 发送失败让任务直接离开 SENT 状态,**不会**再被验证线程处理到,
+            # 所以必须在此递减 pending —— 否则 _pending_count 只增不减,
+            # wait_all 的「仍有 N 条未验证」告警永久虚高(独立审查指出)。
+            self._dec_pending()
 
     def attach_sender(self, send_fn):
         """注入实际发送函数 send_fn(cmd, player, meta)。"""
@@ -431,9 +448,8 @@ class AsyncVerifySystem:
                 except Exception as e:
                     task.mark_verified(False, error=f"verify exception: {e!r}")
                     logger.log_error(f"(异步系统)验证异常 player={task.player}: {e!r}")
-                with self._count_lock:
-                    if self._pending_count > 0:
-                        self._pending_count -= 1
+                # 无论成功/失败/异常,任务都已离开 SENT 状态 —— 递减待验证计数
+                self._dec_pending()
                 if task.state == OK:
                     logger.log_trace(f"TRACE_VERIFY ok | task_id={task.task_id} "
                                      f"player={task.player!r}")

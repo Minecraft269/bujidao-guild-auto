@@ -444,6 +444,31 @@ class TestResultFiltering(unittest.TestCase):
 class TestVerifyFnException(unittest.TestCase):
     """验收异常路径:验证函数自身抛异常。"""
 
+    def test_send_exception_does_not_leak_pending_count(self):
+        """发送异常不得让 `_pending_count` 只增不减。
+
+        独立审查发现:send_fn 抛异常时任务被直接标 FAILED 并离开 SENT 状态,
+        验证线程再也不会处理到它,于是计数泄漏 —— wait_all 的
+        「仍有 N 条未验证」告警永久虚高。这让「等待后台完成信号」
+        这个核心语义的度量失真。
+
+        断言:全部任务因发送异常失败后,pending_count 必须归零。
+        """
+        def boom(cmd, p, m):
+            raise RuntimeError("模拟按键失败")
+        s = AsyncVerifySystem(verify_fn=_ok(), poll_interval=0.02, task_timeout=3)
+        s.attach_sender(boom)
+        s.start()
+        try:
+            ids = s.submit_many([(f"/c{i}", f"P{i}") for i in range(3)])
+            self.assertEqual(len(ids), 3)
+            s.wait_all(timeout=5)
+            self.assertEqual(len(s.get_failed()), 3, "发送异常未记为失败")
+            self.assertEqual(s.pending_count(), 0,
+                             f"pending_count={s.pending_count()} 未归零 —— 计数泄漏")
+        finally:
+            s.stop()
+
     def test_verify_exception_marks_failed_not_crash(self):
         def boom(cmd, p, meta):
             raise ValueError("解析炸了")
