@@ -684,6 +684,63 @@ def stage_query_async(rt, targets, cfg):
     return records, failures
 
 
+def stage_confirm_execution(rt, records, cfg):
+    """执行前的两道用户确认 —— 验收第 9 条 + kick 二次确认。
+
+    流程规格:
+        执行阶段:执行前需用户确认(kick 需二次确认)
+
+    两道门:
+      1) 总确认      —— 列出升/降/踢人数,输入 y 或回车=执行,n=跳过(只出报告)
+      2) kick 二次确认 —— 踢出不可逆,需输入 kick-confirm,任何其他输入都跳过全部踢出
+                          (升/降照常;被跳过的 kick 标 error,不会被再次执行)
+
+    返回 (execution_enabled, skipped_kicks):
+      execution_enabled   False 表示用户拒绝执行(只输出报告)
+      skipped_kicks       True 表示 kick 被跳过(总确认可能仍通过)
+
+    纯逻辑:所有输入都走 rt.confirm()(可注入),不直接碰 input(),
+    于是"用户拒绝时不得执行任何命令"这条能被测试锁死。
+    """
+    sw = cfg.get("switches", {})
+    actionable = [r for r in records if r.get("actions")]
+    execution_enabled = bool(sw.get("execution_enabled", True))
+
+    # 没有可执行项时不做任何确认(不拿无意义的提示打扰用户)
+    if not actionable:
+        return execution_enabled, False
+
+    n_p = sum(1 for r in actionable if r["actions"][0] == "promote")
+    n_d = sum(1 for r in actionable if r["actions"][0] == "demote")
+    n_k = sum(1 for r in actionable if r["actions"][0] == "kick")
+    console(f"待执行操作: 升职 {n_p} 人, 降职 {n_d} 人, 踢出 {n_k} 人")
+
+    # ---- 门 1:总确认 ----
+    ans = rt.ask("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(仅输出报告)",
+                 default=True)
+    if not ans:
+        console("已跳过执行(仅输出报告)")
+        execution_enabled = False
+
+    # ---- 门 2:kick 二次确认(踢出不可逆) ----
+    pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
+    skipped_kicks = False
+    if execution_enabled and pending_kicks and cfg.get("kick_confirm", True):
+        console(f"⚠ 即将踢出 {len(pending_kicks)} 人(不可逆): "
+                f"{[r['player'] for r in pending_kicks]}")
+        ans = rt.ask("确认执行踢出?输入 kick-confirm 后回车执行,其他输入跳过踢出",
+                     default=False)
+        if not ans:
+            console("已跳过全部踢出(其他操作照常执行)")
+            for r in pending_kicks:
+                r["executed"] = True   # 标记已处理,防止执行循环再次执行(不可逆操作)
+                r["error"] = "kick 已按确认要求跳过"
+                r["new_rank"] = r["rank"]
+            skipped_kicks = True
+
+    return execution_enabled, skipped_kicks
+
+
 def async_query_member(cfg, watcher, human, hwnd, async_executor,
                        detector, stop_check, pid):
     """纯提交式异步查询(主线程不等验证返回):把 send_and_capture + parse_guild_member
@@ -922,6 +979,20 @@ class Runtime:
         except (EOFError, KeyboardInterrupt):
             # 终端被关闭 / 用户按 Ctrl+C:一律按"拒绝"处理 ——
             # 宁可停下,也不能在状态不明时继续发命令
+            return False
+
+    def ask(self, prompt, default=False):
+        """向用户提问,返回 True=是 / False=否(或未确认)。
+
+        与 confirm() 的区别:confirm 面向"阶段边界是否继续",语义是
+        "默认同意、拒绝即停";ask 面向"要一个明确的是/否答案",
+        默认值由调用方给(kick 二次确认默认 False = 不输字样就不执行)。
+
+        同样兜底 EOF/Ctrl+C → False(拒绝),绝不在状态不明时继续发命令。
+        """
+        try:
+            return bool(self.ask_confirm(prompt, default))
+        except (EOFError, KeyboardInterrupt):
             return False
 
     def close(self):
@@ -1419,28 +1490,11 @@ def main():
             # 查询阶段无任何成功(records 为空),无可执行操作,显式提示后直接走报告
             console("  无玩家需要执行(查询阶段无成功结果),跳过执行阶段")
         elif sw["execution_enabled"] and actionable:
-            n_p = sum(1 for r in actionable if r["actions"][0] == "promote")
-            n_d = sum(1 for r in actionable if r["actions"][0] == "demote")
-            n_k = sum(1 for r in actionable if r["actions"][0] == "kick")
-            console(f"待执行操作: 升职 {n_p} 人, 降职 {n_d} 人, 踢出 {n_k} 人")
-            try:
-                ans = input("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(仅输出报告): ").strip().lower()
-            except EOFError:
-                ans = "n"
-            if ans == "n":
-                console("已跳过执行(仅输出报告)")
+            # 执行前确认(总确认 + kick 二次确认)—— 见 stage_confirm_execution
+            execution_enabled, _skipped = stage_confirm_execution(rt, records, cfg)
+            if not execution_enabled:
                 sw["execution_enabled"] = False
         pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
-        if sw["execution_enabled"] and pending_kicks and cfg.get("kick_confirm", True):
-            console(f"⚠ 即将踢出 {len(pending_kicks)} 人(不可逆): {[r['player'] for r in pending_kicks]}")
-            ans = input("确认执行踢出?输入 kick-confirm 后回车执行,其他输入跳过踢出: ").strip().lower()
-            if ans != "kick-confirm":
-                console("已跳过全部踢出(其他操作照常执行)")
-                for r in pending_kicks:
-                    r["executed"] = True  # 标记已处理,防止执行循环再次执行(不可逆操作)
-                    r["error"] = "kick 已按确认要求跳过"
-                    r["new_rank"] = r["rank"]
-                executed.extend(pending_kicks)
 
         # ---- 执行循环前统一重置（只执行一次） ----
         if sw["execution_enabled"]:
