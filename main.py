@@ -598,6 +598,92 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
     return None
 
 
+def stage_query_async(rt, targets, cfg):
+    """异步(后台)模式的查询阶段 —— 流程规格 B→D→E 的落地。
+
+    规格语义(plan.txt 第 21-24 行):
+        B → 逐条发送指令:脚本【不读日志、不验证】→ 全部发送完毕后等待 → D
+        B → 后台系统读日志并验证 → 成功的:忽略并抛弃;失败的:记录结果等待 → E
+        E → D:若有失败且需重试则重试(仅发送一次,后台继续验证)→ B(必须防死锁)
+
+    与旧实现的根本区别:旧 async_query_member 把 send_and_capture(含读日志+解析)
+    投给 AsyncCommandExecutor 的 worker,主线程再 _join_with_progress 等它 ——
+    "发送节奏仍被后台验证速度拖住",没有达到规格要的"发得更快"。
+
+    本函数按规格实现:
+      1. send_fn 只负责**把指令发出去**(_send_only,不读日志、不解析);
+      2. verify_fn 由后台验证线程调用(读日志 → extract → parse → 判定);
+      3. 主线程只调 run_async_round,内部"只发不验 + 后台验证 + 失败重试";
+
+    返回 (records, failures)。records 供阶段3 判定,failures 进报告。
+    """
+    from async_system import AsyncVerifySystem, run_async_round
+
+    cmds = cfg["commands"]
+    timeout = float(cfg["timeouts"].get("response_wait", 12.0))
+    sw = cfg.get("switches", {})
+
+    # ---- 发送器:主线程侧只"发出去",不读日志、不验证 ----
+    watcher = rt.watcher
+
+    def send_only(cmd, player, meta):
+        """只发送指令。**不读日志、不解析、不判定** —— 规格的核心要求。"""
+        wait_if_paused()
+        rt.reset_window_state_after_pause(rt.hwnd, rt.detector)
+        if sw.get("verbose_log", True):
+            console(f"  → {cmd}")
+        rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
+        rt.human.wait_between_commands()
+
+    # ---- 验证器:后台线程调用,负责读日志 + 解析 + 判定 ----
+    def verify(cmd, player, meta):
+        """后台验证一条已发送的查询指令。
+
+        这是"所有指令发送后必须有读取日志并验证操作"(验收第7条)在异步模式
+        下的承担者。成功返回 (True, None, info_dict);失败返回 (False, reason, None)。
+        """
+        block = watcher.wait_for_chat_block(timeout=timeout, stop_check=rt.is_paused)
+        if block is None:
+            return False, "等待响应超时", None
+        try:
+            info = parse_guild_member(block, expected_id=player)
+        except ParseError as e:
+            return False, f"解析失败:{e}", None
+        return True, None, info
+
+    system = AsyncVerifySystem(verify_fn=verify, task_timeout=timeout + 5.0)
+    system.attach_sender(send_only)
+
+    commands = [(cmds["guild_member"].format(player=pid), pid) for _rk, pid in targets]
+    rank_of = {pid: rk for rk, pid in targets}
+
+    logger.log_info(f"(异步)阶段2 查询: {len(commands)} 条指令,主线程只发不验")
+    ok_snaps, failed_snaps = run_async_round(
+        system, commands, send_only,
+        max_retries=int(cfg.get("timeouts", {}).get("max_retries", 3)))
+    system.stop()
+
+    records, failures = [], []
+    for snap in ok_snaps:
+        info = snap.get("data")
+        if isinstance(info, dict):
+            info["rank"] = rank_of.get(snap["player"], snap["player"])
+            records.append(info)
+            if sw.get("verbose_log", True):
+                console(f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} "
+                        f"| 上次在线: {info['last_online']}")
+    for snap in failed_snaps:
+        pid = snap["player"]
+        reason = snap.get("error") or "查询失败"
+        if parsers.is_masked_name(pid):
+            reason = "查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
+        failures.append({"player": pid, "rank": rank_of.get(pid, ""), "reason": reason})
+        logger.log_error(f"(异步)查询失败({reason}): {pid}")
+
+    logger.log_info(f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)}")
+    return records, failures
+
+
 def async_query_member(cfg, watcher, human, hwnd, async_executor,
                        detector, stop_check, pid):
     """纯提交式异步查询(主线程不等验证返回):把 send_and_capture + parse_guild_member
@@ -793,7 +879,7 @@ class Runtime:
 
     def __init__(self, cfg, watcher=None, human=None, executor=None, detector=None,
                  hwnd=None, ask_confirm=None, sleep=None, listener=None,
-                 async_executor=None, async_enabled=False):
+                 async_executor=None, async_enabled=False, stop_check=None):
         self.cfg = cfg
         self.watcher = watcher
         self.human = human
@@ -809,6 +895,18 @@ class Runtime:
         self.ask_confirm = ask_confirm if ask_confirm is not None else _default_confirm
         # 时间源可注入,避免测试真的等 N 秒
         self.sleep = sleep if sleep is not None else time.sleep
+        # 暂停查询:默认读 main 模块级 _paused(供 send_only/verify 用);
+        # 测试可注入恒 False 的回调。
+        self.is_paused = stop_check if stop_check is not None else (lambda: _paused)
+
+    def reset_window_state_after_pause(self, hwnd=None, detector=None):
+        """发送前重置窗口状态(暂停恢复后有残留菜单时)。
+
+        委托给模块级同名函数;hwnd/detector 可覆盖(测试隔离用)。
+        """
+        return reset_window_state_after_pause(
+            self.hwnd if hwnd is None else hwnd,
+            self.detector if detector is None else detector)
 
     def confirm(self, prompt, default=False):
         """统一的阶段确认点。

@@ -205,7 +205,14 @@ def init_logger(log_dir="logs", level=4, enabled=True):
 def _log(level, msg):
     if _logger is None:
         return
-    _logger.log(level, msg)
+    try:
+        _logger.log(level, msg)
+    except (OSError, ValueError):
+        # 日志目录被外部删除时(典型:某测试 tearDown 删了临时目录,而 logger 单例
+        # 仍持有指向它的 FileHandler),handler.emit 会抛 FileNotFoundError。
+        # 日志写不进去**不该**把业务代码带崩 —— 降级为静默让流程继续。
+        # 生产上同理:静默丢日志好过中断一次清人。
+        pass
 
 
 # ---------------------------------------------------------------------------
