@@ -24,7 +24,7 @@
 | 流水线 | 说明 |
 |---|---|
 | [![Lint](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/lint.yml/badge.svg)](.github/workflows/lint.yml) | ruff 风格检查 |
-| [![Tests & Coverage](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/test.yml/badge.svg)](.github/workflows/test.yml) | 测试 + 双档覆盖率门禁(核心层 ≥95% / 总体 ≥85%) |
+| [![Tests & Coverage](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/test.yml/badge.svg)](.github/workflows/test.yml) | 测试 + 双档覆盖率门禁(核心层 ≥98% / 总体 ≥92%) |
 | [![Build](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/build.yml/badge.svg)](.github/workflows/build.yml) | PyInstaller 打包 Windows 可执行文件 |
 | [![Security](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/security.yml/badge.svg)](.github/workflows/security.yml) | CodeQL + 依赖审查 + pip-audit |
 

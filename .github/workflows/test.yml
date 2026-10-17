@@ -83,8 +83,8 @@ jobs:
 
       # Two independent coverage runs, separate data files, separate reports.
       #   1) core layer : parsers / actions (decision engine) / config /
-      #                   reporter / async state machines          -> 95
-      #   2) overall    : all production source, tests/ excluded  -> 85
+      #                   reporter / async state machines          -> 98
+      #   2) overall    : all production source, tests/ excluded  -> 92
       # `set +e` so BOTH runs always execute and always emit reports even when
       # the first gate already failed - otherwise a core breach would hide the
       # overall number, which is exactly what you need to triage it.
@@ -96,25 +96,25 @@ jobs:
       # async_executor.py is the LEGACY executor whose join()-blocking semantics
       # the rewrite replaces, so it is deliberately NOT in the core gate - it is
       # still measured by the overall run until the rewrite retires it.
-      - name: Coverage gates - core >= 95%, overall >= 85%
+      - name: Coverage gates - core >= 98%, overall >= 92%
         run: |
           set +e
 
-          echo "### Gate 1/2: core layer (parsers, actions, config, reporter, async_system) >= 95%"
-          COVERAGE_FILE=.coverage.core python -m pytest tests -v --cov=parsers --cov=actions --cov=config --cov=reporter --cov=async_system --cov-report=term-missing --cov-report=xml:htmlcov/core.xml --cov-report=html:htmlcov/core --cov-fail-under=95
+          echo "### Gate 1/2: core layer (parsers, actions, config, reporter, async_system) >= 98%"
+          COVERAGE_FILE=.coverage.core python -m pytest tests -v --cov=parsers --cov=actions --cov=config --cov=reporter --cov=async_system --cov-report=term-missing --cov-report=xml:htmlcov/core.xml --cov-report=html:htmlcov/core --cov-fail-under=98
           rc_core=$?
 
           echo ""
-          echo "### Gate 2/2: overall production source >= 85% (tests/ + dot-dirs excluded)"
+          echo "### Gate 2/2: overall production source >= 92% (tests/ + dot-dirs excluded)"
           # omit 只能写在覆盖率配置里(pytest-cov 没有 --cov-omit 这个参数),
           # 所以通过 COVERAGE_RCFILE 指向仓库根的 .coveragerc。
-          COVERAGE_FILE=.coverage.total COVERAGE_RCFILE=.coveragerc python -m pytest tests -v --cov=. --cov-report=term-missing --cov-report=xml:htmlcov/total.xml --cov-report=html:htmlcov/total --cov-fail-under=85
+          COVERAGE_FILE=.coverage.total COVERAGE_RCFILE=.coveragerc python -m pytest tests -v --cov=. --cov-report=term-missing --cov-report=xml:htmlcov/total.xml --cov-report=html:htmlcov/total --cov-fail-under=92
           rc_total=$?
 
           set -e
 
           echo ""
-          echo "core gate exit=$rc_core (threshold 95) / overall gate exit=$rc_total (threshold 85)"
+          echo "core gate exit=$rc_core (threshold 98) / overall gate exit=$rc_total (threshold 92)"
           if [ "$rc_core" -ne 0 ] || [ "$rc_total" -ne 0 ]; then
             echo "::error::Coverage gate failed (core exit=$rc_core, overall exit=$rc_total) - both must pass"
             exit 1
