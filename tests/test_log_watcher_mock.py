@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 test_log_watcher_mock.py —— log_watcher(游戏日志增量监控)mock 覆盖测试
 =============================================================================
@@ -26,12 +26,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger as logger_mod  # noqa: E402
-import log_watcher as lw  # noqa: E402
-import runtime as runtime_mod  # noqa: E402
-from log_watcher import (  # noqa: E402
+import guild_auto.infrastructure.logger as logger_mod  # noqa: E402
+import guild_auto.infrastructure.log_watcher as lw  # noqa: E402
+import guild_auto.application.runtime as runtime_mod  # noqa: E402
+from guild_auto.infrastructure.log_watcher import (  # noqa: E402
     LogWatcher,
     detect_encoding,
     is_block_start_line,

@@ -26,10 +26,9 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, call, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import window_input  # noqa: E402
-from window_input import (  # noqa: E402
+from guild_auto.infrastructure import window_input  # noqa: E402
+from guild_auto.infrastructure.window_input import (  # noqa: E402
     GAME_PROCESS_NAMES,
     KEYEVENTF_KEYUP,
     MC_KEY_TO_PYAUTOGUI,
@@ -42,7 +41,7 @@ from window_input import (  # noqa: E402
     resolve_chat_key,
 )
 
-MODULE = "window_input"
+MODULE = "guild_auto.infrastructure.window_input"
 
 
 # ---------------------------------------------------------------------------

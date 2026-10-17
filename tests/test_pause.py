@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 test_pause.py —— 暂停门与 Ctrl+C 中断菜单
 ========================================
@@ -24,11 +24,10 @@ import time
 import unittest
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-import pause  # noqa: E402
-import runtime  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.application import pause  # noqa: E402
+from guild_auto.application import runtime  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception", "trace_code_location"):

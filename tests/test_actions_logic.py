@@ -24,17 +24,16 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from actions import (  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.domain.decisions import (  # noqa: E402
     RANK_ORDER,
     build_command,
     build_notification,
     new_rank_after,
 )
-from action_executor import ActionExecutor  # noqa: E402
-from config import DEFAULT_CONFIG  # noqa: E402
+from guild_auto.infrastructure.action_executor import ActionExecutor  # noqa: E402
+from guild_auto.config import DEFAULT_CONFIG  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):

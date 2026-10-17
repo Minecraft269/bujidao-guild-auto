@@ -28,11 +28,10 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from log_watcher import extract_chat_block, split_messages  # noqa: E402
-from parsers import parse_guild_list  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.infrastructure.log_watcher import extract_chat_block, split_messages  # noqa: E402
+from guild_auto.domain.parsers import parse_guild_list  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):

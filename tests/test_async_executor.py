@@ -17,9 +17,8 @@ import threading
 import time
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from async_executor import AsyncCommandExecutor  # noqa: E402
+from guild_auto.concurrency.async_executor import AsyncCommandExecutor  # noqa: E402
 
 
 class TestSuccessPath(unittest.TestCase):
@@ -176,7 +175,7 @@ class TestPauseGate(unittest.TestCase):
                     + panel + " [C]"]
 
     def setUp(self):
-        import action_executor as actions_mod
+        import guild_auto.infrastructure.action_executor as actions_mod
         self.actions_mod = actions_mod
         # 打桩 activate_window / prepare_chat_state / pyautogui.press
         self.calls = []
@@ -286,7 +285,7 @@ class TestAsyncWaitForResult(unittest.TestCase):
     submit + wait_for_result 期间主线程未持有 watcher 锁,后台 worker 才执行真实 read。"""
 
     def test_wait_for_result_does_not_block_main_thread(self):
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         import time
         main_blocked_at = []
 
@@ -314,7 +313,7 @@ class TestBroadcastNonBlocking(unittest.TestCase):
     """主线程调 async_broadcast 后,后台 worker 才执行 read;主线程不阻塞。"""
 
     def test_async_broadcast_returns_quickly(self):
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         import time
         # 模拟 ActionExecutor:把 read_until 慢化的 verify
         def slow_verify(_cmd, _pid):
@@ -380,7 +379,7 @@ class TestSubmitWithoutBlocking(unittest.TestCase):
     验证/补做/重试全部后台处理。"""
 
     def test_submit_returns_immediately_main_thread_free(self):
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         import time
         def slow_verify(_cmd, _pid):
             time.sleep(0.3)  # 后台慢
@@ -413,7 +412,7 @@ class TestSubmitWithoutBlocking(unittest.TestCase):
     def test_failed_verify_queued_for_retry_not_lost(self):
         """验证失败 → 后台重试 max_retries 次 → 仍未通过 → 进补做队列(get_retry_tasks)。
         模拟用户原话"若此时后台验证没提供,插入任务重试上条命令"。"""
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         attempts = {"n": 0}
         def always_fail(_cmd, _pid):
             attempts["n"] += 1
@@ -438,7 +437,7 @@ class TestBroadcastKeyUnique(unittest.TestCase):
     改用 player+seq 后,同一/不同玩家的 broadcast key 必须互不冲突。"""
 
     def test_broadcast_keys_unique_across_similar_msgs(self):
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         import time
         ex = AsyncCommandExecutor(num_workers=1, max_retries=1, retry_delay=0.01)
         ex.start()
@@ -474,9 +473,9 @@ class TestBroadcastKeyUnique(unittest.TestCase):
         现在改为真正调产品函数取 key —— 判别力来自"同 player 不同 msg"
         这一真实场景(若产品用 hash(msg) 或只按 player 做键,两条会撞)。
         """
-        import main
+        from guild_auto import main
         from unittest.mock import MagicMock
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         ex = AsyncCommandExecutor(num_workers=1, max_retries=1, retry_delay=0.01)
         ex.start()
         try:
@@ -499,9 +498,9 @@ class TestBroadcastKeyUnique(unittest.TestCase):
 
     def test_different_players_get_different_keys(self):
         """不同玩家的广播 key 也必须不同(产品函数产出的 key 才具判别力)。"""
-        import main
+        from guild_auto import main
         from unittest.mock import MagicMock
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         ex = AsyncCommandExecutor(num_workers=1, max_retries=1, retry_delay=0.01)
         ex.start()
         try:
@@ -521,7 +520,7 @@ class TestTrulyNoBlocking(unittest.TestCase):
     result[player];主线程只在最后一次取已就绪结果。"""
 
     def test_main_thread_never_waits_for_verify(self):
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         import time
         # 慢 verify(0.3s)模拟读日志
         def slow_v(_c, _p):
@@ -551,7 +550,7 @@ class TestTrulyNoBlocking(unittest.TestCase):
 
     def test_pending_results_visible_after_background(self):
         """后台 verify 完成后,result 才可见;未就绪时 None(不阻塞)。"""
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         import time
         def slow_v(_c, _p):
             time.sleep(0.2)
@@ -571,7 +570,7 @@ class TestTrulyNoBlocking(unittest.TestCase):
 
     def test_failed_verify_queued_for_retry(self):
         """verify 失败→后台 _worker 内部重试→耗尽入 retry_queue 兜底(主线程可查 get_retry_tasks)。"""
-        from async_executor import AsyncCommandExecutor
+        from guild_auto.concurrency.async_executor import AsyncCommandExecutor
         attempts = {"n": 0}
         def always_fail(_c, _p):
             attempts["n"] += 1

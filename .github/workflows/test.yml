@@ -64,6 +64,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install pytest pytest-cov
+          # src-layout:测试导入的是「已安装的包」,不是当前目录的同名文件。
+          # 少这一步会让 `import guild_auto` 找不到包(而不是悄悄导入根目录旧文件)。
+          python -m pip install -e . --no-deps
 
       # Exit code 5 == EXIT_NOTESTSCOLLECTED. Without this, a renamed/moved
       # tests/ dir yields a silent green run with no coverage data at all.
@@ -82,8 +85,9 @@ jobs:
           fi
 
       # Two independent coverage runs, separate data files, separate reports.
-      #   1) core layer : parsers / actions (decision engine) / config /
-      #                   reporter / async state machines          -> 98
+      #   1) core layer : guild_auto.domain.parsers / .decisions (decision engine)
+      #                   / guild_auto.config / .domain.reporter
+      #                   / guild_auto.concurrency.async_system     -> 98
       #   2) overall    : all production source, tests/ excluded  -> 92
       # `set +e` so BOTH runs always execute and always emit reports even when
       # the first gate already failed - otherwise a core breach would hide the
@@ -101,14 +105,14 @@ jobs:
           set +e
 
           echo "### Gate 1/2: core layer (parsers, actions, config, reporter, async_system) >= 98%"
-          COVERAGE_FILE=.coverage.core python -m pytest tests -v --cov=parsers --cov=actions --cov=config --cov=reporter --cov=async_system --cov-report=term-missing --cov-report=xml:htmlcov/core.xml --cov-report=html:htmlcov/core --cov-fail-under=98
+          COVERAGE_FILE=.coverage.core python -m pytest tests -v --cov=guild_auto.domain.parsers --cov=guild_auto.domain.decisions --cov=guild_auto.config --cov=guild_auto.domain.reporter --cov=guild_auto.concurrency.async_system --cov-report=term-missing --cov-report=xml:htmlcov/core.xml --cov-report=html:htmlcov/core --cov-fail-under=98
           rc_core=$?
 
           echo ""
           echo "### Gate 2/2: overall production source >= 92% (tests/ + dot-dirs excluded)"
           # omit 只能写在覆盖率配置里(pytest-cov 没有 --cov-omit 这个参数),
           # 所以通过 COVERAGE_RCFILE 指向仓库根的 .coveragerc。
-          COVERAGE_FILE=.coverage.total COVERAGE_RCFILE=.coveragerc python -m pytest tests -v --cov=. --cov-report=term-missing --cov-report=xml:htmlcov/total.xml --cov-report=html:htmlcov/total --cov-fail-under=92
+          COVERAGE_FILE=.coverage.total COVERAGE_RCFILE=.coveragerc python -m pytest tests -v --cov=guild_auto --cov-report=term-missing --cov-report=xml:htmlcov/total.xml --cov-report=html:htmlcov/total --cov-fail-under=92
           rc_total=$?
 
           set -e

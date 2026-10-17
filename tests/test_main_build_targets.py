@@ -16,10 +16,9 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from main import build_targets  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.main import build_targets  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):

@@ -93,7 +93,8 @@ jobs:
             "--exclude-module", "pythoncom",
             "--exclude-module", "pywintypes",
             "--exclude-module", "pytest",
-            "main.py"
+            "--paths", "src",
+            "src/guild_auto/main.py"
           )
           pyinstaller @pyinstaller_args
 

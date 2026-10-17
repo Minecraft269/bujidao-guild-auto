@@ -24,12 +24,11 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from log_watcher import extract_chat_block, split_messages  # noqa: E402
-from stages import stage_query_async  # noqa: E402
-from runtime import Runtime  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.infrastructure.log_watcher import extract_chat_block, split_messages  # noqa: E402
+from guild_auto.application.stages import stage_query_async  # noqa: E402
+from guild_auto.application.runtime import Runtime  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):
@@ -92,7 +91,7 @@ class _FakeWatcher:
 
 
 def _cfg():
-    from config import DEFAULT_CONFIG
+    from guild_auto.config import DEFAULT_CONFIG
     import json
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     cfg["log"] = {"enabled": False, "level": 4, "dir": "logs"}

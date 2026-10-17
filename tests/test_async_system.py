@@ -25,10 +25,9 @@ import threading
 import time
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from async_system import (  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.concurrency.async_system import (  # noqa: E402
     FAILED,
     OK,
     PENDING,

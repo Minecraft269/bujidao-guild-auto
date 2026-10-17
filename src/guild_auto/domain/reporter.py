@@ -14,7 +14,7 @@ import os
 import re
 from datetime import date
 
-import logger
+from guild_auto.infrastructure import logger
 
 # 文件名安全化:公会名来自日志解析,替换路径分隔符与 Windows 非法字符,
 # 防止 "..\..\evil" 之类名字把报告写到 report_dir 之外

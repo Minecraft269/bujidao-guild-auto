@@ -30,7 +30,7 @@ import queue
 import threading
 import time
 
-import logger
+from guild_auto.infrastructure import logger
 
 # ---------------------------------------------------------------------------
 # 任务状态机

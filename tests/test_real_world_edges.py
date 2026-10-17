@@ -29,10 +29,9 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from parsers import (  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.domain.parsers import (  # noqa: E402
     ParseError,
     parse_guild_list,
     parse_guild_member,

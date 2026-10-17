@@ -24,11 +24,10 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from actions import decide_actions  # noqa: E402
-from parsers import ParseError, parse_guild_member, parse_weekly_exp  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.domain.decisions import decide_actions  # noqa: E402
+from guild_auto.domain.parsers import ParseError, parse_guild_member, parse_weekly_exp  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):

@@ -27,9 +27,8 @@ import unittest
 from datetime import datetime
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
 
 TODAY = datetime.now().strftime("%Y-%m-%d")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -139,7 +138,9 @@ class TestMockPolicy(LoggerTempCase):
     """logger.py 属硬件交互层,但它本身不该有任何设备调用。"""
 
     def test_module_touches_no_device_api(self):
-        src = open(os.path.join(PROJECT_ROOT, "logger.py"), encoding="utf-8").read()
+        # 用模块自身 __file__ 定位源码:src-layout 下它不在仓库根,
+        # 硬拼 PROJECT_ROOT 会在迁移后指向不存在的路径(静默失去这条守卫)。
+        src = open(logger.__file__, encoding="utf-8").read()
         for banned in ("pyautogui", "winsdk", "winrt", "pyperclip", "OcrEngine",
                        "clipboard", "time.sleep", "subprocess"):
             self.assertNotIn(banned, src,

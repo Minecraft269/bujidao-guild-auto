@@ -23,11 +23,10 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from stages import stage_confirm_execution  # noqa: E402
-from runtime import Runtime  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.application.stages import stage_confirm_execution  # noqa: E402
+from guild_auto.application.runtime import Runtime  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):
@@ -36,7 +35,7 @@ for _n in ("log_debug", "log_info", "log_warning", "log_error",
 
 
 def _cfg():
-    from config import DEFAULT_CONFIG
+    from guild_auto.config import DEFAULT_CONFIG
     import json
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     cfg["log"] = {"enabled": False, "level": 4, "dir": "logs"}

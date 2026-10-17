@@ -1,0 +1,376 @@
+# -*- coding: utf-8 -*-
+"""
+config/defaults.py —— 默认值与中文注释(单一真源)
+================================================
+本模块是**唯一**允许出现业务默认值的地方:阈值、文案模板、命令格式、
+等级显示名、QQ 群号占位符等全部在此定义。业务代码一律从配置对象读取,
+缺键抛 KeyError,不提供兜底串(硬编码兜底会悄悄覆盖用户修改)。
+
+每个键都必须在 CONFIG_COMMENTS 里有中文说明,内容包含两部分:
+  1. 作用 —— 这个键控制什么行为
+  2. 可填值 —— 取值范围 / 合法值 / 示例
+生成的 config.json 是 JSONC 格式,每个键上方有一行 // 注释。
+"""
+
+DEFAULT_CONFIG = {
+    # ── 人员信息 ────────────────────────────────────────────────────────────
+    # 管理员名:当前执行操作的人,用于报告与通知标注(原脚本公告尾部"若有异议联系群管理员<ID>")
+    # 留空=启动时自动从游戏日志的 "--username, <ID>" 启动参数中识别;填写后以填写值为准
+    "admin": "",
+    # 公会 QQ 群号:通知文案尾部"公会群:<号>"(原脚本硬编码 YOUR_QQ_GROUP)
+    "guild_qq": "YOUR_QQ_GROUP",
+
+    # ── 游戏文件路径 ────────────────────────────────────────────────────────
+    # 游戏日志路径:网易版客户端 logs/latest.log,日志钩子增量读取
+    "game_log": r"C:\Path\To\Minecraft\logs\latest.log",
+    # 游戏配置文件路径:Minecraft options.txt,用于 auto 模式读取聊天键(key_key.chat)
+    "game_options": r"C:\Path\To\Minecraft\heypixel\options.txt",
+    # 日志编码:auto=自动检测(依次尝试 utf-8/gbk/gb2312);可指定 "utf-8"/"gbk"/"gb2312"
+    "log_encoding": "auto",
+
+    # ── 窗口与按键 ──────────────────────────────────────────────────────────
+    # 游戏窗口标题关键词(任一命中即视为游戏窗口;大小写不敏感;首个命中优先)
+    "window_keywords": ["Minecraft", "布吉岛", "HeyPixel", "heypixel"],
+    # 聊天栏打开按键:auto=读 options.txt 的 key_key.chat 自动映射;也可直接写 pyautogui 键名
+    # (如 "t"/"enter"/"space"),或中文别名(如 "回车"/"空格"/"esc")
+    "chat_key": "auto",
+    # 暂停键:运行中随时暂停/继续(pynput 键名,如 "u"/"p";键盘全局监听)
+    "pause_key": "u",
+    # 公会名:留空=运行时从 /guild list 输出自动识别(推荐);也可手动指定以校验
+    "guild_name": "",
+
+    # ── 查询范围 ────────────────────────────────────────────────────────────
+    # 逐人查询范围:"all"=全员(会长/管理员除外);或仅查指定等级:
+    # "high"(高活跃)/"mid"(中等活跃)/"low"(低活跃)/"entry"(入门)
+    "query_scope": "all",
+    # 踢出确认:true=执行踢出前在控制台列出清单,输入 kick-confirm 才执行(踢出不可逆,建议保持 true)
+    "kick_confirm": True,
+    # 跳过职位:默认跳过 会长/副会长/管理员(不查询不操作,与原脚本 skip_groups 一致);
+    # 如需查询某职位,将其从列表移除即可
+    "skip_ranks": ["leader", "vice_leader", "admin"],
+
+    # ── 升/降/踢 阈值(原样继承自原脚本,勿改动数值) ────────────────────────
+    # 取值:非负整数,单位=公会经验周贡献。语义与边界(含/不含)见 docs/业务规则继承清单.md §1
+    "thresholds": {
+        # 高活跃:周贡献 <= high_demote → 降职(原 run_auto.py,含边界)
+        "high_demote": 30000,
+        # 中等活跃:周贡献 >= mid_promote → 升职(原 run_mid.py,含边界)
+        "mid_promote": 30000,
+        # 中等活跃:周贡献 <  mid_demote → 降职(原 run_mid.py,不含边界)
+        "mid_demote": 5000,
+        # 低活跃:周贡献 >= low_promote_2 → 升职×2;>= low_promote_1 → 升职×1
+        "low_promote_2": 30000,
+        "low_promote_1": 10000,
+        # 低活跃:周贡献 <  low_demote → 降职(不含边界)
+        "low_demote": 3500,
+        # 入门:周贡献 >= entry_promote_3 → 升职×3;>= entry_promote_2 → 升职×2;>= entry_promote_1 → 升职×1
+        "entry_promote_3": 30000,
+        "entry_promote_2": 10000,
+        "entry_promote_1": 3500,
+        # 入门:周贡献 <  entry_kick → 踢出(不含边界)
+        "entry_kick": 3500,
+    },
+
+    # ── 模拟人工延迟(秒,随机范围) ──────────────────────────────────────────
+    "delays": {
+        # 命令间最小/最大间隔:相邻两条游戏命令的随机等待(防频率检测)
+        "min_send_interval": 1.5,
+        "max_send_interval": 3.0,
+        # 粘贴后到按回车的最小/最大延迟
+        "min_paste_to_enter": 0.15,
+        "max_paste_to_enter": 0.4,
+        # 按聊天键后的最小/最大延迟(等输入框打开)
+        "min_chat_key_delay": 0.3,
+        "max_chat_key_delay": 0.6,
+    },
+
+    # ── 超时与重试(秒) ─────────────────────────────────────────────────────
+    "timeouts": {
+        # 发送命令后等待日志出现响应块的最长秒数(服务器慢可调大,如 20)
+        "response_wait": 12.0,
+        # 试探式发送的首次等待(秒):直接粘贴+回车后若聊天栏未开则无响应,
+        # 用此短超时快速判断并重试(重试时聊天栏已打开,发送成功)。建议 2~5
+        "try_wait": 3.0,
+        # 试探式发送的最大尝试次数(每次=粘贴+回车;聊天栏未开/菜单场景需 2~3 次)
+        "try_times": 3,
+        # 单个玩家查询失败后的最大重试次数(原脚本 MAX_RETRIES=10,重构默认 3)
+        "max_retries": 3,
+        # 日志轮询间隔(毫秒):读 latest.log 新行的频率
+        "poll_interval_ms": 300,
+        # 执行命令后错误回显检测窗口(秒):慢服务器可调大(如 6)
+        "error_check_window": 4.0,
+    },
+
+    # ── 功能开关 ────────────────────────────────────────────────────────────
+    "switches": {
+        # 升职开关:false=即使满足条件也不执行 promote
+        "promote_enabled": True,
+        # 降职开关:false=不执行 demote
+        "demote_enabled": True,
+        # 踢出开关:false=不执行 kick(建议谨慎,踢出不可逆)
+        "kick_enabled": True,
+        # 执行开关(dry-run):false=仅查询+通知+输出报告,不执行任何升/降/踢
+        "execution_enabled": True,
+        # 通知开关:false=不发送 /gc 广播
+        "notify_enabled": True,
+        # 通知模式:"summary"=查询完成后发一条汇总广播(默认);"per_player"=逐人发送(含无操作玩家)
+        "notify_mode": "summary",
+        # 详细日志开关:true=控制台打印每条查询/解析细节
+        "verbose_log": True,
+    },
+
+    # ── 界面状态检测(截图 + Windows OCR) ────────────────────────────────────
+    "state_check": {
+        # 检测开关:false=跳过检测,始终按聊天键发送。需 winsdk 与系统中文 OCR 语言包
+        "enabled": True,
+        # 菜单界面关键词:识别到任一即认为游戏处于菜单界面,发送前自动按 Esc 关闭
+        # (OCR 输出可能逐字带空格,匹配时会自动去除空白)
+        "menu_keywords": ["回到游戏", "断开连接", "断开链接", "保存并退出", "暂停菜单"],
+        # 聊天栏状态处理:
+        #   "auto"=用下方 chat_bar_keywords 检测(留空=不检测,视为未打开,按聊天键发送);
+        #   "open"=手动告知聊天栏已打开,直接粘贴发送(不按聊天键,防止误发输入框残留内容);
+        #   "closed"=始终按聊天键打开再发送
+        "chat_bar_state": "auto",
+        # 聊天栏输入框特征文字(不同客户端可能不同;命中任一即认为聊天栏已打开)。
+        # 多数网易版客户端输入框无提示文字,默认留空即可
+        "chat_bar_keywords": [],
+        # OCR 结果缓存秒数:发送前用缓存结果判断,避免每条命令都截图识别(截图耗时约 0.5~1 秒)
+        "cache_seconds": 3.0,
+    },
+
+    # ── 命令格式(原样继承原脚本) ───────────────────────────────────────────
+    "commands": {
+        "guild_list": "/guild list",
+        "guild_member": "/guild member {player}",
+        "guild_promote": "/guild promote {player}",
+        "guild_demote": "/guild demote {player}",
+        "guild_kick": "/guild kick {player} {reason}",
+        # 踢出原因(原脚本固定文案)
+        "kick_reason": "未完成一周最低标准",
+        # 公会聊天广播前缀
+        "gc_prefix": "/gc",
+    },
+
+    # ── 通知文案模板(原样继承原脚本,{player}/{weekly}/{count}/{guild_qq} 为占位符) ──
+    "notify_templates": {
+        # 无操作
+        "none": "{player} 这周贡献为:{weekly} 执行操作:无 非常感谢你对公会做出的贡献 公会群:{guild_qq}",
+        # 升职(count=次数)
+        "promote": "{player} 这周贡献为:{weekly} 执行操作:升职({count}次) 非常感谢你对公会做出的贡献 公会群:{guild_qq}",
+        # 降职
+        "demote": "{player} 这周贡献为:{weekly} 执行操作:降职 若有异议请去群里找执行此操作的管理员 公会群:{guild_qq}",
+        # 踢出
+        "kick": "{player} 这周贡献为:{weekly} 执行操作:踢出 未完成这周最低标准 若有异议请去群里寻找执行管理员 公会群:{guild_qq}",
+        # 汇总广播(summary 模式,查询完成后、执行前发送)
+        "summary": "本周公会清人结果:升职 {promote} 人,降职 {demote} 人,踢出 {kick} 人,执行人:{admin},详情见群文件",
+    },
+
+    # ── 等级显示名(与游戏 /guild list 分组标题对应) ────────────────────────
+    # 注:副会长(vice_leader)按原脚本设计默认跳过(见 skip_ranks);如需处理可从 skip_ranks 移除
+    "rank_names": {
+        "leader": "会长",
+        "vice_leader": "副会长",
+        "admin": "管理员",
+        "high": "高活跃成员",
+        "mid": "中等活跃成员",
+        "low": "低活跃成员",
+        "entry": "入门成员",
+    },
+
+    # ── 输出 ────────────────────────────────────────────────────────────────
+    # 报告输出目录(相对脚本运行目录;自动创建)
+    "report_dir": "reports",
+    # 公告尾部联系人文案(原脚本"若有异议联系群管理员演示管理员")
+    "contact_text": "若有异议联系群管理员{admin}",
+
+    # ── 执行错误检测(日志中出现任一关键词视为命令执行失败) ─────────────────
+    "error_patterns": [
+        "错误的参数用法",
+        "不存在该玩家",
+        "玩家不存在",
+        "没有这个玩家",
+        "权限不足",
+        "无权限",
+    ],
+
+    # ── Debug 模式 ────────────────────────────────────────────────────────────
+    "debug": {
+        # 是否启用 debug 模式（跳过真实查询，使用模拟数据）
+        "enabled": False,
+        # 跳过的阶段列表：可选 "list"、"member"、"decide"、"notify"、"execute"
+        "skip_stages": ["list", "member"],
+        # 模拟数据配置
+        "simulation": {
+            # 模拟公会名
+            "guild_name": "Debug公会",
+            # 每个等级生成的玩家数量：可以是整数（所有等级统一），或对象（如 {"high":3, "mid":2, ...}）
+            # 对象中的键必须是 rank_names 中定义的等级，缺失的等级默认使用 1
+            "players_per_rank": 3,
+            # 周贡献随机范围（最小值，最大值），若未指定则使用 [0, 50000]
+            "contribution_range": [0, 50000],
+        }
+    },
+
+    # ── 异步执行 ────────────────────────────────────────────────────────────
+    "async": {
+        # 是否启用异步(后台)模式:false=串行(**流程规格的默认模式**:
+        # 逐条发送、逐条读日志验证);true=异步(主线程只发不验,验证交给后台系统)
+        "enabled": False,
+        # 后台执行线程数:固定 1——游戏聊天命令经模拟键盘发送,
+        # 并发会交叉输入导致命令错乱;"逐一读取验证"即单线程串行
+        "num_workers": 1,
+        # 命令队列最大容量:满时丢弃后续命令
+        "max_queue_size": 100,
+        # 验证失败最大重试次数(重试耗尽的任务进入补做队列)
+        "max_retries": 3,
+        # 重试间隔(秒)
+        "retry_delay": 1.0,
+    },
+
+    # ── 日志 ────────────────────────────────────────────────────────────────
+    "log": {
+        # 是否启用日志文件
+        "enabled": True,
+        # 日志级别:数字越大越详细,每级包含上一级(更严重)的全部
+        # 1=致命(启动失败/意外关闭) 2=严重错误 3=错误 4=信息(默认) 5=调试 6=追踪
+        "level": 4,
+        # 日志目录(相对脚本运行目录,自动创建)
+        "dir": "logs",
+    }
+}
+
+# 生成默认配置文件时,每个键插入的 "// 注释" 键(JSONC 风格,加载时自动递归过滤)。
+# 键路径用 '.' 连接(如 "thresholds.high_demote");注释内容与 DEFAULT_CONFIG 逐键注释一致(作用+取值范围)。
+CONFIG_COMMENTS = {
+    # ── 人员信息 ────────────────────────────────────────────────────────────
+    "admin": "管理员名:当前执行操作的人,用于报告与通知标注(原脚本公告尾部'若有异议联系群管理员<ID>')。"
+             "留空=启动时自动从游戏日志的 --username, <ID> 启动参数中识别;填写后以填写值为准",
+    "guild_qq": "公会 QQ 群号:通知文案尾部'公会群:<号>'(原脚本硬编码 YOUR_QQ_GROUP)",
+    # ── 游戏文件路径 ────────────────────────────────────────────────────────
+    "game_log": "游戏日志路径:网易版客户端 logs/latest.log,日志钩子增量读取。取正在运行的客户端的日志",
+    "game_options": "游戏配置文件路径:Minecraft options.txt,用于 auto 模式读取聊天键(key_key.chat)",
+    "log_encoding": "日志编码:auto=自动检测(依次尝试 utf-8/gbk/gb2312);或手动指定 'utf-8'/'gbk'/'gb2312'。"
+                    "网易版客户端日志通常为 GB2312",
+    # ── 窗口与按键 ──────────────────────────────────────────────────────────
+    "window_keywords": "游戏窗口标题关键词(任一命中即视为游戏窗口;大小写不敏感;首个命中优先)",
+    "chat_key": "聊天栏打开按键:auto=读 options.txt 的 key_key.chat 自动映射(本机通常为回车);"
+                "也可直接写 pyautogui 键名(如 't'/'enter'/'space'),或中文别名(如 '回车'/'空格'/'esc')",
+    "pause_key": "暂停键:运行中随时暂停/继续(pynput 键名,如 'u'/'p';键盘全局监听)",
+    "guild_name": "公会名:留空=运行时从 /guild list 输出自动识别(推荐);也可手动指定以校验",
+    # ── 查询范围 ────────────────────────────────────────────────────────────
+    "query_scope": "逐人查询范围:'all'=全员(会长/管理员除外);或仅查指定等级:"
+                   "'high'(高活跃)/'mid'(中等活跃)/'low'(低活跃)/'entry'(入门)",
+    "skip_ranks": "跳过的职位(不查询不操作):'leader'(会长)/'vice_leader'(副会长)/'admin'(管理员);如需查询请从列表移除",
+    "kick_confirm": "踢出确认:true=执行踢出前在控制台列出清单,输入 kick-confirm 才执行(踢出不可逆,建议保持 true)",
+    # ── 升/降/踢 阈值(原样继承自原脚本,勿改动数值) ────────────────────────
+    "thresholds": "升/降/踢阈值:取值非负整数,单位=公会经验周贡献。语义与边界(含/不含)见 docs/业务规则继承清单.md §1",
+    "thresholds.high_demote": "高活跃:周贡献 <= 此值 → 降职(原 run_auto.py,含边界)",
+    "thresholds.mid_promote": "中等活跃:周贡献 >= 此值 → 升职(原 run_mid.py,含边界)",
+    "thresholds.mid_demote": "中等活跃:周贡献 < 此值 → 降职(原 run_mid.py,不含边界)",
+    "thresholds.low_promote_2": "低活跃:周贡献 >= 此值 → 升职×2",
+    "thresholds.low_promote_1": "低活跃:周贡献 >= 此值 → 升职×1",
+    "thresholds.low_demote": "低活跃:周贡献 < 此值 → 降职(不含边界)",
+    "thresholds.entry_promote_3": "入门:周贡献 >= 此值 → 升职×3",
+    "thresholds.entry_promote_2": "入门:周贡献 >= 此值 → 升职×2",
+    "thresholds.entry_promote_1": "入门:周贡献 >= 此值 → 升职×1",
+    "thresholds.entry_kick": "入门:周贡献 < 此值 → 踢出(不含边界)",
+    # ── 模拟人工延迟(秒,随机范围) ──────────────────────────────────────────
+    "delays": "模拟人工延迟(秒,随机范围):相邻命令与按键间随机等待,防频率检测",
+    "delays.min_send_interval": "命令间最小间隔:相邻两条游戏命令的随机等待下限。建议 0.5~5",
+    "delays.max_send_interval": "命令间最大间隔:随机等待上限(须 >= min)。建议 1~8",
+    "delays.min_paste_to_enter": "粘贴后到按回车的最小延迟(秒)",
+    "delays.max_paste_to_enter": "粘贴后到按回车的最大延迟(秒)",
+    "delays.min_chat_key_delay": "按聊天键后的最小延迟(秒,等输入框打开)",
+    "delays.max_chat_key_delay": "按聊天键后的最大延迟(秒)",
+    # ── 超时与重试(秒) ─────────────────────────────────────────────────────
+    "timeouts": "超时与重试(秒):发命令→等响应→超时处理",
+    "timeouts.response_wait": "发送命令后等待日志出现响应块的最长秒数(服务器慢可调大,如 20)",
+    "timeouts.try_wait": "试错式发送的首次等待(秒):直接粘贴+回车后若聊天栏未开则无响应,"
+                         "用此短超时快速判断并重试(重试时聊天栏已打开,发送成功)。建议 2~5",
+    "timeouts.try_times": "试错式发送的最大尝试次数(每次=粘贴+回车;聊天栏未开/菜单界面场景需 2~3 次)",
+    "timeouts.max_retries": "单个玩家查询失败后的最大重试次数(原脚本 MAX_RETRIES=10,重构默认 3;建议 2~5)",
+    "timeouts.poll_interval_ms": "日志轮询间隔(毫秒):读 latest.log 新行的频率",
+    "timeouts.error_check_window": "执行命令后错误回显检测窗口(秒):发送后收集该时长内日志,命中 error_patterns 判定失败;"
+                                   "服务器响应慢可调大(如 6)",
+    # ── 异步执行 ────────────────────────────────────────────────────────────
+    "async": "异步执行配置:多线程后台执行命令,加快查询+操作流程",
+    "async.enabled": "启用开关:true=启用异步执行,fals=串行执行(调试建议关闭)",
+    "async.num_workers": "后台线程数:每个线程独立轮询日志验证命令结果，默认 2",
+    "async.max_queue_size": "命令队列最大容量:满时丢弃后续命令，默认 100",
+    "async.max_retries": "验证失败最大重试次数:重试耗尽的任务进入补做队列。建议 1~5",
+    "async.retry_delay": "重试间隔(秒):失败后等待多久再重试,建议 0.5~3",
+    # ── 功能开关 ────────────────────────────────────────────────────────────
+    "switches": "功能开关:每类操作可单独开关;执行开关 false=dry-run(仅查询+通知+输出报告)",
+    "switches.promote_enabled": "升职开关:false=即使满足条件也不执行 promote",
+    "switches.demote_enabled": "降职开关:false=不执行 demote",
+    "switches.kick_enabled": "踢出开关:false=不执行 kick(建议谨慎,踢出不可逆)",
+    "switches.execution_enabled": "执行开关(dry-run):false=仅查询+通知+输出报告,不执行任何升/降/踢。命令行 --dry-run 等价",
+    "switches.notify_enabled": "通知开关:false=不发送 /gc 广播",
+    "switches.notify_mode": "通知模式:'summary'=查询完成后发一条汇总广播;'per_player'=逐人按原文案发送",
+    "switches.verbose_log": "详细日志开关:true=控制台打印每条查询/解析细节",
+    # ── 界面状态检测(截图 + Windows OCR) ───────────────────────────────────
+    "state_check": "界面状态检测(截图+Windows OCR):识别游戏菜单界面并自动按 Esc 关闭;"
+                    "需 winsdk 与系统中文 OCR 语言包,不可用时自动降级为纯试错式发送",
+    "state_check.enabled": "检测开关:false=跳过检测(始终按聊天键发送)",
+    "state_check.menu_keywords": "菜单界面关键词:OCR 识别到任一即认为游戏处于菜单界面,发送前自动按 Esc 关闭",
+    "state_check.chat_bar_state": "聊天栏状态处理:'auto'=用下方 chat_bar_keywords 检测(留空=不检测,视为未打开);"
+                                  "'open'=手动告知聊天栏已打开,直接粘贴发送(不按聊天键);'closed'=始终按聊天键打开再发送",
+    "state_check.chat_bar_keywords": "聊天栏输入框特征文字(不同客户端可能不同;命中任一即认为聊天栏已打开)。"
+                                     "多数网易版客户端输入框无提示文字,默认留空即可",
+    "state_check.cache_seconds": "OCR 结果缓存秒数:发送前用缓存结果判断,避免每条命令都截图识别(截图耗时约 0.5~1 秒)",
+
+    # ── 命令格式(原样继承原脚本) ───────────────────────────────────────────
+    "commands": "命令格式(原样继承原脚本,勿改格式)。{player}/{reason} 为占位符",
+    "commands.guild_list": "查列表命令",
+    "commands.guild_member": "查成员命令,{player} 为占位符",
+    "commands.guild_promote": "升职命令(按次数重复发送)",
+    "commands.guild_demote": "降职命令",
+    "commands.guild_kick": "踢出命令,{player}/{reason} 为占位符",
+    "commands.kick_reason": "踢出原因(原脚本固定文案)",
+    "commands.gc_prefix": "公会聊天广播前缀",
+    # ── 通知文案模板(原样继承原脚本) ───────────────────────────────────────
+    "notify_templates": "通知文案模板(原样继承原脚本)。占位符:{player}/{weekly}/{count}/{guild_qq}",
+    "notify_templates.none": "无操作通知(原脚本文案)",
+    "notify_templates.promote": "升职通知,count=升职次数(原脚本文案)",
+    "notify_templates.demote": "降职通知(原脚本文案)",
+    "notify_templates.kick": "踢出通知(原脚本文案)",
+    "notify_templates.summary": "汇总广播(summary 模式,查询完成后、执行前发送;{promote}/{demote}/{kick}/{admin} 为占位符)",
+    # ── 等级显示名(与游戏 /guild list 分组标题对应) ────────────────────────
+    "rank_names": "等级显示名(与游戏 /guild list 分组标题对应);游戏输出格式变更时在此调整",
+    "rank_names.leader": "会长(默认跳过,见 skip_ranks)",
+    "rank_names.vice_leader": "副会长(默认跳过,见 skip_ranks;如需处理请从 skip_ranks 移除)",
+    "rank_names.admin": "管理员",
+    "rank_names.high": "高活跃成员",
+    "rank_names.mid": "中等活跃成员",
+    "rank_names.low": "低活跃成员",
+    "rank_names.entry": "入门成员",
+    # ── 输出与错误检测 ──────────────────────────────────────────────────────
+    "report_dir": "报告输出目录(相对脚本运行目录;自动创建)",
+    "contact_text": "公告尾部联系人文案(原脚本'若有异议联系群管理员演示管理员'的风格),{admin} 为占位符",
+    "error_patterns": "执行错误检测:日志中出现任一关键词视为命令执行失败(如'错误的参数用法'/'权限不足')",
+    # ── Debug ────────────────────────────────────────────────────────────
+    "debug": "Debug 模式 （仅调试/测试时使用）",
+    "debug.enabled": "Debug 模式开关",
+    "debug.skip_stages": "跳过的阶段列表：可选 \"list\"、\"member\"、\"decide\"、\"notify\"、\"execute\" （仅在开启Debug 模式时才生效）默认值: \"list\", \"member\"",
+    "debug.simulation": "模拟数据 （用于模拟被跳过数据获取阶段的数据 仅在开启Debug模式生效）",
+    "debug.simulation.guild_name": "模拟公会名数据",
+    "debug.simulation.players_per_rank": "每个等级生成的玩家数量：整数（所有等级统一）或对象（各等级单独指定，如 {\"high\":3,\"mid\":2}），缺失的等级默认为 1",
+    "debug.simulation.contribution_range": "模拟周贡献值的周贡献随机范围（最小值，最大值），若未指定则默认使用 [0, 50000]",
+    "log": "日志系统：写入日志目录下的 latest.log；每次启动自动归档旧日志为按天压缩包 app-YYYY-MM-DD.gz",
+    "log.enabled": "是否启用日志文件（true=记录到文件，false=不写文件）",
+    "log.level": "日志级别：数字越大越详细，每级包含上一级更严重的全部。1=致命(启动失败/意外关闭) 2=严重错误 3=错误 4=信息(默认) 5=调试 6=追踪",
+    "log.dir": "日志目录（相对脚本运行目录，自动创建）"
+}
+
+# 中文键名别名(聊天键/暂停键配置可直接用中文)
+KEY_ALIASES = {
+    "回车": "enter",
+    "空格": "space",
+    "esc": "esc",
+    "esc键": "esc",
+    "退出": "esc",
+    "tab": "tab",
+    "制表键": "tab",
+    "回车键": "enter",
+}
+

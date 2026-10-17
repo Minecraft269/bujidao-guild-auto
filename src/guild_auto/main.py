@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 main.py —— 布吉岛公会管理脚本(全自动版)入口
 =============================================
@@ -19,19 +19,19 @@ import time
 from pynput import keyboard
 import pyautogui
 
-import config as config_mod
-from actions import build_notification, decide_actions, new_rank_after
-from action_executor import ActionExecutor
-from async_executor import AsyncCommandExecutor
-import logger
-from config import console
-from game_state import GameStateDetector, prepare_chat_state
-from log_watcher import LogWatcher, detect_encoding
-import parsers
-from parsers import ParseError, parse_guild_list, parse_guild_member
-from reporter import write_action_report, write_contribution_report
-from stages import stage_confirm_execution, stage_notify, stage_query_async
-from window_input import HumanInput, activate_window, find_game_window
+import guild_auto.config as config_mod
+from guild_auto.domain.decisions import build_notification, decide_actions, new_rank_after
+from guild_auto.infrastructure.action_executor import ActionExecutor
+from guild_auto.concurrency.async_executor import AsyncCommandExecutor
+from guild_auto.infrastructure import logger
+from guild_auto.config import console
+from guild_auto.infrastructure.game_state import GameStateDetector, prepare_chat_state
+from guild_auto.infrastructure.log_watcher import LogWatcher, detect_encoding
+from guild_auto.domain import parsers
+from guild_auto.domain.parsers import ParseError, parse_guild_list, parse_guild_member
+from guild_auto.domain.reporter import write_action_report, write_contribution_report
+from guild_auto.application.stages import stage_confirm_execution, stage_notify, stage_query_async
+from guild_auto.infrastructure.window_input import HumanInput, activate_window, find_game_window
 
 DEFAULT_CONFIG_FILE = "config.json"
 
@@ -47,13 +47,13 @@ _BROADCAST_SEQ = itertools.count(1)
 # runtime re-export:那样拿到的是值副本,写它只会改 main 自己的副本,
 # 而 runtime.is_paused() 读的是 runtime 的变量 → 暂停键静默失效。
 # 唯一写入口是 runtime.set_paused / set_force_stop / set_reset_needed。
-import runtime as runtime_mod  # noqa: E402
-from debug_data import (  # noqa: E402
+import guild_auto.application.runtime as runtime_mod  # noqa: E402
+from guild_auto.application.debug_data import (  # noqa: E402
     _generate_debug_guild,
     _generate_debug_records,
 )
-from debug_data import random_name as _random_name  # noqa: E402,F401
-from pause import (  # noqa: E402
+from guild_auto.application.debug_data import random_name as _random_name  # noqa: E402,F401
+from guild_auto.application.pause import (  # noqa: E402
     _consume_reset_flag,
     _ctrlc_pause_menu,
     _ctrlc_pause_menu_fallback,
@@ -62,8 +62,8 @@ from pause import (  # noqa: E402
     start_pause_listener,
     wait_if_paused,
 )
-from pause import _on_press  # noqa: E402,F401
-from pending import (  # noqa: E402
+from guild_auto.application.pause import _on_press  # noqa: E402,F401
+from guild_auto.application.pending import (  # noqa: E402
     load_pending,
     pending_path_of,
     run_pending,
@@ -590,7 +590,7 @@ def prepare_config(args, console_fn=None, exit_fn=None):
 
 # count_actions / build_summary_message 已迁至 actions.py(文案生成的唯一家),
 # 此处保留 re-export 以不破坏历史调用点。
-from actions import build_summary_message, count_actions  # noqa: E402,F401
+from guild_auto.domain.decisions import build_summary_message, count_actions  # noqa: E402,F401
 def main():
     # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
     # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。

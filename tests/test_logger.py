@@ -16,9 +16,8 @@ import tempfile
 import unittest
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
 
 # 每级标记与对应写入函数
 MARKS = {1: "L1致命标记", 2: "L2严重标记", 3: "L3警告标记",

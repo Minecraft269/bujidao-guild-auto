@@ -43,12 +43,11 @@ import tempfile
 import textwrap
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from actions import decide_actions  # noqa: E402
-from log_watcher import extract_chat_block, split_messages  # noqa: E402
-from parsers import (  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.domain.decisions import decide_actions  # noqa: E402
+from guild_auto.infrastructure.log_watcher import extract_chat_block, split_messages  # noqa: E402
+from guild_auto.domain.parsers import (  # noqa: E402
     MASKED_NAME_MAX_LEN,
     ParseError,
     is_masked_name,
@@ -56,7 +55,7 @@ from parsers import (  # noqa: E402
     parse_guild_member,
     validate_player_name,
 )
-from reporter import write_action_report  # noqa: E402
+from guild_auto.domain.reporter import write_action_report  # noqa: E402
 
 for _n in ("log_debug", "log_info", "log_warning", "log_error",
            "log_critical", "log_trace", "log_exception"):
@@ -577,7 +576,7 @@ class TestMaskedNameInRealShapedPanel(unittest.TestCase):
 def _import_main():
     """导入真实 main.py(不 import 会跳过本组测试 —— main 依赖 pynput/pyautogui)。"""
     try:
-        import main
+        from guild_auto import main
         return main
     except Exception as e:      # pragma: no cover - 无 GUI 依赖时跳过
         raise unittest.SkipTest(f"无法导入 main.py(缺 GUI 依赖?): {e}")

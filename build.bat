@@ -32,7 +32,8 @@ pyinstaller --onefile --clean --noconfirm ^
   --exclude-module IPython ^
   --exclude-module pandas ^
   --collect-all winsdk ^
-  main.py
+  --paths src ^
+  src/guild_auto/main.py
 if errorlevel 1 goto :err
 
 echo === [4/4] Íê³É ===

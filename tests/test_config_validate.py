@@ -24,11 +24,10 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-import config as config_mod  # noqa: E402
-from config import (  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+import guild_auto.config as config_mod  # noqa: E402
+from guild_auto.config import (  # noqa: E402
     DEFAULT_CONFIG,
     VALID_SCOPES,
     apply_cli_overrides,

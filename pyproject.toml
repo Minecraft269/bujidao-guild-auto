@@ -1,9 +1,48 @@
-# 仅供 ruff 使用。本项目不通过 pyproject 构建/安装（脚本本体直接跑 / PyInstaller
-# 打包），所以这里刻意不放 [project] / [build-system]。
+# 项目元数据 + 依赖 + 工具配置(ruff / pytest / coverage)。
+# src-layout:生产代码全部在 src/guild_auto/ 下,根目录不放 .py ——
+# 这样测试只能导入「已安装的包」,杜绝"当前目录同名文件优先"导致的假绿。
 
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "guild-auto"
+version = "2.0.0"
+description = "布吉岛公会管理脚本 —— 半自动公会成员贡献统计与升/降/踢执行"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "All Rights Reserved" }
+dependencies = [
+    "pyautogui>=0.9.54",
+    "pynput>=1.7.6",
+    "pyperclip>=1.8.2",
+]
+
+[project.optional-dependencies]
+ocr = ["winsdk>=1.0.0b10"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff==0.16.10",
+]
+
+[project.scripts]
+guild-auto = "guild_auto.main:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------------------
+# ruff
+# ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 # 选择依据：全是"零误报 + 零存量违规"的规则族。
@@ -20,9 +59,38 @@ select = ["E9", "F", "A", "TC", "ICN", "ISC001", "ISC002", "ISC003", "RSE", "TID
 # 存量欠账，先放行不阻塞 CI。全部可用 `ruff check --select <CODE> --fix` 或手改，
 # 逐条清完即可从 ignore 里删掉（见 CI notes 的欠账清单）。
 ignore = [
-  "F401",  # unused-import         x5
-  "F541",  # f-string 无占位符      x10
-  "F811",  # 重复定义               x1（tests/test_actions_logic.py）
-  "F821",  # undefined-name         x1（main.py:352，真 bug，勿机械 --fix）
-  "F841",  # 局部变量赋值后未使用      x9
+  "F401",  # unused-import
+  "F541",  # f-string 无占位符
+  "F811",  # 重复定义
+  "F841",  # 局部变量赋值后未使用
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["guild_auto"]
+
+# ---------------------------------------------------------------------------
+# pytest / coverage
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# src-layout 下测试必须导入已安装的包。这里额外把 src 塞进 pythonpath，
+# 使本地未 pip install -e . 时也能跑（CI 走 pip install -e . 的主路径）。
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+branch = true
+source = ["guild_auto"]
+omit = [
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
 ]

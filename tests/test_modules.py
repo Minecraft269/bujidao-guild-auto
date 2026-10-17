@@ -15,22 +15,21 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from log_watcher import (  # noqa: E402
+from guild_auto.infrastructure.log_watcher import (  # noqa: E402
     detect_encoding,
     split_messages,
     extract_chat_block,
     is_block_start_line,
     is_block_end_line,
 )
-from window_input import (  # noqa: E402
+from guild_auto.infrastructure.window_input import (  # noqa: E402
     resolve_chat_key,
     read_chat_key_from_options,
     MC_KEY_TO_PYAUTOGUI,
 )
-from reporter import write_contribution_report, write_action_report  # noqa: E402
-from config import validate_config, ensure_default_config, load_config, DEFAULT_CONFIG  # noqa: E402
+from guild_auto.domain.reporter import write_contribution_report, write_action_report  # noqa: E402
+from guild_auto.config import validate_config, ensure_default_config, load_config, DEFAULT_CONFIG  # noqa: E402
 
 
 class TestDetectEncoding(unittest.TestCase):
@@ -202,13 +201,13 @@ class TestReports(unittest.TestCase):
         审查明确建议"补断言而非改产品代码":"未知"本就是不可达分支的
         合理兜底,改它反而是在给死分支加行为。
         """
-        from reporter import action_display
+        from guild_auto.domain.reporter import action_display
         self.assertEqual(action_display(["unknown_action"]), "未知")
         self.assertEqual(action_display([]), "无")
 
     def test_action_display_real_operations(self):
         """正向:四种真实操作的展示文本与报告口径一致。"""
-        from reporter import action_display
+        from guild_auto.domain.reporter import action_display
         self.assertEqual(action_display(["promote"]), "升职(1次)")
         self.assertEqual(action_display(["promote"] * 3), "升职(3次)")
         self.assertEqual(action_display(["demote"]), "降职")
@@ -264,7 +263,7 @@ class TestSecurityHardening(unittest.TestCase):
     """
 
     def test_player_name_blacklist(self):
-        from parsers import validate_player_name, ParseError
+        from guild_auto.domain.parsers import validate_player_name, ParseError
         # 危险名:路径符/●/花括号/控制字符/超长/空 → 全拒
         for bad in (r"..\..\evil", "A●B", "{0.__class__}", "a/b", 'x"y', "", "x" * 49,
                     "tab\tname", "nl\nname"):
@@ -276,7 +275,7 @@ class TestSecurityHardening(unittest.TestCase):
             self.assertEqual(validate_player_name(good), good)
 
     def test_guild_name_sanitized_for_filename(self):
-        from reporter import _safe_guild_name
+        from guild_auto.domain.reporter import _safe_guild_name
         s = _safe_guild_name("..\\..\\evil")
         self.assertNotIn("\\", s)
         self.assertNotIn("/", s)
@@ -296,7 +295,7 @@ class TestSecurityHardening(unittest.TestCase):
         """
         import shutil
         import tempfile
-        from reporter import (_MAX_GUILD_NAME_LEN, _safe_guild_name,
+        from guild_auto.domain.reporter import (_MAX_GUILD_NAME_LEN, _safe_guild_name,
                               write_action_report, write_contribution_report)
         tmp = tempfile.mkdtemp()
         try:
@@ -319,7 +318,7 @@ class TestSecurityHardening(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_log_rotation_seeks_to_end(self):
-        from log_watcher import LogWatcher
+        from guild_auto.infrastructure.log_watcher import LogWatcher
         d = tempfile.mkdtemp()
         p = os.path.join(d, "latest.log")
         with open(p, "w", encoding="utf-8") as f:

@@ -21,16 +21,16 @@ import time
 from pynput import keyboard
 import pyautogui
 
-import logger
-import runtime
-from config import console
-from game_state import prepare_chat_state
-from runtime import (
+from guild_auto.infrastructure import logger
+from guild_auto.application import runtime
+from guild_auto.config import console
+from guild_auto.infrastructure.game_state import prepare_chat_state
+from guild_auto.application.runtime import (
     _pause_event,
     consume_reset_flag,
     set_reset_needed,
 )
-from window_input import activate_window
+from guild_auto.infrastructure.window_input import activate_window
 
 __all__ = [
     "start_pause_listener",

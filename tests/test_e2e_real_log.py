@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 test_e2e_real_log.py —— 用真实游戏日志驱动的端到端集成测试
 ============================================================
@@ -22,10 +22,9 @@ import tempfile
 import threading
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger
-from log_watcher import (  # noqa: E402
+from guild_auto.infrastructure import logger
+from guild_auto.infrastructure.log_watcher import (  # noqa: E402
     LogWatcher,
     detect_encoding,
     extract_chat_block,
@@ -197,7 +196,7 @@ class TestFirstCommandGuard(unittest.TestCase):
         discard_buffer 跳过的旧块)即使在 0.5s 后能被 extract,守卫也已经放行——
         所以本测试必须保持"文件里没有可被 extract 的新内容"才能验证守卫真起作用。
         """
-        from log_watcher import LogWatcher
+        from guild_auto.infrastructure.log_watcher import LogWatcher
         # 写一个文件:只有"非面板"内容,没有 ---- 块;discard_buffer 跳完后
         # wait 永远拿不到完整块 → 必须依赖 timeout 退出
         nonblock_path = os.path.join(self.tmpdir, "nonblock.log")
@@ -226,7 +225,7 @@ class TestFirstCommandGuard(unittest.TestCase):
     def test_min_wait_blocks_when_file_has_no_new_content(self):
         """min_wait_after_start + timeout < min_wait + 文件无新内容 → 必须返回 None。
         验证:守卫拦的是"起步 N 秒内不返回",文件无新内容情况下,wait 走满 timeout 就退出。"""
-        from log_watcher import LogWatcher
+        from guild_auto.infrastructure.log_watcher import LogWatcher
         # 文件只有普通聊天,无 ---- 块 → extract 永远拿不到块
         nb_path = os.path.join(self.tmpdir, "no_block.log")
         with open(nb_path, "w", encoding="utf-8") as f:
@@ -264,8 +263,8 @@ class TestPauseEvent(unittest.TestCase):
         若哪天有人把它改成 `from runtime import _paused` 那种值副本,
         这个断言(身份比较)会立刻红 —— 那正是暂停键静默失效的根因形态。
         """
-        import main
-        import runtime
+        from guild_auto import main
+        from guild_auto.application import runtime
         self.assertTrue(hasattr(main, "_pause_event"))
         self.assertIsInstance(main._pause_event, threading.Event)
         self.assertIs(main._pause_event, runtime._pause_event,
@@ -278,8 +277,8 @@ class TestPauseEvent(unittest.TestCase):
         直接调真实 _toggle_pause(不再手工模拟它该做什么),
         否则测的只是"Event.set/clear 能不能用"。
         """
-        import runtime
-        from pause import _toggle_pause
+        from guild_auto.application import runtime
+        from guild_auto.application.pause import _toggle_pause
         runtime.set_paused(False)
         runtime._pause_event.clear()
         runtime.consume_reset_flag()          # 清掉可能残留的重置标志
@@ -308,7 +307,7 @@ class TestCtrlCMenuModuleImports(unittest.TestCase):
 
     def test_ctrlc_pause_menu_uses_msvcrt_on_windows(self):
         """_ctrlc_pause_menu 在源码中应包含 msvcrt 路径(Windows 走非阻塞轮询)。"""
-        import main
+        from guild_auto import main
         import inspect
         src = inspect.getsource(main._ctrlc_pause_menu)
         self.assertIn("msvcrt", src, "_ctrlc_pause_menu 未走 msvcrt 路径")
@@ -317,7 +316,7 @@ class TestCtrlCMenuModuleImports(unittest.TestCase):
 
     def test_fallback_function_exists(self):
         """非 Windows 平台应回退到 _ctrlc_pause_menu_fallback。"""
-        import main
+        from guild_auto import main
         self.assertTrue(hasattr(main, "_ctrlc_pause_menu_fallback"))
         import inspect
         src = inspect.getsource(main._ctrlc_pause_menu_fallback)
@@ -332,7 +331,7 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
 
     def setUp(self):
         _setup_fake_logger()
-        import runtime
+        from guild_auto.application import runtime
         runtime.set_force_stop(False)
         runtime.set_paused(False)
         runtime._pause_event.clear()
@@ -341,8 +340,8 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
         """单独按 Ctrl 键(Key.ctrl_l,无后续字符)→ _on_press 必须不动 _force_stop。
         这是 pynput 报"用户按了 Ctrl 修饰键但还没按其他键"的常见帧——绝不能误判。"""
         from pynput.keyboard import Key
-        import main
-        import runtime
+        from guild_auto import main
+        from guild_auto.application import runtime
         runtime.set_force_stop(False)         # 先确保初始态
         main._on_press(Key.ctrl_l)
         self.assertFalse(runtime.is_force_stop(),
@@ -352,8 +351,8 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
         """Ctrl+V(脚本粘贴聊天命令)→ on_press 收到 '\x16' → _on_press 必须不动 _force_stop。
         这是脚本自身行为:window_input.send_chat_text 调 pyautogui.hotkey("ctrl", "v")。"""
         from pynput.keyboard import KeyCode
-        import main
-        import runtime
+        from guild_auto import main
+        from guild_auto.application import runtime
         runtime.set_force_stop(False)
         # pynput 报 Ctrl+V 是 KeyCode(v_char='\x16')
         main._on_press(KeyCode.from_char('\x16'))
@@ -368,8 +367,8 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
         且 mock os.kill 验证参数确实是 CTRL_C_EVENT。"""
         from pynput.keyboard import KeyCode
         from unittest.mock import patch
-        import main
-        import runtime
+        from guild_auto import main
+        from guild_auto.application import runtime
         runtime.set_force_stop(False)
         # 验证 on_press 源码含 os.kill + CTRL_C_EVENT 路径
         import inspect
@@ -404,7 +403,7 @@ class TestPasteAndEnterReturnsTrue(unittest.TestCase):
     def test_paste_and_enter_has_return_true_in_source(self):
         """源码必须含 `return True`(成功路径显式返回)。
         用 inspect.getsource 检查比 mock pyautogui 简单可靠。"""
-        from window_input import HumanInput
+        from guild_auto.infrastructure.window_input import HumanInput
         import inspect
         src = inspect.getsource(HumanInput.paste_and_enter)
         self.assertIn("return True", src,
@@ -419,13 +418,13 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
 
     def setUp(self):
         _setup_fake_logger()
-        import runtime
+        from guild_auto.application import runtime
         runtime.reset_state()      # 未暂停 / 无 Ctrl+C / 无待重置标志
 
     def test_wait_if_paused_raises_on_force_stop(self):
         """_force_stop=True 时 wait_if_paused 必须立即 raise KeyboardInterrupt。"""
-        import main
-        import runtime
+        from guild_auto import main
+        from guild_auto.application import runtime
         runtime.set_force_stop(True)
         with self.assertRaises(KeyboardInterrupt):
             main.wait_if_paused()
@@ -434,8 +433,8 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
     def test_wait_if_paused_blocks_when_paused_only(self):
         """仅 _paused=True(用户按 u,非 Ctrl+C)→ wait_if_paused 阻塞等待 _paused=False。
         这里用后台线程 0.2s 后清 _paused,验证 wait_if_paused 能正常返回。"""
-        import main
-        import runtime
+        from guild_auto import main
+        from guild_auto.application import runtime
         import threading
         runtime.set_paused(True)
         runtime._pause_event.set()
@@ -454,8 +453,8 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
 
     def test_wait_if_paused_returns_immediately_when_not_paused(self):
         """_paused=False 且 _force_stop=False → 立即返回。"""
-        import main
-        import runtime
+        from guild_auto import main
+        from guild_auto.application import runtime
         runtime.reset_state()
         start = time.time()
         main.wait_if_paused()

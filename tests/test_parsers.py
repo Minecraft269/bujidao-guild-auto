@@ -10,9 +10,8 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from parsers import (  # noqa: E402
+from guild_auto.domain.parsers import (  # noqa: E402
     ParseError,
     parse_guild_list,
     parse_guild_member,
@@ -41,7 +40,7 @@ def to_block_lines(text):
     """把单条 [CHAT] 消息日志文本转为块内容行(模拟 log_watcher.wait_for_chat_block 结果)。
     真实格式(网易版):整条面板为单物理行,内部换行以字面 "\\n" 写入,结尾线可能带 " [C]" 标记;
     也兼容标准 Java 版的物理多行格式。"""
-    from log_watcher import is_block_end_line, is_block_start_line
+    from guild_auto.infrastructure.log_watcher import is_block_end_line, is_block_start_line
     idx = text.find("[CHAT]")
     content = text[idx + len("[CHAT]"):] if idx >= 0 else text
     content = content.replace("\\n", "\n")  # 字面 \n → 真实换行(单行格式)

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 log_watcher.py —— 日志钩子模块
 ===============================
@@ -7,7 +7,7 @@ log_watcher.py —— 日志钩子模块
   * 新行读取(含文件轮转处理)
   * "发命令→等待响应块→超时" 原语(块 = 两条分隔线之间)
 """
-import logger
+from guild_auto.infrastructure import logger
 import os
 import re
 import time
@@ -28,7 +28,7 @@ def _force_stop():
     且会把整个入口模块(含 pynput 全局钩子)拖进这个纯 IO 模块的导入链。
     """
     try:
-        from runtime import is_force_stop
+        from guild_auto.application.runtime import is_force_stop
     except ImportError:
         return False
     return is_force_stop()

@@ -30,9 +30,9 @@ pending.py —— 待办持久化与断点续做
 import json
 import os
 
-import logger
-from config import console
-from parsers import ParseError, validate_player_name
+from guild_auto.infrastructure import logger
+from guild_auto.config import console
+from guild_auto.domain.parsers import ParseError, validate_player_name
 
 
 def pending_path_of(cfg):
@@ -110,7 +110,7 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None,
     if do_exec:
         # 延迟 import:暂停门住在 pause.py,而 pause.py 经 runtime 间接依赖,
         # 模块级 import 会成环
-        from pause import reset_window_state_after_pause, wait_if_paused
+        from guild_auto.application.pause import reset_window_state_after_pause, wait_if_paused
         for it in items:
             wait_if_paused()
             # 暂停恢复后重置窗口状态(与主执行循环一致)

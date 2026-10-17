@@ -39,11 +39,10 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logger  # noqa: E402
-from actions import decide_actions, new_rank_after  # noqa: E402
-from config import DEFAULT_CONFIG  # noqa: E402
+from guild_auto.infrastructure import logger  # noqa: E402
+from guild_auto.domain.decisions import decide_actions, new_rank_after  # noqa: E402
+from guild_auto.config import DEFAULT_CONFIG  # noqa: E402
 
 # logger 未 init 时不写文件,这里只需保证被调用的 log_* 函数可用
 for _n in ("log_debug", "log_info", "log_warning", "log_error",

@@ -21,9 +21,8 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import (  # noqa: E402
+from guild_auto.config import (  # noqa: E402
     DEFAULT_CONFIG,
     VALID_NOTIFY_MODES,
     VALID_SCOPES,
@@ -102,7 +101,7 @@ class TestJsoncParsing(_TmpMixin, unittest.TestCase):
 
     def test_generated_config_parses_with_block_comments(self):
         """生成器产出的 // 注释 + 用户手加的 /* */ 混排仍可解析。"""
-        from config import ensure_default_config
+        from guild_auto.config import ensure_default_config
         p = os.path.join(self.tmp, "mixed.json")
         ensure_default_config(p)
         with open(p, "a", encoding="utf-8") as f:
@@ -315,7 +314,7 @@ class TestCommentCoverage(unittest.TestCase):
 
     def test_generated_file_annotates_every_key(self):
         """生成的文件里,每个配置键的行都应能在其上方找到 // 注释行。"""
-        from config import ensure_default_config
+        from guild_auto.config import ensure_default_config
         tmp = tempfile.mkdtemp()
         try:
             p = os.path.join(tmp, "gen.json")
@@ -423,7 +422,7 @@ class TestBusinessRuleDefaults(unittest.TestCase):
 
 
 # 直接引用 CONFIG_COMMENTS(避免在测试里 import 私有名字的写法散落)
-from config import CONFIG_COMMENTS as _COMMENTS  # noqa: E402
+from guild_auto.config import CONFIG_COMMENTS as _COMMENTS  # noqa: E402
 import re  # noqa: E402
 
 

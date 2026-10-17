@@ -24,10 +24,9 @@ import types
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import game_state  # noqa: E402
-from game_state import (  # noqa: E402
+from guild_auto.infrastructure import game_state  # noqa: E402
+from guild_auto.infrastructure.game_state import (  # noqa: E402
     CHAT_BAR_KEYWORDS,
     MENU_KEYWORDS,
     GameStateDetector,

@@ -10,9 +10,8 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from actions import (  # noqa: E402
+from guild_auto.domain.decisions import (  # noqa: E402
     build_command,
     build_notification,
     decide_actions,

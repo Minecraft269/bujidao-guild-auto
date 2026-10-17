@@ -16,12 +16,12 @@ import time
 
 import pyautogui
 
-import logger
-from actions import build_command
-from config import console
-from game_state import prepare_chat_state
-from parsers import strip_chat_prefix
-from window_input import activate_window
+from guild_auto.infrastructure import logger
+from guild_auto.domain.decisions import build_command
+from guild_auto.config import console
+from guild_auto.infrastructure.game_state import prepare_chat_state
+from guild_auto.domain.parsers import strip_chat_prefix
+from guild_auto.infrastructure.window_input import activate_window
 
 
 class ActionExecutor:
@@ -141,7 +141,7 @@ class ActionExecutor:
         导致所有真实面板都取不到内容)。
         """
         try:
-            from log_watcher import extract_chat_block, split_messages
+            from guild_auto.infrastructure.log_watcher import extract_chat_block, split_messages
             block = extract_chat_block(split_messages(list(lines))[0]) \
                 if split_messages(list(lines)) else None
         except Exception:
