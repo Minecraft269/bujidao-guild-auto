@@ -17,8 +17,9 @@ stages.py —— 流程阶段编排(双模式)
   * True  = 异步(后台):主线程只发不验,验证交给 async_system
 """
 import logger
+from actions import build_notification, build_summary_message
 from config import console
-from parsers import is_masked_name, parse_guild_member
+from parsers import ParseError, is_masked_name, parse_guild_member
 
 def stage_query_async(rt, targets, cfg):
     """异步(后台)模式的查询阶段 —— 流程规格 B→D→E 的落地。

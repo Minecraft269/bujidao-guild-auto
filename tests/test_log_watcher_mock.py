@@ -1,12 +1,13 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 test_log_watcher_mock.py —— log_watcher(游戏日志增量监控)mock 覆盖测试
 =============================================================================
 mock 铁律(本文件零违规):
   * 绝不读真实 latest.log —— 全部指向 tempfile.mkdtemp() 下的临时文件;
   * 绝不真实等待 —— patch log_watcher.time 为 FakeClock,时间由测试推进,sleep 全记录;
-  * 绝不 import 真实 main —— `from main import _force_stop` 用 sys.modules 假模块喂,
-    两条分支(真值 / 导入失败回退)都能走到;
+  * 绝不 import 真实 main —— Ctrl+C 标志改由 runtime 单一持有(log_watcher 通过
+    _force_stop() 助手延迟 import),夹具直接 patch runtime.is_force_stop,
+    真值 / 异常回退两条分支都能走到;
   * log_watcher 本身不碰 pyautogui / winsdk / pyperclip(纯文件层),故无设备调用。
 
 覆盖的业务场景(与真实客户端对齐):
@@ -22,7 +23,6 @@ import os
 import shutil
 import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logger as logger_mod  # noqa: E402
 import log_watcher as lw  # noqa: E402
+import runtime as runtime_mod  # noqa: E402
 from log_watcher import (  # noqa: E402
     LogWatcher,
     detect_encoding,
@@ -110,22 +111,30 @@ class FlipFlag:
 
 
 @contextlib.contextmanager
-def fake_main(force_stop=False):
-    """往 sys.modules 塞一个只有 _force_stop 的假 main,避免 import 真实 main.py。"""
+def fake_force_stop(force_stop=False):
+    """把 Ctrl+C 标志打到**唯一所有者** runtime 上。
 
-    def _make(value):
-        mod = types.ModuleType("main")
-        mod._force_stop = value
-        return mod
+    历史实现往 sys.modules 塞一个假 main 模块,因为 log_watcher 当时写的是
+    `from main import _force_stop` —— 那是拆分后的遗留指针。现已改为
+    `runtime.is_force_stop()`(见 log_watcher._force_stop 助手),
+    所以夹具也跟着指向 runtime。这样测的就是真实生产路径,
+    而不是"假模块能不能被读到"这种与实现细节绑死的断言。
 
-    with mock.patch.dict(sys.modules, {"main": _make(force_stop)}):
+    force_stop 也可以传一个带 __bool__ 的对象(如 FlipFlag),
+    用来验证轮询中途置位的复检行为。
+    """
+    with mock.patch.object(runtime_mod, "is_force_stop", lambda: force_stop):
         yield
 
 
 @contextlib.contextmanager
-def no_main():
-    """让 `from main import _force_stop` 抛 ImportError(覆盖回退分支)。"""
-    with mock.patch.dict(sys.modules, {"main": None}):
+def no_runtime():
+    """runtime 不可导入时仍能轮询(回退为"未收到 Ctrl+C")。
+
+    真实触发场景:解释器关闭阶段 sys.modules 里的条目会被置为 None,
+    此时 `from runtime import is_force_stop` 抛 ImportError。
+    """
+    with mock.patch.dict(sys.modules, {"runtime": None}):
         yield
 
 
@@ -411,7 +420,7 @@ class TestWaitForChatBlock(_Base):
         w = self.watcher()
         w.open()
         append(self.path, chat_line("\\n".join(self._panel())) + "\n")
-        with fake_main(False):
+        with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=5)
         self.assertEqual(block, ["-- 高活跃成员 --", "●玩家A"])
         self.assertTrue(any("BLOCK 首行" in m for m in self.debug_logs()))
@@ -423,7 +432,7 @@ class TestWaitForChatBlock(_Base):
         w.open()
         append(self.path, "\n".join([chat_line(START_LINE), "-- 低活跃成员 --",
                                      "●玩家B", END_LINE]) + "\n")
-        with fake_main(False):
+        with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=5)
         self.assertEqual(block, ["-- 低活跃成员 --", "●玩家B"])
 
@@ -437,7 +446,7 @@ class TestWaitForChatBlock(_Base):
             chat_line("\\n".join(self._panel())),
             chat_line(START_LINE + "\\n还在写入中的内容"),
         ]) + "\n")
-        with fake_main(False):
+        with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=5)
         self.assertEqual(block, ["-- 高活跃成员 --", "●玩家A"])
 
@@ -447,7 +456,7 @@ class TestWaitForChatBlock(_Base):
         w = self.watcher()
         w.open()
         append(self.path, chat_line("\\n".join(self._panel())) + "\n")
-        with fake_main(False):
+        with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=30, min_wait_after_start=1.0)
         self.assertIsNotNone(block, "过了 min_wait 窗口后必须能返回块")
         elapsed = self.clock.now - self.t0
@@ -461,7 +470,7 @@ class TestWaitForChatBlock(_Base):
         w = self.watcher()
         w.open()
         append(self.path, chat_line("\\n".join(self._panel())) + "\n")
-        with fake_main(False):
+        with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=0.4, min_wait_after_start=5.0)
         self.assertIsNone(block, "min_wait 未到且窗口关闭,不应返回块")
         self.assertTrue(any("超时" in m for m in self.debug_logs()),
@@ -481,7 +490,7 @@ class TestWaitForChatBlock(_Base):
             calls["n"] += 1
             return calls["n"] == 1          # 只有外层门那一次 True,随后一直 False
 
-        with fake_main(False):
+        with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=5, stop_check=stop_check)
         self.assertIsNotNone(block, "瞬时 stop_check=True 不该放弃等待")
         # 外层门 1 次 + 去抖窗口内 ceil(100/50)=2 次复检
@@ -496,7 +505,7 @@ class TestWaitForChatBlock(_Base):
         w = self.watcher()
         w.open()
         append(self.path, chat_line("\\n".join(self._panel())) + "\n")
-        with fake_main(False):
+        with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=60, stop_check=lambda: True)
         self.assertIsNone(block, "持续暂停必须放弃等待")
         self.assertTrue(any("持续暂停中断" in m for m in self.debug_logs()),
@@ -519,7 +528,7 @@ class TestWaitForChatBlock(_Base):
             return real_split(lines)
 
         with mock.patch.object(lw, "split_messages", spy):
-            with fake_main(False):
+            with fake_force_stop(False):
                 block = w.wait_for_chat_block(timeout=2, max_pending_chars=200)
         self.assertIsNone(block, "面板未闭合不应返回块")
         self.assertGreater(len(seen), 1, "应至少轮询两轮才能观察到截断")
@@ -532,7 +541,7 @@ class TestWaitForChatBlock(_Base):
         w = self.watcher()
         w.open()
         append(self.path, chat_line(START_LINE + "\\n未闭合内容") + "\n")
-        with fake_main(True):
+        with fake_force_stop(True):
             block = w.wait_for_chat_block(timeout=60)
         self.assertIsNone(block, "_force_stop 时必须返回 None")
         self.assertLess(self.clock.now - self.t0, 10, "_force_stop 必须立即返回而非等满 timeout")
@@ -540,12 +549,12 @@ class TestWaitForChatBlock(_Base):
                         f"应记录 _force_stop 日志,实际 {self.debug_logs()}")
 
     def test_force_stop_import_failure_falls_back_to_false(self):
-        """`from main import _force_stop` 失败 → 回退 False,照常轮询到超时。"""
+        """runtime 不可导入 → 回退 False,照常轮询到超时。"""
         write(self.path, b"")
         w = self.watcher()
         w.open()
         append(self.path, chat_line("普通聊天,不含面板") + "\n")
-        with no_main():
+        with no_runtime():
             block = w.wait_for_chat_block(timeout=0.4)
         self.assertIsNone(block, "没有面板块时应超时返回 None")
         self.assertGreaterEqual(self.clock.now - self.t0, 0.4,
@@ -567,7 +576,7 @@ class TestWaitForChatBlock(_Base):
             return real_split(lines)
 
         with mock.patch.object(lw, "split_messages", spy):
-            with fake_main(False):
+            with fake_force_stop(False):
                 block = w.wait_for_chat_block(timeout=0.4)
         self.assertIsNone(block, "未闭合面板不应返回块")
         self.assertTrue(any(len(s) > 1 for s in seen),
@@ -583,7 +592,7 @@ class TestReadUntil(_Base):
         w = self.watcher()
         w.open()
         append(self.path, "回显一\n回显二\n")
-        with fake_main(False):
+        with fake_force_stop(False):
             out = w.read_until(timeout=0.2)
         self.assertEqual(out, ["回显一", "回显二"])
         self.assertTrue(any("回显收集完成" in m for m in self.debug_logs()))
@@ -594,7 +603,7 @@ class TestReadUntil(_Base):
         w = self.watcher()
         w.open()
         append(self.path, "回显一\n")
-        with fake_main(True):
+        with fake_force_stop(True):
             out = w.read_until(timeout=60)
         self.assertEqual(out, [], "第一轮就应因 _force_stop 中断,一条也不收")
         self.assertLess(self.clock.now - self.t0, 10, "_force_stop 必须立即 break")
@@ -606,7 +615,7 @@ class TestReadUntil(_Base):
         w.open()
         append(self.path, "回显一\n")
         flag = FlipFlag(flip_after=3)
-        with fake_main(flag):
+        with fake_force_stop(flag):
             out = w.read_until(timeout=60)
         self.assertEqual(out, ["回显一"], "已收到的行不能被丢弃")
         self.assertGreaterEqual(flag.checks, 4, "内层 sleep 循环必须反复复检 _force_stop")
@@ -618,9 +627,9 @@ class TestReadUntil(_Base):
         w = self.watcher()
         w.open()
         append(self.path, "回显甲\n")
-        with no_main():
+        with no_runtime():
             out = w.read_until(timeout=0.2)
-        self.assertEqual(out, ["回显甲"], "main 导入失败时回退 _fs=False,仍应正常收集")
+        self.assertEqual(out, ["回显甲"], "runtime 导入失败时回退 False,仍应正常收集")
 
 
 # ===========================================================================

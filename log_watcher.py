@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 log_watcher.py —— 日志钩子模块
 ===============================
@@ -11,6 +11,27 @@ import logger
 import os
 import re
 import time
+
+
+def _force_stop():
+    """读取 Ctrl+C 标志(唯一所有者在 runtime.py)。
+
+    延迟 import:runtime.py 在**模块级** `from log_watcher import LogWatcher`,
+    这里若也写模块级 `from runtime import ...` 就成环。函数内 import 命中
+    sys.modules 缓存,代价是一次字典查找,相对调用点自带的 50ms sleep 可忽略。
+
+    导入失败时回退 False(视为"未收到 Ctrl+C")而不是抛异常:解释器关闭阶段
+    sys.modules 里的条目会被置为 None,此时轮询线程若抛异常会污染退出路径。
+    这是拆分前就有的回退语义,行为保持不变。
+
+    旧实现是 `from main import _force_stop` —— 那是拆分后遗留的指针,
+    且会把整个入口模块(含 pynput 全局钩子)拖进这个纯 IO 模块的导入链。
+    """
+    try:
+        from runtime import is_force_stop
+    except ImportError:
+        return False
+    return is_force_stop()
 
 # ---------------------------------------------------------------------------
 # 编码检测
@@ -278,14 +299,12 @@ class LogWatcher:
                     pending = messages[-1][:1]
             if sum(len(l) for l in pending) > max_pending_chars:
                 pending = pending[-200:]
-            # 拆短 sleep + 检查 _force_stop(从 main 模块取;未设时视为 False)
-            try:
-                from main import _force_stop as _fs
-            except Exception:
-                _fs = False
+            # 拆短 sleep + 检查 Ctrl+C 标志(见模块头 _force_stop 助手的说明)
+            # ⚠ 必须在循环内每轮重读:入口读一次的话,轮询期间按下的 Ctrl+C 要等
+            # 本轮 sleep 结束才生效 —— 实测就是"Ctrl+C 要按好几次才响应"。
             stable_ms = 0
             while stable_ms < int(self.poll * 1000):
-                if _fs:
+                if _force_stop():
                     logger.log_debug("wait_for_chat_block 检测到 _force_stop(Ctrl+C),返回 None")
                     return None
                 time.sleep(0.05)
@@ -299,12 +318,8 @@ class LogWatcher:
         out = []
         deadline = time.time() + timeout
         collected = 0
-        try:
-            from main import _force_stop as _fs
-        except Exception:
-            _fs = False
         while time.time() < deadline:
-            if _fs:
+            if _force_stop():
                 logger.log_debug("read_until 检测到 _force_stop,返回已收集")
                 break
             new_lines = self.read_new_lines(block=False)
@@ -312,7 +327,7 @@ class LogWatcher:
             collected += len(new_lines)
             # 拆短 sleep + 复检 _force_stop(让 Ctrl+C 立即生效)
             stable_ms = 0
-            while stable_ms < int(self.poll * 1000) and not _fs:
+            while stable_ms < int(self.poll * 1000) and not _force_stop():
                 time.sleep(0.05)
                 stable_ms += 50
         logger.log_debug(f"回显收集完成: {collected} 行(窗口 {timeout:.1f}s)")

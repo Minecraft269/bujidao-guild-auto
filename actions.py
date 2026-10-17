@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 actions.py —— 决策引擎 + 通知文案 + 命令格式(纯逻辑)
 =================================================
@@ -239,3 +239,43 @@ def build_command(cfg, action, player):
     if action == "kick":
         return _cmd("guild_kick").format(player=player, reason=_cmd("kick_reason"))
     raise ValueError(f"未知动作: {action}")
+
+
+def count_actions(records):
+    """统计各动作人数(供 summary 广播文案用)。
+
+    返回 {"promote": n, "demote": n, "kick": n}。
+    以 actions[0] 为准 —— 一个玩家的动作列表第一个元素即其主要操作
+    (promote ×N 表示升 N 级,仍算"被升职 1 人")。
+    """
+    counts = {"promote": 0, "demote": 0, "kick": 0}
+    for r in records:
+        acts = r.get("actions") or []
+        if not acts:
+            continue
+        kind = acts[0]
+        if kind in counts:
+            counts[kind] += 1
+    return counts
+
+
+def build_summary_message(records, cfg):
+    """渲染 summary 模式的总广播文案(继承清单 §3)。
+
+    业务规则:文案模板**只能来自配置** cfg["notify_templates"]["summary"],
+    代码里不放兜底串 —— 硬编码文案会在配置被修改后悄悄覆盖用户设置,
+    且让"文案不得改动"这条红线失去唯一真源。缺配置则抛 KeyError
+    让问题在启动阶段就暴露。
+
+    数值由 count_actions 实统计得出,不能用 records 长度代替
+    (那会把"无操作"玩家也算进升降踢人数)。
+    """
+    c = count_actions(records)
+    templates = cfg.get("notify_templates", {})
+    if "summary" not in templates:
+        raise KeyError(
+            "配置缺少 notify_templates.summary —— 业务文案必须由配置提供,"
+            "代码不提供兜底串(硬编码文案会覆盖用户修改)")
+    tmpl = templates["summary"]
+    return tmpl.format(promote=c["promote"], demote=c["demote"], kick=c["kick"],
+                       admin=cfg.get("admin") or "管理员")

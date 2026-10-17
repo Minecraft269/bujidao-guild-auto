@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 test_e2e_real_log.py —— 用真实游戏日志驱动的端到端集成测试
 ============================================================
@@ -258,24 +258,46 @@ class TestPauseEvent(unittest.TestCase):
         self.assertFalse(ev.wait(timeout=0.05))
 
     def test_main_module_exposes_pause_event(self):
-        """main.py 必须定义 _pause_event(否则 pynput 修复无效)。"""
+        """main._pause_event 必须是 runtime 那一个实例(不是副本)。
+
+        拆分后暂停状态统一由 runtime 持有,main 只保留同对象引用。
+        若哪天有人把它改成 `from runtime import _paused` 那种值副本,
+        这个断言(身份比较)会立刻红 —— 那正是暂停键静默失效的根因形态。
+        """
         import main
+        import runtime
         self.assertTrue(hasattr(main, "_pause_event"))
         self.assertIsInstance(main._pause_event, threading.Event)
+        self.assertIs(main._pause_event, runtime._pause_event,
+                      "main._pause_event 必须与 runtime 的同为一个对象")
+        self.assertIs(main._pause_lock, runtime._pause_lock)
 
     def test_toggle_pause_flips_event(self):
-        """_toggle_pause 必须在 _paused=True 时 set,_paused=False 时 clear。"""
-        import main
-        main._paused = False
-        main._pause_event.clear()
-        with main._pause_lock:
-            main._paused = True
-            main._pause_event.set()
-        self.assertTrue(main._pause_event.is_set())
-        with main._pause_lock:
-            main._paused = False
-            main._pause_event.clear()
-        self.assertFalse(main._pause_event.is_set())
+        """_toggle_pause 必须在暂停时 set 事件、恢复时 clear 事件。
+
+        直接调真实 _toggle_pause(不再手工模拟它该做什么),
+        否则测的只是"Event.set/clear 能不能用"。
+        """
+        import runtime
+        from pause import _toggle_pause
+        runtime.set_paused(False)
+        runtime._pause_event.clear()
+        runtime.consume_reset_flag()          # 清掉可能残留的重置标志
+        # 暂停 → set 事件
+        _toggle_pause()
+        self.assertTrue(runtime.is_paused(), "_toggle_pause 未把状态置为暂停")
+        self.assertTrue(runtime._pause_event.is_set(),
+                        "暂停必须置位 _pause_event,否则阻塞中的调用收不到通知")
+        self.assertFalse(runtime.consume_reset_flag(),
+                         "暂停动作本身不该置 _reset_needed(那是恢复时才需要的)")
+
+        # 恢复 → clear 事件 + 置重置标志
+        _toggle_pause()
+        self.assertFalse(runtime.is_paused(), "_toggle_pause 未恢复暂停状态")
+        self.assertFalse(runtime._pause_event.is_set(),
+                         "恢复必须清掉 _pause_event")
+        self.assertTrue(runtime.consume_reset_flag(),
+                        "恢复后必须置 _reset_needed(恢复后要重置界面)")
 
 
 class TestCtrlCMenuModuleImports(unittest.TestCase):
@@ -310,37 +332,33 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
 
     def setUp(self):
         _setup_fake_logger()
-        import main
-        with main._pause_lock:
-            main._force_stop = False
-            main._paused = False
-        main._pause_event.clear()
+        import runtime
+        runtime.set_force_stop(False)
+        runtime.set_paused(False)
+        runtime._pause_event.clear()
 
     def test_ctrl_l_alone_does_NOT_trigger_force_stop(self):
         """单独按 Ctrl 键(Key.ctrl_l,无后续字符)→ _on_press 必须不动 _force_stop。
         这是 pynput 报"用户按了 Ctrl 修饰键但还没按其他键"的常见帧——绝不能误判。"""
         from pynput.keyboard import Key
         import main
-        # 先确保初始态
-        with main._pause_lock:
-            main._force_stop = False
+        import runtime
+        runtime.set_force_stop(False)         # 先确保初始态
         main._on_press(Key.ctrl_l)
-        with main._pause_lock:
-            self.assertFalse(main._force_stop,
-                             f"Key.ctrl_l 单独按下不应触发 _force_stop,当前值={main._force_stop}")
+        self.assertFalse(runtime.is_force_stop(),
+                         "Key.ctrl_l 单独按下不应触发 _force_stop")
 
     def test_ctrl_v_paste_does_NOT_trigger_force_stop(self):
         """Ctrl+V(脚本粘贴聊天命令)→ on_press 收到 '\x16' → _on_press 必须不动 _force_stop。
         这是脚本自身行为:window_input.send_chat_text 调 pyautogui.hotkey("ctrl", "v")。"""
         from pynput.keyboard import KeyCode
         import main
-        with main._pause_lock:
-            main._force_stop = False
+        import runtime
+        runtime.set_force_stop(False)
         # pynput 报 Ctrl+V 是 KeyCode(v_char='\x16')
         main._on_press(KeyCode.from_char('\x16'))
-        with main._pause_lock:
-            self.assertFalse(main._force_stop,
-                             f"Ctrl+V(paste) 不应触发 _force_stop,当前值={main._force_stop}")
+        self.assertFalse(runtime.is_force_stop(),
+                         "Ctrl+V(paste) 不应触发 _force_stop")
 
     def test_real_ctrl_c_does_trigger_force_stop(self):
         """真实 Ctrl+C → on_press 收到 '\x03' → on_press 必须主动发 CTRL_C_EVENT
@@ -351,8 +369,8 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
         from pynput.keyboard import KeyCode
         from unittest.mock import patch
         import main
-        with main._pause_lock:
-            main._force_stop = False
+        import runtime
+        runtime.set_force_stop(False)
         # 验证 on_press 源码含 os.kill + CTRL_C_EVENT 路径
         import inspect
         src = inspect.getsource(main._on_press)
@@ -368,10 +386,9 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
             self.assertEqual(args[1], _sig.CTRL_C_EVENT,
                              f"应该发 CTRL_C_EVENT 触发 SIGINT,实际发了 {args[1]!r}")
         # 复位
-        with main._pause_lock:
-            main._force_stop = False
-            main._paused = False
-        main._pause_event.clear()
+        runtime.set_force_stop(False)
+        runtime.set_paused(False)
+        runtime._pause_event.clear()
 
 
 class TestPasteAndEnterReturnsTrue(unittest.TestCase):
@@ -402,38 +419,31 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
 
     def setUp(self):
         _setup_fake_logger()
-        import main
-        # 强制初始态:未暂停
-        with main._pause_lock:
-            main._force_stop = False
-            main._paused = False
-            main._reset_needed = False
-        main._pause_event.clear()
+        import runtime
+        runtime.reset_state()      # 未暂停 / 无 Ctrl+C / 无待重置标志
 
     def test_wait_if_paused_raises_on_force_stop(self):
         """_force_stop=True 时 wait_if_paused 必须立即 raise KeyboardInterrupt。"""
         import main
-        with main._pause_lock:
-            main._force_stop = True
+        import runtime
+        runtime.set_force_stop(True)
         with self.assertRaises(KeyboardInterrupt):
             main.wait_if_paused()
-        # 复位
-        with main._pause_lock:
-            main._force_stop = False
+        runtime.set_force_stop(False)     # 复位
 
     def test_wait_if_paused_blocks_when_paused_only(self):
         """仅 _paused=True(用户按 u,非 Ctrl+C)→ wait_if_paused 阻塞等待 _paused=False。
         这里用后台线程 0.2s 后清 _paused,验证 wait_if_paused 能正常返回。"""
         import main
+        import runtime
         import threading
-        with main._pause_lock:
-            main._paused = True
-        main._pause_event.set()
+        runtime.set_paused(True)
+        runtime._pause_event.set()
+
         def _resume():
             time.sleep(0.2)
-            with main._pause_lock:
-                main._paused = False
-            main._pause_event.clear()
+            runtime.set_paused(False)
+            runtime._pause_event.clear()
         t = threading.Thread(target=_resume, daemon=True)
         t.start()
         start = time.time()
@@ -445,10 +455,8 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
     def test_wait_if_paused_returns_immediately_when_not_paused(self):
         """_paused=False 且 _force_stop=False → 立即返回。"""
         import main
-        with main._pause_lock:
-            main._paused = False
-            main._force_stop = False
-        main._pause_event.clear()
+        import runtime
+        runtime.reset_state()
         start = time.time()
         main.wait_if_paused()
         elapsed = time.time() - start

@@ -11,14 +11,10 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 """
 import argparse
 import itertools
-import json
 import os
 import re
 import sys
-import threading
 import time
-import string
-import random
 
 from pynput import keyboard
 import pyautogui
@@ -44,181 +40,71 @@ DEFAULT_CONFIG_FILE = "config.json"
 _BROADCAST_SEQ = itertools.count(1)
 
 # ---------------------------------------------------------------------------
-# 暂停机制(pynput 全局监听)
+# 从拆分出的模块 re-export(保持历史调用点不变)
 # ---------------------------------------------------------------------------
-# 暂停状态的单一所有者是 runtime.py(pynput 监听线程写、主线程/后台读)。
-# 这里 re-export 给历史调用方,新代码请直接 import runtime。
-from runtime import (  # noqa: E402
-    _pause_event,
-    _pause_key,
-    _pause_key_name,
-    _pause_lock,
-    _paused,
-    _reset_lock,
-    _reset_needed,
-    consume_reset_flag,
-    is_paused,
-    set_reset_needed,
+# 暂停机制 → pause.py;待办 → pending.py;模拟数据 → debug_data.py。
+# ⚠ 暂停状态(_paused / _reset_needed / _force_stop / _pause_event)**不再**从
+# runtime re-export:那样拿到的是值副本,写它只会改 main 自己的副本,
+# 而 runtime.is_paused() 读的是 runtime 的变量 → 暂停键静默失效。
+# 唯一写入口是 runtime.set_paused / set_force_stop / set_reset_needed。
+import runtime as runtime_mod  # noqa: E402
+from debug_data import (  # noqa: E402
+    _generate_debug_guild,
+    _generate_debug_records,
+)
+from debug_data import random_name as _random_name  # noqa: E402,F401
+from pause import (  # noqa: E402
+    _consume_reset_flag,
+    _ctrlc_pause_menu,
+    _ctrlc_pause_menu_fallback,
+    _signal_handler,
+    reset_window_state_after_pause,
+    start_pause_listener,
+    wait_if_paused,
+)
+from pause import _on_press  # noqa: E402,F401
+from pending import (  # noqa: E402
+    load_pending,
+    pending_path_of,
+    run_pending,
+    save_pending,
 )
 
-def _toggle_pause():
-    # 修复"暂停键失效":按 u 后 pynput on_press 回调里 raise KeyboardInterrupt 会被 pynput
-    # 监听线程静默吞掉——主线程根本收不到。现在改为仅修改 _paused + _pause_event,
-    # 主线程在阻塞调用中(等待时 sleep 改 event.wait(timeout) 形式)能立即响应。
-    global _paused, _reset_needed
-    with _pause_lock:
-        _paused = not _paused
-        if _paused:
-            _pause_event.set()      # 置位→所有阻塞中的 event.wait() 立即返回 True
-        else:
-            _pause_event.clear()    # 复位→下次 event.wait() 才会阻塞
-            with _reset_lock:
-                _reset_needed = True
-    console(f">>> 脚本已{'暂停' if _paused else '继续'}(按 {_pause_key_name} 切换) <<<")
+# ---------------------------------------------------------------------------
+# 暂停状态的**兼容别名**(只读,禁止写)
+# ---------------------------------------------------------------------------
+# 拆分前这些名就住在 main.py,历史调用方与测试按 `main._paused` 直接访问。
+# 这里保留同名的**对象引用**而不是值副本:对于 Event / Lock 这类可变对象,
+# 别名与 runtime 里的是同一个实例,`with main._pause_lock:` 依然生效;
+# 而 `main._paused` / `main._reset_needed` / `main._force_stop` 是 bool,
+# 对它们的**赋值不会传播回 runtime** —— 那正是拆分后暂停键失效的根因。
+# 所以新增的 helper 供测试安全地设置状态,新代码一律走 runtime.set_*。
+_pause_event = runtime_mod._pause_event
+_pause_lock = runtime_mod._pause_lock
+_reset_lock = runtime_mod._reset_lock
+_paused = runtime_mod._paused          # 只读快照;写请用 _set_paused_for_test
+_reset_needed = runtime_mod._reset_needed
+_force_stop = runtime_mod._force_stop
+_pause_key = runtime_mod._pause_key
+_pause_key_name = runtime_mod._pause_key_name
 
 
-def _on_press(key):
-    try:
-        if key == _pause_key:
-            _toggle_pause()
-            # 不再 raise KeyboardInterrupt(pynput 静默吞掉)。
-            # _toggle_pause 已设 _pause_event,主线程阻塞调用立即感知。
-            return
-        # 修复"Ctrl+C 被错误拦截":pynput on_press 里 raise KeyboardInterrupt
-        # 会被 pynput listener 静默吞掉,主线程根本收不到,菜单不弹出。pynput 也不让
-        # Ctrl+C 正常转 SIGINT(Windows 下 SIGINT 必须由控制台子系统分发,pynput 抢先
-        # 拿走了按键事件 SIGINT 路径不会触发)。改:用 os.kill(self_pid, CTRL_C_EVENT)
-        # 主动向本进程发一个 CTRL_C_EVENT → Windows 把它转成 SIGINT → signal handler
-        # raise KeyboardInterrupt → 顶层 except 接住走菜单。pynput 拦截后我们不
-        # 屏蔽 SIGINT(原 listener 仍会跑回调,但 _signal_handler 也会被触发——双路保险)。
-        if (hasattr(key, "char") and key.char == chr(3)):
-            import os as _os
-            import signal as _sig
-            logger.log_warning("用户按 Ctrl+C(pynput 拦截),主动 os.kill(CTRL_C_EVENT)→SIGINT 走菜单")
-            try:
-                _os.kill(_os.getpid(), _sig.CTRL_C_EVENT)
-            except Exception as e:
-                logger.log_warning(f"os.kill(CTRL_C_EVENT) 失败({e!r}),回退为 _force_stop=True + _pause_event.set()")
-                # 回退路径:虽然不 raise 也能让 wait_if_paused 主动抛 KeyboardInterrupt
-                global _force_stop
-                _force_stop = True
-                with _pause_lock:
-                    _paused = True
-                _pause_event.set()
-            return
-        # 记录其他按键便于排查
-        try:
-            key_repr = key.char if hasattr(key, "char") and key.char else str(key)
-        except Exception:
-            key_repr = str(key)
-        logger.log_debug(f"[键盘] 按键: {key_repr!r}")
-    except Exception as e:
-        # 不静默吞——记录异常(防止 pynput 后台挂掉但日志无声)
-        logger.log_debug(f"[键盘] _on_press 异常: {type(e).__name__}: {e}")
+def _set_paused_for_test(value):     # noqa: F811
+    """测试/兼容用:写唯一所有者。真代码请直接用 runtime.set_paused。"""
+    runtime_mod.set_paused(value)
+    globals()["_paused"] = bool(value)
 
 
-_pause_key = None
-_pause_key_name = "?"
+def _set_force_stop_for_test(value):  # noqa: F811
+    """测试/兼容用:写唯一所有者(见 _set_paused_for_test 的说明)。"""
+    runtime_mod.set_force_stop(value)
+    globals()["_force_stop"] = bool(value)
 
 
-def start_pause_listener(pause_key_cfg):
-    """启动暂停键监听(pynput)。支持单字符('u')或特殊键名('esc')。"""
-    global _pause_key, _pause_key_name
-    _pause_key_name = str(pause_key_cfg)
-    if len(str(pause_key_cfg)) == 1:
-        _pause_key = keyboard.KeyCode.from_char(str(pause_key_cfg))
-    else:
-        _pause_key = getattr(keyboard.Key, str(pause_key_cfg), keyboard.KeyCode.from_char("u"))
-    listener = keyboard.Listener(on_press=_on_press)
-    listener.daemon = True
-    listener.start()
-    return listener
-
-
-def wait_if_paused():
-    # 修复"Ctrl+C 死循环重发命令" + "暂停键失效":
-    # signal handler / pynput on_press 收到 Ctrl+C 后:
-    #   * 旧版:wait_if_paused 看到 _force_stop=True 立即 return → 上层 while 循环
-    #     把"暂停中断"当作普通"interrupted"分支 continue → 永远不退出 query_guild_list
-    #     死循环重发同一命令(latest.log 行 47-205 共发了 ~30 次 /guild list)
-    #   * 修复:看到 _force_stop=True 必须 raise KeyboardInterrupt 让顶层 except
-    #     KeyboardInterrupt 接住进 _ctrlc_pause_menu
-    # 用户按 u(非 Ctrl+C):pynput 仅 set _paused + _pause_event,wait_if_paused
-    # 用 _pause_event.wait(timeout=0.1) 阻塞等到 _paused=False(用户再按 u 恢复)
-    logged = False
-    while True:
-        with _pause_lock:
-            if _force_stop:
-                if not logged:
-                    logger.log_warning("wait_if_paused: 收到 _force_stop(Ctrl+C),抛 KeyboardInterrupt 进菜单")
-                    logged = True
-                raise KeyboardInterrupt("Ctrl+C 触发 _force_stop,冒泡到顶层 except")
-            if not _paused:
-                if logged:
-                    logger.log_debug("暂停解除,流程继续")
-                break
-        # 事件驱动阻塞:0.1s 内暂停事件置位则立即唤醒(原来 sleep 0.05 后还要再 check)
-        _pause_event.wait(timeout=0.1)
-    # _paused=False:重置界面——只在 _reset_needed=True 时做(避免 wait_if_paused
-    # 被循环重入时反复按 Esc)
-    try:
-        from main import hwnd as _hwnd, detector as _detector, _reset_needed as _rn
-    except ImportError:
-        _hwnd, _detector, _rn = None, None, False
-    if _rn:
-        try:
-            if _hwnd is not None:
-                activate_window(_hwnd)
-            pyautogui.press("esc")
-            time.sleep(0.1)
-            if _detector is not None:
-                prepare_chat_state(_detector, console)
-            with _reset_lock:
-                _reset_needed = False
-            logger.log_info("暂停恢复:界面已重置(activate+Esc+OCR)")
-        except Exception as e:
-            logger.log_warning(f"暂停恢复重置异常(忽略): {e}")
-        if not logged:   # 仅首次打印,避免长时间暂停刷屏
-            logger.log_debug("wait_if_paused: 检测到暂停状态,阻塞等待恢复 ...")
-            logged = True
-        time.sleep(0.1)
-
-
-def reset_window_state_after_pause(hwnd, detector):
-    """执行阶段暂停恢复后:消费 _reset_needed 并重置窗口状态。
-
-    与查询阶段 send_and_capture 内的 _reset_needed 消费逻辑保持等效:
-      * 重新激活游戏窗口(暂停期间用户可能切走)
-      * 按 Esc 关闭可能残留的菜单/聊天栏
-      * OCR 检测并处理菜单界面
-    执行阶段不走 send_and_capture,若不在此消费,_reset_needed 会残留,
-    恢复后直接发送命令时窗口状态未知 → 命令可能发错目标。
-    返回 True 表示本次确有消费并重置;无残留标志时返回 False(不动作)。"""
-    global _reset_needed
-    with _reset_lock:
-        if not _reset_needed:
-            return False
-        _reset_needed = False
-    console("  (执行暂停恢复,重置窗口状态...)")
-    if hwnd is not None:
-        activate_window(hwnd)
-    pyautogui.press("esc")   # 关闭可能残留的菜单/聊天栏
-    time.sleep(0.2)
-    if detector is not None:
-        prepare_chat_state(detector, console)
-    time.sleep(0.5)          # 等待界面稳定后再发送命令
-    return True
-
-
-def _consume_reset_flag():
-    """线程安全地读取并复位 _reset_needed(供 ActionExecutor.reset_ui 注入使用,
-    使异步工作线程在恢复后的首次发送前也能完成窗口重置)。"""
-    global _reset_needed
-    with _reset_lock:
-        if not _reset_needed:
-            return False
-        _reset_needed = False
-        return True
+def _set_reset_needed_for_test(value):  # noqa: F811
+    """测试/兼容用:写唯一所有者(见 _set_paused_for_test 的说明)。"""
+    runtime_mod.set_reset_needed(value)
+    globals()["_reset_needed"] = bool(value)
 
 
 # ---------------------------------------------------------------------------
@@ -238,102 +124,6 @@ def auto_detect_admin(cfg):
     except OSError:
         pass
     return ""
-
-
-def pending_path_of(cfg):
-    return os.path.join(cfg.get("report_dir", "reports"), "pending_actions.json")
-
-
-def load_pending(path):
-    """读取待办文件;不存在或损坏返回空列表。
-
-    玩家名必须过 validate_player_name —— 待办文件是本地 JSON,可能被手改或损坏,
-    不过校验就会让任意字符串拼进 /guild kick 之类的命令(命令参数注入),
-    也可能让报告文件名穿越。非法项**丢弃并告警**,不让一条坏数据毁掉整个续做流程。
-    """
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        items = data.get("items", []) if isinstance(data, dict) else []
-        raw = [it for it in items
-               if isinstance(it, dict) and it.get("player") and it.get("actions")]
-    except (OSError, json.JSONDecodeError):
-        return []
-
-    from parsers import ParseError, validate_player_name
-    safe, dropped = [], 0
-    for it in raw:
-        try:
-            it["player"] = validate_player_name(it["player"])
-            safe.append(it)
-        except ParseError as e:
-            dropped += 1
-            logger.log_warning(f"待办文件含非法玩家名,已跳过该条: {e}")
-    if dropped:
-        console(f"⚠ 待办文件有 {dropped} 条玩家名不合法,已跳过(详见日志)")
-    return safe
-
-
-def save_pending(path, guild_name, items):
-    """写入待办文件(已完成项已从 items 中移除,未完成的保留)。"""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"guild_name": guild_name or "", "items": items}, f, ensure_ascii=False, indent=2)
-
-
-def run_pending(cfg, watcher, human, hwnd, executor, path):
-    """断点续做:读取上次未完成(或失败)的操作,询问后执行,并更新待办文件。
-    返回 (continue_stat, remaining):是否继续新的统计 + 仍未完成的项。
-    不进行任何新的统计查询。"""
-    items = load_pending(path)
-    if not items:
-        return True, []
-    sw = cfg["switches"]
-    console(f"\n=== 发现上次未完成操作 {len(items)} 条(不进行新的统计查询)===")
-    for it in items:
-        console(f"  {it['player']}: {'/'.join(it['actions'])} | 等级 {it.get('rank','?')} | "
-                f"周贡献 {it.get('weekly','?')} | 状态 {it.get('status','pending')}")
-    do_exec = False
-    if sw["execution_enabled"]:
-        try:
-            ans = input("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(保留待下次): ").strip().lower()
-        except EOFError:
-            ans = "n"
-        do_exec = (ans != "n")
-    else:
-        console("(dry-run:不执行,保留待下次)")
-
-    remaining = []
-    if do_exec:
-        for it in items:
-            wait_if_paused()
-            # 暂停恢复后重置窗口状态(与主执行循环一致)
-            reset_window_state_after_pause(executor.hwnd, executor.detector)
-            console(f"  执行 {it['player']}: {it['actions']}")
-            results = executor.execute_actions(it["player"], it["actions"])
-            done = sum(1 for _, ok, _ in results if ok)
-            if done == len(results):
-                console(f"    ✓ {it['player']} 全部完成,已从待办移除")
-                continue  # 完成 → 不写回待办
-            it["actions"] = it["actions"][done:]  # 剩余动作保留,下次继续
-            it["status"] = "failed"
-            failed = next(((a, e) for a, ok, e in results if not ok), None)
-            it["error"] = f"执行失败({failed[0]}): {failed[1]}" if failed else "未执行"
-            console(f"    ⚠ {it['player']} 未完成: {it['error']}")
-            remaining.append(it)
-    else:
-        remaining = items  # 用户选择跳过:全部保留
-
-    save_pending(path, cfg.get("guild_name") or "", remaining)
-    if remaining:
-        console(f"仍有 {len(remaining)} 条未完成,已保留在待办文件,下次启动可继续")
-    else:
-        console("全部待办操作已完成")
-    try:
-        ans = input("直接退出(回车)还是继续新的统计操作(输入 c 回车)?: ").strip().lower()
-    except EOFError:
-        ans = ""
-    return ans != "c", remaining
 
 
 # ---------------------------------------------------------------------------
@@ -370,16 +160,19 @@ def _join_with_progress(executor, label, expected_n=None, poll_interval=0.6):
     console(f"  [{label}] 后台验证全部完成(共 {done_n} 条)")
 
 
-def _pause_until_resume():
+def _pause_until_resume(cfg=None):
     """置暂停标志并阻塞,等待用户按暂停键恢复(用于发送无响应时人工介入)。
-    Debug 模式(cfg.debug.enabled)按 u 后直接退出,不等第二次 u 继续 — 避免
-    暂停后仍持续提交新指令(用户原话)。
+
+    接受 cfg 作为可选参数:调用方是 send_and_capture,它手上只有
+    watcher/human/hwnd/cmd,没有 cfg —— 原本这里裸读 `cfg` 是个未定义名,
+    只在"所有重试都失败"这条最不常走的路径上才会炸,所以一直没被发现。
+    现在改为:未传 cfg 时跳过 debug 早退判断,只做"置暂停 + 阻塞等恢复"。
     """
-    global _paused
-    with _pause_lock:
-        _paused = True
+    # ⚠ 必须走 runtime.set_paused():写模块级 _paused 副本不会影响
+    # runtime.is_paused(),而暂停门读的正是后者 —— 那样"置暂停"会是空操作。
+    runtime_mod.set_paused(True)
     console(">>> 脚本已暂停,请检查游戏状态后按暂停键继续 <<<")
-    if cfg.get("debug", {}).get("enabled", False):
+    if cfg is not None and cfg.get("debug", {}).get("enabled", False):
         console("Debug 模式:按 u 后立即退出,不重试。")
         sys.exit(0)
     wait_if_paused()
@@ -409,15 +202,16 @@ def send_and_capture(watcher, human, hwnd, cmd, timeout, verbose=True, detector=
     try_times = max(1, int(try_times))
 
     # ---- 如果暂停恢复后需要重置界面，则执行一次 Esc 并处理菜单 ----
-    global _reset_needed
-    with _reset_lock:
-        if _reset_needed:
-            console("  (暂停恢复，重置界面状态...)")
-            pyautogui.press("esc")
-            time.sleep(0.1)
-            if detector is not None:
-                prepare_chat_state(detector, console)
-            _reset_needed = False
+    # ⚠ 走 runtime.consume_reset_flag() 而不是裸读 _reset_needed:
+    # 拆分后回溯 `from runtime import _reset_needed` 拿到的是值副本,
+    # 而 pause.py 的 set_reset_needed() 写的是 runtime 那一份 ——
+    # 裸读副本永远读到旧的 False,恢复后的界面重置**整段失效**。
+    if runtime_mod.consume_reset_flag():
+        console("  (暂停恢复，重置界面状态...)")
+        pyautogui.press("esc")
+        time.sleep(0.1)
+        if detector is not None:
+            prepare_chat_state(detector, console)
 
     # ---- first_command=True 跳过试探(用户原话) ----
     # 用户原话"按 Esc 关了聊天栏→按回车开了→按回车又关"死循环:
@@ -452,8 +246,9 @@ def send_and_capture(watcher, human, hwnd, cmd, timeout, verbose=True, detector=
     # 按 u 期间彻底阻塞;retry 失败后 wait_if_paused()(替换原 sleep(1.0))
     for attempt in range(1, try_times + 1):
         wait_if_paused()  # 每次 attempt 前等暂停恢复
-        # 修复"Ctrl+C 不暂停":signal handler 设 _force_stop=True 后立即返回
-        if _force_stop:
+        # 修复"Ctrl+C 不暂停":signal handler 设 _force_stop=True 后立即返回。
+        # 走 runtime.is_force_stop() 读唯一所有者,不复用已失效的模块级副本。
+        if runtime_mod.is_force_stop():
             return None, True
         if stop_check and stop_check():
             return None, True
@@ -691,72 +486,6 @@ def build_targets(guild_groups, scope="all", skip_ranks=()):
     return targets, dropped
 
 
-def _random_name(prefix="Test_"):
-    """生成 Test_ 开头，后接 3~6 个随机字符（含中文）"""
-    chars = string.ascii_letters + string.digits + "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定行学法所民得经十三之进着等部度家电力里如水化高自二理起小物现实加量都两体制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社义事平形相全表间样与关各重新线内数正心反你明看原又么利比或但质气第向道命此变条只没结解问意建月公无系军很情者最立代想已通并提直题党程展五果料象员革位入常文总次品式活设及管特件长求老头基资边流路级少图山统接知较将组见计别她手角期根论运农指几九区强放决西被干做必战先回则任取据处队南给色光门即保治北造百规热领七海口东导器压志世金增争济阶油思术极交受联什认六共权收证改清己美再采转更单风切打白教速花带安场身车例真务具万每目至达走积示议声报斗完类八离华名确才科张信马节话米整空元况今集温传土许步群广石记需段研界拉林律叫且究观越织装影算低持音众书布复容儿须际商非验连断深难近矿千周委素技备半办青省列习响约支般史感劳便团往酸历市克何除消构府称太准精值号率族维划选标写存候毛亲快效斯院查江型眼王按格养易置派层片始却专状育厂京识适属圆包火住调满县局照参红细引听该铁价严龙飞"
-    name_len = random.randint(3, 6)
-    suffix = ''.join(random.choice(chars) for _ in range(name_len))
-    return f"{prefix}{suffix}"
-
-def _generate_debug_guild(cfg):
-    """生成模拟公会数据，支持 players_per_rank 为整数或对象"""
-    sim = cfg.get("debug", {}).get("simulation", {})
-    guild_name = sim.get("guild_name", "Debug公会")
-    rank_names = cfg.get("rank_names", {})
-    ppr = sim.get("players_per_rank", 3)
-    
-    # 确定每个等级的玩家数量
-    if isinstance(ppr, dict):
-        per_rank = {rk: ppr.get(rk, 1) for rk in rank_names.keys()}  # 缺失的等级默认 1
-    else:
-        per_rank = {rk: ppr for rk in rank_names.keys()}
-    
-    groups = {}
-    for rank_key, count in per_rank.items():
-        groups[rank_key] = [_random_name() for _ in range(count)]
-    return {
-        "guild_name": guild_name,
-        "groups": groups,
-        "total": sum(len(v) for v in groups.values()),
-        "online": 0,
-    }
-
-def _generate_debug_records(cfg, guild, targets, decide_skipped=False):
-    """生成模拟成员记录，周贡献在 contribution_range 内随机"""
-    sim = cfg.get("debug", {}).get("simulation", {})
-    cr = sim.get("contribution_range", [0, 50000])
-    min_c, max_c = cr[0], cr[1]
-    records = []
-    for rank, pid in targets:
-        weekly = random.randint(min_c, max_c)
-        record = {
-            "player": pid,
-            "rank": rank,
-            "weekly_total": weekly,
-            "joined_at": "2026-01-01 00:00:00",
-            "last_online": "2026-08-17 00:00:00",
-            "daily": [],
-        }
-        if decide_skipped:
-            # 随机分配动作（可以配置比例，这里简单平均）
-            action_types = ["promote", "demote", "kick", None]  # None 表示无操作
-            # 但需要符合等级链，简单起见不校验
-            chosen = random.choice(action_types)
-            if chosen == "promote":
-                record["actions"] = ["promote"] * random.randint(1, 3)
-            elif chosen == "demote":
-                record["actions"] = ["demote"]
-            elif chosen == "kick":
-                record["actions"] = ["kick"]
-            else:
-                record["actions"] = []
-            record["trigger"] = "debug_skip_decide"
-        else:
-            record["actions"] = []
-            record["trigger"] = None
-        records.append(record)
-    return records
-
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
@@ -859,57 +588,23 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     return cfg
 
 
-def count_actions(records):
-    """统计各动作人数(供 summary 广播文案用)。
-
-    返回 {"promote": n, "demote": n, "kick": n}。
-    以 actions[0] 为准 —— 一个玩家的动作列表第一个元素即其主要操作
-    (promote ×N 表示升 N 级,仍算"被升职 1 人")。
-    """
-    counts = {"promote": 0, "demote": 0, "kick": 0}
-    for r in records:
-        acts = r.get("actions") or []
-        if not acts:
-            continue
-        kind = acts[0]
-        if kind in counts:
-            counts[kind] += 1
-    return counts
-
-
-def build_summary_message(records, cfg):
-    """渲染 summary 模式的总广播文案(继承清单 §3)。
-
-    业务规则:文案模板**只能来自配置** cfg["notify_templates"]["summary"],
-    代码里不放兜底串 —— 硬编码文案会在配置被修改后悄悄覆盖用户设置,
-    且让"文案不得改动"这条红线失去唯一真源。缺配置则抛 KeyError
-    让问题在启动阶段就暴露。
-
-    数值由 count_actions 实统计得出,不能用 records 长度代替
-    (那会把"无操作"玩家也算进升降踢人数)。
-    """
-    c = count_actions(records)
-    templates = cfg.get("notify_templates", {})
-    if "summary" not in templates:
-        raise KeyError(
-            "配置缺少 notify_templates.summary —— 业务文案必须由配置提供,"
-            "代码不提供兜底串(硬编码文案会覆盖用户修改)")
-    tmpl = templates["summary"]
-    return tmpl.format(promote=c["promote"], demote=c["demote"], kick=c["kick"],
-                       admin=cfg.get("admin") or "管理员")
-
-
+# count_actions / build_summary_message 已迁至 actions.py(文案生成的唯一家),
+# 此处保留 re-export 以不破坏历史调用点。
+from actions import build_summary_message, count_actions  # noqa: E402,F401
 def main():
-    # 初始化 is_paused
+    # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
+    # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。
     def is_paused():
-        # 仅看 _paused(暂停)——_force_stop 由 signal handler raise KeyboardInterrupt 直接
-        # 冒泡到 main() 顶层 except 接住进菜单;链路不停(避免后台链路提前 return)
-        return _paused
+        return runtime_mod.is_paused()
 
     args = parse_args()
 
     # 流程第一步:配置检测/生成/校验/日志初始化(见 prepare_config)
     cfg = prepare_config(args)
+    # 功能开关的本地别名。此前 main() 里直接引用 `sw` 却从未定义 —— 查询阶段的
+    # 详细输出、执行阶段的三个开关判断、dry-run 分支全都挂在未定义名上,
+    # 而这些代码行此前从未被任何测试执行过,所以一直没被发现。
+    sw = cfg["switches"]
 
     # 2. 初始化(异常时释放已打开的资源)
     listener = None
@@ -918,8 +613,9 @@ def main():
     records = []   # 查询记录(第二 try 块赋值;finally 中断兜底补扫引用,提前退出时为空)
     failures = []
     try:
-        # 真实硬件构造收口在 build_runtime();此处只负责把失败时的资源释放做对
-        rt = build_runtime(cfg)
+        # 真实硬件构造收口在 runtime.build_runtime():watcher / human / executor /
+        # detector / hwnd 全部由它建好并注入暂停回调,main() 不再亲手碰硬件。
+        rt = runtime_mod.build_runtime(cfg)
         watcher = rt.watcher
         human = rt.human
         executor = rt.executor
@@ -939,11 +635,8 @@ def main():
             if ans == "q":
                 console("已退出")
                 sys.exit(0)
-
-        executor = ActionExecutor(cfg, human, watcher, hwnd=hwnd, detector=detector, stop_check=is_paused)
-        # 注入暂停恢复标志的消费函数:executor.reset_ui / _send_with_gate 内部据此
-        # 在"恢复后首次发送前"执行 Esc+OCR 菜单重置(与 main.reset_window_state_after_pause 同源标志)
-        executor.set_reset_hook(_consume_reset_flag)
+        # 窗口句柄以本次查找为准（build_runtime 内查过一次，此处可能得到新值）
+        executor.hwnd = hwnd
 
         # ---- 异步(后台)模式开关 ----
         # 默认**串行**(async.enabled 默认 False)。规格:异步系统用于更快地发送指令,
@@ -990,7 +683,7 @@ def main():
             console("⚠ 未找到游戏窗口, 后续发送命令可能发往其他程序")
 
         listener = start_pause_listener(cfg.get("pause_key", "u"))
-        console(f"暂停键: {_pause_key_name}(随时按暂停/继续)")
+        console(f"暂停键: {runtime_mod.pause_key_name()}(随时按暂停/继续)")
 
         console("开始运行\n")
     except BaseException:  # 含 SystemExit(sys.exit(0) 未找到窗口退出路径),确保资源清理
@@ -1095,7 +788,15 @@ def main():
             pass
 
         # 7. 通知(/gc,查询完成后、执行前) —— 见 stage_notify
-        notify_failures = stage_notify(rt, records, cfg, debug_notify_skipped)
+        # Debug 的 notify 跳过开关:debug.enabled 且 skip_stages 含 'notify' 时,
+        # 通知阶段照常走流程但不真发广播(与 list/member/execute 的跳过语义一致)。
+        # ⚠ 这里此前是个未定义变量名,进通知阶段必抛 NameError —— 全流程第一次
+        # 真正跑通前它一直被 15% 的 main.py 覆盖率掩盖着。
+        _debug_notify_skipped = bool(debug.get("enabled")
+                                     and "notify" in debug.get("skip_stages", []))
+        if _debug_notify_skipped:
+            console("Debug: 跳过通知发送(仅走流程,不实际广播)")
+        notify_failures = stage_notify(rt, records, cfg, _debug_notify_skipped)
         failures.extend(notify_failures)
 
         # 8. 执行(先询问是否执行)
@@ -1346,119 +1047,29 @@ def main():
             pass
 
 
-def _ctrlc_pause_menu():
-    """Ctrl+C 后的交互菜单:回车=退出;输入 c 回车=继续运行(未完成的操作会经待办续做)。
-    返回 True 表示用户选择继续。
+# ---------------------------------------------------------------------------
+# 入口
+# ---------------------------------------------------------------------------
+# Ctrl+C 菜单(_ctrlc_pause_menu)与 signal handler 已迁至 pause.py,
+# 并在文件头 re-export;signal handler 由 pause.py 在导入时注册。
 
-    修复"Ctrl+C 立即退出":之前用 select.select([sys.stdin]) → OSError [WinError 10038];
-    改用 thread+Queue 后,SIGINT 仍会立即传到主线程,主线程在 join(timeout=3.0) 期间被
-    signal handler raise KeyboardInterrupt,join 提前返回 → 走 default-exit 分支。
-    现在改用 msvcrt.kbhit() 在主线程直接轮询按键(Windows 原生,无需 SIGINT-immune 线程),
-    并在调用前后切换 SIGINT 处理:菜单期间恢复默认(让用户再按 Ctrl+C 立即退出),其余时段
-    仍是 _signal_handler(继续触发暂停→冒泡到顶层 except KeyboardInterrupt)。"""
-    console("\n" + "=" * 56)
-    console("脚本已被 Ctrl+C 中断")
-    console("直接回车 = 退出;输入 c 回车 = 继续运行(未完成的操作会经待办续做,不会重复执行)")
-    console("=" * 56)
-    import signal as _sig
-    _prev_handler = None
-    try:
-        _prev_handler = _sig.signal(_sig.SIGINT, _sig.SIG_DFL)
-    except Exception:
-        _prev_handler = None
-    buf = []
-    deadline = time.time() + 5.0
-    try:
-        import msvcrt
-        while time.time() < deadline:
-            if msvcrt.kbhit():
-                ch = msvcrt.getwch()
-                if ch in ("\r", "\n"):
-                    break   # 回车:确认输入
-                if ch == "\x03":
-                    # 菜单期间再按 Ctrl+C:立即退出(不再嵌套到外层 except)
-                    logger.log_info("Ctrl+C 菜单期间再按 Ctrl+C,立即退出")
-                    return False
-                if ch == "\x08":
-                    if buf:
-                        buf.pop()
-                elif ch.isprintable():
-                    buf.append(ch)
-            time.sleep(0.05)
-    except ImportError:
-        # 非 Windows:回退到 thread+Queue 模式
-        logger.log_warning("msvcrt 不可用(非 Windows?),回退到 thread+Queue 读 stdin")
-        return _ctrlc_pause_menu_fallback()
-    finally:
-        if _prev_handler is not None:
-            try:
-                _sig.signal(_sig.SIGINT, _prev_handler)
-            except Exception:
-                pass
-    if not buf:
-        logger.log_info("中断菜单 5s 未按键,默认退出")
-        return False
-    ans = "".join(buf).strip().lower()
-    return ans == "c"
-
-
-def _ctrlc_pause_menu_fallback():
-    """非 Windows 平台的 Ctrl+C 菜单回退实现:thread+Queue 读 stdin。"""
-    import queue as _queue
-    q = _queue.Queue()
-
-    def _read():
-        try:
-            q.put(input("退出请直接回车,继续请输入 c: ").strip().lower())
-        except BaseException:
-            # 关键:捕获 KeyboardInterrupt/EOFError 后必须塞个空串,否则 q.empty() 一直 True
-            # → 主线程走 "q.empty() → return False" 路径(看起来像"立即退出"但实际是超时)
-            q.put("")
-
-    t = threading.Thread(target=_read, daemon=True)
-    t.start()
-    t.join(timeout=5.0)
-    if t.is_alive():
-        return False
-    if q.empty():
-        return False
-    ans = q.get_nowait()
-    return ans == "c"
-
-
-import signal
-
-# Ctrl+C 信号处理:立即把 _paused 置 True(后台 pause 门立即阻断)并设 force_stop 标志,
-# 让 wait_for_chat_block / sleep 等检测后快速退出
-_force_stop = False
-def _signal_handler(sig, frame):
-    # 修复"Ctrl+C 不进菜单":signal handler 不仅设标志位,还主动 raise KeyboardInterrupt
-    # Windows 上 signal handler 在主线程下次字节码边界会重新抛出此异常,
-    # main() 调用栈收到 KeyboardInterrupt 后会冒泡到顶层 except KeyboardInterrupt 接住,
-    # 走"进入中断菜单"逻辑(用户原话"按 Ctrl+C 等进入菜单")
-    global _paused, _force_stop, _reset_needed
-    with _pause_lock:
-        _paused = True
-    with _reset_lock:
-        _reset_needed = True
-    _force_stop = True
-    logger.log_warning("收到 SIGINT(用户按 Ctrl+C),_paused=True + raise KeyboardInterrupt")
-    raise KeyboardInterrupt
-
-if hasattr(signal, 'SIGINT'):
-    signal.signal(signal.SIGINT, _signal_handler)
-if hasattr(signal, 'SIGTERM'):
-    signal.signal(signal.SIGTERM, _signal_handler)
+# ---------------------------------------------------------------------------
+# 入口
+# ---------------------------------------------------------------------------
+# Ctrl+C 菜单(_ctrlc_pause_menu / _ctrlc_pause_menu_fallback)与 signal handler
+# 已迁至 pause.py(文件头 re-export);signal handler 由 pause.py 在导入时注册。
 
 if __name__ == "__main__":
     # 修复"Ctrl+C 静默退出日志未记录":注册全局 excepthook 捕获所有未处理异常
     import sys as _sys_ex
+
     def _excepthook(exc_type, exc_value, exc_tb):
         if issubclass(exc_type, KeyboardInterrupt):
             logger.log_warning("Ctrl+C 触发 KeyboardInterrupt(用户退出): %s" % (exc_value or ""))
         else:
             logger.log_exception("未处理异常: %s: %s" % (exc_type.__name__, exc_value), exc_value)
         _sys_ex.__excepthook__(exc_type, exc_value, exc_tb)
+
     _sys_ex.excepthook = _excepthook
     while True:
         try:
@@ -1470,11 +1081,10 @@ if __name__ == "__main__":
             if _ctrlc_pause_menu():
                 # 复位全局暂停状态:中断时可能 _paused=True,不复位会导致
                 # 重启后 wait_if_paused / _send_with_gate 立即卡在暂停门。
-                # 模块级作用域直接赋值即为修改全局变量,无需 global 声明
-                with _pause_lock:
-                    _paused = False
-                with _reset_lock:
-                    _reset_needed = False
+                # ⚠ 唯一写入口是 runtime.reset_state()。不能在这里写 _paused:
+                # `from runtime import _paused` 拿到的是值副本,写它改不到 runtime
+                # 那一份,而 runtime.is_paused() 读的是自己那份 → 复位静默失效。
+                runtime_mod.reset_state()
                 logger.log_info("用户选择继续运行,全局状态已复位,重新初始化启动"
                                 "(已完成操作经待办续做防重复)")
                 continue   # 重新完整启动:配置/窗口/异步执行器全部重建,

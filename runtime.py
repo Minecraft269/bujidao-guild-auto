@@ -15,6 +15,12 @@ Runtime 是 main.py 能从"不可测"变"可测"的关键:把所有与外界交�
 import threading
 import time
 
+from action_executor import ActionExecutor
+from config import console
+from game_state import GameStateDetector
+from log_watcher import LogWatcher
+from window_input import HumanInput, find_game_window
+
 import logger
 
 # ---------------------------------------------------------------------------
@@ -63,6 +69,67 @@ def is_paused():
 def is_force_stop():
     """当前是否收到 Ctrl+C。"""
     return _force_stop
+
+
+def set_paused(value):
+    """置位/复位暂停标志(由 pause.py 的 _toggle_pause / _signal_handler 调用)。
+
+    ⚠ 为什么不许在别的模块里写 `global _paused`:
+    main.py 曾用 `from runtime import _paused` re-export。`from ... import 变量`
+    绑定的是**值的副本**,而 `global _paused` 写的是 main 自己的副本 ——
+    runtime._paused 永远是 False,于是 rg.is_paused() 永远 False,
+    Runtime.pause_gate() 永不阻塞、run_pending 的暂停门形同虚设,
+    **暂停键彻底失效且无声**。状态的唯一写入口必须是本函数。
+    """
+    global _paused
+    _paused = bool(value)
+
+
+def set_force_stop(value):
+    """置位/复位 Ctrl+C 标志(理由同 set_paused:禁止别处 `global _force_stop`)。"""
+    global _force_stop
+    _force_stop = bool(value)
+
+
+def pause_key_name():
+    """当前暂停键的显示名(未启动监听时为 '?')。"""
+    return _pause_key_name
+
+
+def pause_key():
+    """当前暂停键的 pynput 键对象(未启动监听时为 None)。"""
+    return _pause_key
+
+
+def set_pause_key_cfg(pause_key_cfg):
+    """按配置解析并存下暂停键(单字符走 KeyCode,否则查 keyboard.Key)。
+
+    返回 (key_obj, key_name)。
+    """
+    global _pause_key, _pause_key_name
+    from pynput import keyboard
+    _pause_key_name = str(pause_key_cfg)
+    if len(_pause_key_name) == 1:
+        _pause_key = keyboard.KeyCode.from_char(_pause_key_name)
+    else:
+        _pause_key = getattr(keyboard.Key, _pause_key_name,
+                             keyboard.KeyCode.from_char("u"))
+    return _pause_key, _pause_key_name
+
+
+def reset_state():
+    """复位全部暂停相关状态(Ctrl+C 菜单选择"继续运行"后重启主流程)。
+
+    不复位的话 _paused=True 残留,重启后第一个 wait_if_paused / _send_with_gate
+    会立即卡在暂停门,表现为"选了继续但脚本不动"。
+    """
+    global _paused, _force_stop, _reset_needed
+    with _pause_lock:
+        _paused = False
+    with _reset_lock:
+        _reset_needed = False
+    _force_stop = False
+    _pause_event.clear()
 
 
 class Runtime:
@@ -283,7 +350,10 @@ def build_runtime(cfg, console_fn=None):
     executor = ActionExecutor(cfg, human, watcher, hwnd=hwnd, detector=detector,
                               stop_check=is_paused)
     # 注入暂停恢复标志的消费函数:reset_ui / _send_with_gate 内部据此在
-    # "恢复后首次发送前"执行 Esc+OCR 菜单重置
+    # "恢复后首次发送前"执行 Esc+OCR 菜单重置。
+    # 延迟 import:pause.py 依赖 runtime(拿 _pause_event / set_reset_needed),
+    # 模块级互引会成环。
+    from pause import _consume_reset_flag
     executor.set_reset_hook(_consume_reset_flag)
 
     return Runtime(cfg=cfg, watcher=watcher, human=human, executor=executor,
