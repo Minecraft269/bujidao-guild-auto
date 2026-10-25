@@ -163,13 +163,20 @@ def console(msg, level="info"):
     """控制台输出(兼容 GBK 控制台,避免编码崩溃);同时按级别写入日志文件。
 
     level: "critical"/"error"/"warning"/"info"/"debug"/"trace"(默认 info)。
-    logger 未初始化或已禁用时仅打印控制台,不写文件。"""
+    logger 未初始化或已禁用时仅打印控制台,不写文件。
+
+    ⚠ import 必须走完整包路径。src-layout 迁移后残留的 `import logger` 会
+    抛 ImportError 并被下面的 except 吞掉 —— 表现为"控制台照常输出、
+    但日志文件里一行都没有",是最难察觉的一类静默失效。
+    延迟 import 是为了避免 config ← infrastructure.logger 的模块级循环依赖
+    (logger 的默认值也读配置)。
+    """
     try:
         print(msg)
     except UnicodeEncodeError:
         sys.stdout.buffer.write((msg + "\n").encode("utf-8", errors="replace"))
     try:
-        import logger as _logger_mod
+        from guild_auto.infrastructure import logger as _logger_mod
         getattr(_logger_mod, f"log_{level}", _logger_mod.log_info)(str(msg))
     except Exception:
         pass  # 日志系统不可用时不影响控制台输出

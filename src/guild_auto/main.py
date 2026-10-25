@@ -608,7 +608,6 @@ def main():
 
     # 2. 初始化(异常时释放已打开的资源)
     listener = None
-    async_executor = None
     gname = ""     # 公会名(第二 try 块赋值;finally 写待办时兜底引用)
     records = []   # 查询记录(第二 try 块赋值;finally 中断兜底补扫引用,提前退出时为空)
     failures = []
@@ -662,7 +661,6 @@ def main():
         # 2. 只有决定继续新的统计时才显示提示和倒计时（仅一次）
         #    流程规格:启动前等用户回车确认;按流程规格,此时必须已提示
         #    "请保证游戏正在运行且在主大厅(防止 AFK)"与"按下回车后不要操作键鼠"
-        rt.async_executor = async_executor
         if not rt.confirm(
                 "请保证游戏正在运行且在主大厅(防止 AFK)。\n"
                 "按回车键运行;按下回车后请不要操作键盘和鼠标,脚本会自动前置游戏窗口",

@@ -7,7 +7,7 @@ stages.py —— 流程阶段编排(双模式)
   · 可被测试单独驱动(假 Runtime)
   * 处理一种阶段职责,读代码即知流程走到哪
 
-阶段与流程规格(plan.txt 第 93-116 行)的对应:
+阶段与流程规格(plan.txt「四、阶段 2:脚本完全重写」之【默认模式】【异步(后台)模式】)的对应:
   stage_query_async        异步模式查询(主线程只发不验,验证在后台)
   stage_confirm_execution  执行前确认(总确认 + kick 二次确认)
   stage_notify             通知阶段(/gc 广播,summary 与 per_player 两种)
@@ -24,7 +24,7 @@ from guild_auto.domain.parsers import ParseError, is_masked_name, parse_guild_me
 def stage_query_async(rt, targets, cfg):
     """异步(后台)模式的查询阶段 —— 流程规格 B→D→E 的落地。
 
-    规格语义(plan.txt 第 21-24 行):
+    规格语义(plan.txt「异步(后台)模式」段):
         B → 逐条发送指令:脚本【不读日志、不验证】→ 全部发送完毕后等待 → D
         B → 后台系统读日志并验证 → 成功的:忽略并抛弃;失败的:记录结果等待 → E
         E → D:若有失败且需重试则重试(仅发送一次,后台继续验证)→ B(必须防死锁)
@@ -245,6 +245,120 @@ def _notify_one_async(rt, msg, player, cfg):
     结果由调用方在"全部工作完成后"统一收回(见 run_async_round)。
     """
     rt.async_verify_submit(f"/gc {msg}", player, msg=msg)
+
+
+def stage_execute_async(rt, records, cfg):
+    """异步(后台)模式的执行阶段 —— 与查询阶段同一套 B→D→E 闭环。
+
+    为什么用 run_async_round 而不是旧的 AsyncCommandExecutor 编排:
+      旧编排(main.py)自带一套"submit → get_result_nowait 逐条回填 →
+      finally 兜底收 retry_queue"的状态机,与 async_system 的语义相反
+      (旧:主线程发一条后台验一条再 join;新:主线程只发不验)。
+      规格要求两种模式行为一致 —— 只有发送节奏不同 ——
+      所以执行阶段必须与查询阶段共用同一状态机,不再并存两套。
+
+    主线程职责:把 actions 逐条转成命令提交(只发不验);后台 verify_fn
+    委托 executor.execute_action(其重试/错误模式/面板回显判定在发送锁内,
+    与串行路径完全同一套逻辑 —— 不是复制一份判定规则)。
+
+    返回:就地写回每条 record 的 executed / error / new_rank,
+    并返回 execution_failures 列表(执行失败项,供报告与待办使用)。
+    """
+    from guild_auto.concurrency.async_system import AsyncVerifySystem, run_async_round
+
+    failures = []
+    actionable = [r for r in records if r.get("actions")
+                  and not r.get("executed")]     # kick 被跳过的已标 executed=True
+    if not actionable:
+        return failures
+
+    sw = cfg.get("switches", {})
+    timeout = float(cfg.get("timeouts", {}).get("error_check_window", 4.0))
+    retries = int(cfg.get("timeouts", {}).get("max_retries", 3))
+
+    # ---- 发送器:只发(暂停门在 execute_action 内部,这里不重复) ----
+    def send_only(cmd, player, meta):
+        rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
+        rt.human.wait_between_commands()
+
+    # ---- 验证器:后台线程调用,委托 executor 单条执行(含重试/回显判定) ----
+    executor = rt.executor
+
+    # 命令文本由 executor 的配置真源 build_command 生成 —— 与串行路径逐字一致,
+    # 这里只为提交队列提供可读的 command 字段(报告/日志引用)。
+    from guild_auto.domain.decisions import build_command
+
+    # 命令到 action 的反查表:run_async_round 只传 (command, player) 到 verify,
+    # 必须在外层做反查表。
+    cmd_to_action = {}
+    commands = []
+    actionable_players = []
+    for r in records:
+        if not r.get("actions") or r.get("executed"):
+            continue
+        player = r["player"]
+        actionable_players.append(player)
+        for a in r["actions"]:
+            cmd = build_command(cfg, a, player)
+            commands.append((cmd, player))
+            cmd_to_action[(cmd, player)] = a
+
+    def verify(cmd, player, meta):
+        action = cmd_to_action.get((cmd, player))
+        if not action:
+            return False, "无法定位命令对应的 action(内部错误)", None
+        ok, err = executor.execute_action(action, player)
+        return (ok, None if ok else (err or "执行失败"), None)
+
+    system = AsyncVerifySystem(verify_fn=verify, task_timeout=timeout * retries + 10.0)
+    system.attach_sender(send_only)
+
+    console(f"[5/5] 执行操作(异步模式:主线程只发不验,{len(commands)} 条命令)...")
+    logger.log_info(f"(异步)阶段5 执行: {len(commands)} 命令, belonging {len(actionable_players)} 玩家")
+    ok_snaps, failed_snaps = run_async_round(system, commands, send_only,
+                                             max_retries=retries)
+    console("(异步)执行阶段验证完成,回填结果")
+    system.stop()
+
+    # ---- 回填:每条 record 的 executed / error / new_rank ----
+    ok_by_key = {(s["command"], s["player"]) for s in ok_snaps}
+    err_by_key = {s["player"]: (s["command"], s.get("error") or "执行失败")
+                  for s in failed_snaps}
+    from guild_auto.domain.decisions import new_rank_after
+    failures = []
+    for r in records:
+        if not r.get("actions") or r.get("executed"):
+            continue
+        player = r["player"]
+        actions = r["actions"]
+        # 该玩家的每条 action 有自己的命令;按序判定每条的成败
+        from guild_auto.domain.decisions import build_command as _bc
+        per_ok, per_err = [], []
+        for a in actions:
+            key = (_bc(cfg, a, player), player)
+            if key in ok_by_key:
+                per_ok.append(a)
+            else:
+                per_err.append((a, err_by_key.get(player, (None, "执行失败"))[1]))
+        ok_count = len(per_ok)
+        r["executed"] = True
+        if per_err:
+            first_action, first_err = per_err[0]
+            r["error"] = f"执行失败({first_action}): {first_err}"
+        else:
+            r["error"] = None
+        # 部分失败:按成功条数算 new_rank(与串行路径同一规则)
+        r["new_rank"] = new_rank_after(r["rank"], r["actions"][:ok_count]) \
+            if ok_count else r["rank"]
+        if per_err:
+            console(f"    ⚠ {player} 执行失败({per_err[0][0]}): {per_err[0][1]}")
+        else:
+            console(f"    ✓ {player} 全部完成")
+        if per_err:
+            failures.append({"player": player, "rank": r["rank"],
+                             "actions": actions,
+                             "error": r["error"]})
+    return failures
 
 
 def _report_notify(label, ok, err):
