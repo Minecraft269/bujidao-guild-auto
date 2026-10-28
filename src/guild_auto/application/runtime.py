@@ -271,13 +271,29 @@ class Runtime:
         return True, None, None
 
     def close(self):
-        """释放本 Runtime 持有的资源(幂等,异常不外抛)。"""
-        for name in ("watcher", "async_executor", "async_system", "listener"):
+        """释放本 Runtime 持有的资源(幂等,异常不外抛)。
+
+        ⚠ 每个资源的释放方法不同,不能一律调 .close():
+          watcher        -> close()
+          async_executor -> stop(timeout)   (ThreadPoolExecutor 封装)
+          async_system   -> stop(timeout)   (**该类的停止方法叫 stop,没有 close**)
+          listener       -> stop()
+        旧实现按 "async_executor" 字符串分支、其余一律 .close(),于是对
+        async_system 调了不存在的 close() → AttributeError 被下面 except 吞掉,
+        表现为"关闭时看起来正常,但后台验证线程从未被停止"(静默泄漏)。
+        """
+        stoppers = {
+            "watcher": lambda o: o.close(),
+            "async_executor": lambda o: o.stop(timeout=3),
+            "async_system": lambda o: o.stop(timeout=3),
+            "listener": lambda o: o.stop(),
+        }
+        for name, stop in stoppers.items():
             obj = getattr(self, name, None)
             if obj is None:
                 continue
             try:
-                obj.stop(timeout=3) if name == "async_executor" else obj.close()
+                stop(obj)
             except Exception as e:
                 logger.log_debug(f"Runtime.close: {name} 释放异常 {e!r}")
 
