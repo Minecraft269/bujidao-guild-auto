@@ -482,6 +482,9 @@ def parse_args():
     ap.add_argument("--dry-run", action="store_true", help="试运行:仅查询+通知+报告,不执行升/降/踢")
     ap.add_argument("--debug", action="store_true", help="启用 debug 模式（覆盖配置）")
     ap.add_argument("--debug-skip", default=None, help="跳过的阶段列表，逗号分隔，如 'list,member'")
+    ap.add_argument(
+        "--ui", action="store_true", help="启动图形配置界面（需 config.json 的 ui.enabled=true）"
+    )
     return ap.parse_args()
 
 
@@ -592,6 +595,18 @@ def main():
 
     # 流程第一步:配置检测/生成/校验/日志初始化(见 prepare_config)
     cfg = prepare_config(args)
+
+    # ---- UI 入口（阶段 3）----
+    # 规格：--ui 参数启动 UI；ui.enabled=false 时**报错**而不是静默降级到控制台。
+    if getattr(args, "ui", False):
+        if not cfg.get("ui", {}).get("enabled", False):
+            raise SystemExit(
+                "配置未启用 UI 入口（ui.enabled=false）。"
+                "请先在 config.json 把 ui.enabled 改为 true，或去掉 --ui 使用控制台模式。"
+            )
+        from guild_auto.ui.app import run_ui
+
+        return run_ui(args.config)
     # 功能开关的本地别名。此前 main() 里直接引用 `sw` 却从未定义 —— 查询阶段的
     # 详细输出、执行阶段的三个开关判断、dry-run 分支全都挂在未定义名上,
     # 而这些代码行此前从未被任何测试执行过,所以一直没被发现。

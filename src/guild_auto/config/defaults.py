@@ -57,6 +57,14 @@ DEFAULT_CONFIG = {
     #   "skip"(默认)     = 不发送查询指令,直接记 blocked(指令不可查)
     #   "query_attempt"  = 仍尝试查询(通常会超时并浪费重试,仅调试用)
     "blocked_name_policy": "skip",
+    # ── UI 配置界面(阶段 3)──────────────────────────────────────────────
+    "ui": {
+        "enabled": False,
+        "start_mode": "normal",
+        "always_on_top": False,
+        "kick_confirm_mode": "dialog",
+        "kick_confirm_text": "kick-confirm",
+    },
     # ── 升/降/踢 阈值(原样继承自原脚本,勿改动数值) ────────────────────────
     # 取值:非负整数,单位=公会经验周贡献。语义与边界(含/不含)见 docs/业务规则继承清单.md §1
     "thresholds": {
@@ -269,6 +277,18 @@ CONFIG_COMMENTS = {
     "blocked_name_policy": "屏蔽词玩家策略(名字被网易过滤成整串星号,身份不可读):"
     "'skip'(默认)=不发送 /guild member *** 指令,直接记为 blocked 并在报告单列;"
     "'query_attempt'=仍尝试查询(通常超时浪费重试,仅用于调试)",
+    "ui": "UI 配置界面(阶段 3):是否允许图形入口、窗口初始形态、是否置顶、"
+          "踢出二次确认方式与确认词。无 --ui 参数时全部不起作用",
+    "ui.enabled": "是否允许 UI 入口:true=启动时可加 --ui 打开图形配置界面;false=只走控制台流程。"
+    "无 --ui 参数时默认走控制台,向后兼容",
+    "ui.start_mode": "窗口初始形态:'normal'=窗口化 600x400(默认);'compact'=小窗 200x150"
+    "(只显示状态与进度)。运行时可用工具栏按钮切换",
+    "ui.always_on_top": "窗口是否始终置顶:true=用 win32gui 设为 HWND_TOPMOST;false=普通窗口。"
+    "运行时可用图钉按钮切换",
+    "ui.kick_confirm_mode": "踢出二次确认的方式:'dialog'=弹窗(默认,需输入确认词);"
+    "'inline'=在主界面确认(不弹窗)。无论哪种都必须二次确认",
+    "ui.kick_confirm_text": "弹窗确认时要求输入的确认词:必须逐字匹配才执行踢出(踢出不可逆)。"
+    "可填任意字符串,如 'kick-confirm' 或 '确认踢出'",
     # ── 升/降/踢 阈值(原样继承自原脚本,勿改动数值) ────────────────────────
     "thresholds": "升/降/踢阈值:取值非负整数,单位=公会经验周贡献。语义与边界(含/不含)见 docs/业务规则继承清单.md §1",
     "thresholds.high_demote": "高活跃:周贡献 <= 此值 → 降职(原 run_auto.py,含边界)",
