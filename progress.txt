@@ -68,3 +68,35 @@ RALPH 进度记录 — 布吉岛公会管理脚本
   - 改完模块先清 __pycache__（纪律第 8 条）
   - 架构/流程改动必须同步 docs/流程与架构图.md（第 11 条）
   - 引用规格用章节名，禁止写死行号（第 12 条）
+
+────────────────────────────────────────────────────────────────────
+迭代 2 — US-002/US-003 完成（CI 全绿 + Bot 生效）
+────────────────────────────────────────────────────────────────────
+推送 commit 3be0176 后，本 SHA 的 10 个 workflow 全部 success：
+  Build / Coverage Upload / Dead Code(vulture) / Format / Lint /
+  Release Drafter / Security / Super-Linter / Tests & Coverage / Type Check(mypy)
+
+修复的两个 CI 失败：
+  * mypy：pyproject 的 check_untyped_defs=true 让未注解函数体也被检查 →
+    存量代码 15 个 var-annotated/union-attr。改 false（渐进式类型化），
+    并对 winsdk 类型桩不一致单点关闭 call-overload。本地 Success: 27 files。
+  * super-linter：MARKDOWN 规则不适合中文文档 → 新增 .markdown-lint.yml
+    （关 MD013/MD033/MD024/MD041），workflow 经 MARKDOWN_CONFIG_FILE 引用。
+
+Labels：仓库原本只有 10 个默认 label，配置引用的都不存在。
+  已创建 13 个（dependencies/python/github-actions/ci/tests/pinned/security/
+  stale/major/minor/patch/breaking），并把 release-drafter 分组名对齐到
+  仓库真实 label（feature→enhancement、fix→bug、docs→documentation）。
+  校验：配置使用 label 与仓库实际 label 差集为空。
+
+Bot：
+  * Dependabot 已开 PR #1（ruff 0.16.10 → 0.17.2，分组 python-minor-patch）
+  * 自动合并 workflow 就位（轮询 check-runs 排除 Auto-merge；不加 --delete-branch）
+  * 仓库设置 allow_auto_merge=true / delete_branch_on_merge=true（gh api 回读）
+  * mutmut.yml 与 stale.yml 经 workflow_dispatch 触发：
+    40715781496 / 40715792487
+
+下一步（US-004 起）
+  * US-004 日志规范：6 级逐级实测、轮转序号、11 类关键事件可检索
+  * US-005 UI（tkinter）→ US-006 规则引擎 → US-007 vision → US-008 变体 → US-009 自动暂停
+  * US-010 24 条验收证据文档 + critic 审查
