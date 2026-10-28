@@ -63,3 +63,22 @@
 真实玩家名、真实 QQ 群号、本机绝对路径、`accessToken` / `uuid` 等
 认证信息一律不得进入仓库（含测试 fixture）。测试数据用合成名；
 真实日志只用于本地分析，不入库。
+
+<!-- project-init:begin -->
+## 项目栈
+python
+
+## 构建命令
+```
+pip install -e .                 # 安装（src-layout，必须装包）
+python -m PyInstaller --onefile --name 布吉岛公会管理脚本 --paths src src/guild_auto/main.py
+# 或在 Windows 上直接跑 build.bat
+```
+
+## 测试命令
+```
+PYTHONPATH=src python -m unittest discover -s tests          # 全量
+PYTHONPATH=src python -m pytest tests -q                     # pytest
+python -m pytest tests -q --cov=guild_auto --cov-report=term  # 覆盖率（门禁 核心98%/总体92%）
+```
+<!-- project-init:end -->

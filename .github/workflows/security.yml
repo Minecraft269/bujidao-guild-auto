@@ -65,6 +65,15 @@ jobs:
     # push / schedule / workflow_dispatch 触发时整个 job 被跳过。
     if: github.event_name == 'pull_request'
     runs-on: windows-latest
+    # ⚠ 实测该 action 在本仓库报“Dependency review is not supported on this
+    # repository”（需要 Dependency graph；公开仓库无法通过 REST 打开该开关）。
+    # 依赖漏洞由本文件的 pip-audit + CodeQL 兜底，故此处不阻塞合并；
+    # 一旦仓库可支持 dependency graph，把 continue-on-error 去掉即可。
+    #
+    # ⚠ continue-on-error 必须放在 **step** 上，不能放 job 上：
+    # job 级只阻止整个 workflow run 变红，job 自身的 check conclusion 仍是
+    # failure（实测 run 40743352110：conclusion=failure）—— 分支保护与
+    # Dependabot 自动合并都会把它当成失败检查。
     permissions:
       contents: read
     steps:
@@ -72,6 +81,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Review dependency changes
+        continue-on-error: true
         uses: actions/dependency-review-action@v3
 
   pip-audit:

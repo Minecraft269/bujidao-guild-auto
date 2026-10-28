@@ -146,3 +146,49 @@ class TestGameLogSelfReadGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+class TestUiAndRulesValidation(unittest.TestCase):
+    """ui 段与 rules 的配置校验（缺了就会 AttributeError 或静默放行）。"""
+
+    def _cfg(self):
+        import json as _json
+        from guild_auto.config import DEFAULT_CONFIG
+        return _json.loads(_json.dumps(DEFAULT_CONFIG))
+
+    def test_ui_must_be_dict(self):
+        cfg = self._cfg(); cfg["ui"] = "yes"
+        self.assertTrue(any("ui" in e for e in _errors(cfg)))
+
+    def test_ui_bool_fields(self):
+        cfg = self._cfg(); cfg["ui"]["enabled"] = "false"
+        self.assertTrue(any("ui.enabled" in e for e in _errors(cfg)))
+        cfg = self._cfg(); cfg["ui"]["always_on_top"] = 1
+        self.assertTrue(any("ui.always_on_top" in e for e in _errors(cfg)))
+
+    def test_ui_start_mode_enum(self):
+        cfg = self._cfg(); cfg["ui"]["start_mode"] = "comapct"
+        self.assertTrue(any("start_mode" in e for e in _errors(cfg)))
+
+    def test_ui_kick_confirm_mode_enum(self):
+        cfg = self._cfg(); cfg["ui"]["kick_confirm_mode"] = "弹窗"
+        self.assertTrue(any("kick_confirm_mode" in e for e in _errors(cfg)))
+
+    def test_ui_kick_confirm_text_non_empty(self):
+        cfg = self._cfg(); cfg["ui"]["kick_confirm_text"] = "   "
+        self.assertTrue(any("kick_confirm_text" in e for e in _errors(cfg)))
+
+    def test_valid_ui_passes(self):
+        self.assertEqual(_errors(self._cfg()), [])
+
+    def test_rules_enabled_must_be_bool(self):
+        cfg = self._cfg(); cfg["rules_enabled"] = "true"
+        self.assertTrue(any("rules_enabled" in e for e in _errors(cfg)))
+
+    def test_rules_strategy_enum(self):
+        cfg = self._cfg(); cfg["rules_strategy"] = "first"
+        self.assertTrue(any("rules_strategy" in e for e in _errors(cfg)))
+
+    def test_rules_must_be_list(self):
+        cfg = self._cfg(); cfg["rules"] = {"id": "x"}
+        self.assertTrue(any("rules" in e for e in _errors(cfg)))
+

@@ -187,7 +187,7 @@ class _MainCase(unittest.TestCase):
                         options=None,
                         dry_run=False,
                         debug=False,
-                        debug_skip=None,
+                        debug_skip=None, ui=False,
                     )
                     entered[target] = m
                 elif target == "start_pause_listener":

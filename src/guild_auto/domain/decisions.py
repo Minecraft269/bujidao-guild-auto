@@ -344,7 +344,9 @@ def is_protected(player, cfg):
     )
 
 
-def decide_for_player(player, rank, weekly, cfg):
+def decide_for_player(player, rank, weekly, cfg,
+                      member_joined_at=None, member_last_online=None,
+                      member_online=None):
     """单个玩家的完整判定:名单短路优先于阈值矩阵。
 
     返回 (actions, trigger):
@@ -355,6 +357,31 @@ def decide_for_player(player, rank, weekly, cfg):
     blocked = name_list_block_reason(player, cfg)
     if blocked is not None:
         return [], blocked
+
+    # 规则引擎（阶段 4）：开启时，内置阈值规则作为"一条默认规则"参与同一接口。
+    # 关闭时保持原有纯阈值路径 —— 行为零变化。
+    if cfg.get("rules_enabled"):
+        from guild_auto.domain.rules import builtin_default_rule, evaluate_rules
+
+        member = {
+            "player": player,
+            "rank": rank,
+            "weekly_total": weekly,
+            "joined_at": member_joined_at,
+            "last_online": member_last_online,
+            "online": member_online,
+        }
+        # 自定义规则在前、内置阈值作兜底：first_match 下自定义优先；
+        # highest_priority 下由 priority 决定（内置默认 0）。
+        table = list(cfg.get("rules") or []) + [builtin_default_rule(cfg)]
+        actions, hits, _traces = evaluate_rules(
+            table, member, cfg.get("rules_strategy", "first_match")
+        )
+        trigger = f"rule:{hits[0]}" if hits else None
+        if actions and is_protected(player, cfg):
+            kept = [a for a in actions if a == "promote"]
+            return (kept, trigger) if kept else ([], "whitelist_protected")
+        return actions, trigger
 
     actions, trigger = decide_actions(rank, weekly, cfg["thresholds"])
 
