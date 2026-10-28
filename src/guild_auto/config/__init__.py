@@ -12,6 +12,7 @@ config 层 —— 配置读取与校验(零业务逻辑)
 历史调用方写的是 `from config import console` 这种平铺形式,
 现在一律 `from guild_auto.config import console` —— 本文件保证名字不变。
 """
+
 from guild_auto.config.defaults import (
     CONFIG_COMMENTS,
     DEFAULT_CONFIG,
@@ -33,9 +34,17 @@ from guild_auto.config.schema import (
 )
 
 __all__ = [
-    "CONFIG_COMMENTS", "DEFAULT_CONFIG", "KEY_ALIASES",
-    "VALID_SCOPES", "VALID_NOTIFY_MODES", "validate_config",
-    "ensure_default_config", "load_config", "save_config",
-    "apply_cli_overrides", "console",
-    "_dump_jsonc", "_strip_jsonc",
+    "CONFIG_COMMENTS",
+    "DEFAULT_CONFIG",
+    "KEY_ALIASES",
+    "VALID_SCOPES",
+    "VALID_NOTIFY_MODES",
+    "validate_config",
+    "ensure_default_config",
+    "load_config",
+    "save_config",
+    "apply_cli_overrides",
+    "console",
+    "_dump_jsonc",
+    "_strip_jsonc",
 ]

@@ -7,6 +7,7 @@ log_watcher.py —— 日志钩子模块
   * 新行读取(含文件轮转处理)
   * "发命令→等待响应块→超时" 原语(块 = 两条分隔线之间)
 """
+
 from guild_auto.infrastructure import logger
 import os
 import re
@@ -32,6 +33,7 @@ def _force_stop():
     except ImportError:
         return False
     return is_force_stop()
+
 
 # ---------------------------------------------------------------------------
 # 编码检测
@@ -94,7 +96,8 @@ class LogWatcher:
         while not os.path.exists(self.path):
             if time.time() > deadline:
                 raise FileNotFoundError(
-                    f"游戏日志不存在: {self.path}\n请确认游戏已启动且路径配置正确(--log 或 config.json 的 game_log)。")
+                    f"游戏日志不存在: {self.path}\n请确认游戏已启动且路径配置正确(--log 或 config.json 的 game_log)。"
+                )
             time.sleep(1.0)
         self.encoding = detect_encoding(self.path, self.encoding)
         self._fh = open(self.path, "rb")
@@ -128,8 +131,8 @@ class LogWatcher:
             except FileNotFoundError:
                 if time.time() >= deadline:
                     logger.log_warning(
-                        f"日志文件 {wait_seconds:.0f} 秒内未重新出现"
-                        f"(可能仍在轮转): {self.path}")
+                        f"日志文件 {wait_seconds:.0f} 秒内未重新出现(可能仍在轮转): {self.path}"
+                    )
                     self._fh = None
                     return False
                 time.sleep(0.2)
@@ -209,16 +212,16 @@ class LogWatcher:
                 for idx, ln in enumerate(new_lines, 1):
                     preview = ln[:120].replace("\r", "")
                     logger.log_debug(
-                        f"[log_watcher] READ +{idx}/{len(new_lines)} "
-                        f"len={len(ln)} | {preview!r}"
+                        f"[log_watcher] READ +{idx}/{len(new_lines)} len={len(ln)} | {preview!r}"
                     )
             if out or not block:
                 return out
             time.sleep(self.poll)
 
     # ---- 等待响应块(消息级) ----
-    def wait_for_chat_block(self, timeout=12.0, max_pending_chars=2_000_000, stop_check=None,
-                             min_wait_after_start=0.0):
+    def wait_for_chat_block(
+        self, timeout=12.0, max_pending_chars=2_000_000, stop_check=None, min_wait_after_start=0.0
+    ):
         """等待并收集一个公会面板响应块。
         stop_check: 可调用对象,返回 True 表示用户希望中断等待。
         用户原话"按下暂停键后不暂停":瞬时触发(False→True→False)不应放弃等待,
@@ -232,7 +235,9 @@ class LogWatcher:
         start_ts = time.time()
         deadline = start_ts + timeout
         first_eligible_ts = start_ts + min_wait_after_start
-        logger.log_debug(f"等待响应块(最长 {timeout:.1f}s,轮询 {self.poll*1000:.0f}ms,首块最早 {min_wait_after_start:.2f}s 后可返回)...")
+        logger.log_debug(
+            f"等待响应块(最长 {timeout:.1f}s,轮询 {self.poll * 1000:.0f}ms,首块最早 {min_wait_after_start:.2f}s 后可返回)..."
+        )
         while time.time() < deadline:
             if stop_check and stop_check():
                 # 去抖:暂停持续至少 1 个 poll 周期才放弃,避免瞬时 True 立即放弃
@@ -249,9 +254,14 @@ class LogWatcher:
                     stable_ms += 50
             for line in self.read_new_lines(block=False):
                 pending.append(line)
-                logger.trace_code_location("log_watcher.wait_for_chat_block.got_lines", f"new_lines={len(pending)} total")
+                logger.trace_code_location(
+                    "log_watcher.wait_for_chat_block.got_lines", f"new_lines={len(pending)} total"
+                )
             messages = split_messages(pending)
-            logger.trace_code_location("log_watcher.wait_for_chat_block.messages", f"msgs={len(messages)} pending_lines={len(pending)}")
+            logger.trace_code_location(
+                "log_watcher.wait_for_chat_block.messages",
+                f"msgs={len(messages)} pending_lines={len(pending)}",
+            )
             # 详细日志:打印当前消息集合的"首行时间戳 + [CHAT]标记"摘要
             # ——让用户直接看到脚本监听到了哪几条消息、各自是否公会面板
             for mi, m in enumerate(messages, 1):
@@ -266,8 +276,10 @@ class LogWatcher:
                 for msg in messages[:-1]:
                     block = extract_chat_block(msg)
                     if block is not None:
-                        logger.log_debug(f"收到完整响应块({len(block)} 行,"
-                                         f"等待 {timeout - (deadline - time.time()):.1f}s)")
+                        logger.log_debug(
+                            f"收到完整响应块({len(block)} 行,"
+                            f"等待 {timeout - (deadline - time.time()):.1f}s)"
+                        )
                         # 详细日志:打印块首/末行(让用户确认提取出的内容确实是面板)
                         block_head = block[0][:100] if block else "<empty>"
                         block_tail = block[-1][:100] if block else "<empty>"
@@ -279,8 +291,10 @@ class LogWatcher:
                 # 最后一条若完整,尝试提取(可能本身就是完整消息)
                 block = extract_chat_block(messages[-1])
                 if block is not None:
-                    logger.log_debug(f"收到完整响应块({len(block)} 行,"
-                                     f"等待 {timeout - (deadline - time.time()):.1f}s)")
+                    logger.log_debug(
+                        f"收到完整响应块({len(block)} 行,"
+                        f"等待 {timeout - (deadline - time.time()):.1f}s)"
+                    )
                     block_head = block[0][:100] if block else "<empty>"
                     block_tail = block[-1][:100] if block else "<empty>"
                     logger.log_debug(
@@ -293,8 +307,9 @@ class LogWatcher:
                 # 若是普通聊天消息,只保留消息头即可(防止 pending 无限增长)
                 if _starts_with_block(messages[-1]):
                     pending = messages[-1]
-                    logger.trace_code_location("log_watcher.waiting_panel_incomplete",
-                                               f"{len(pending)} 行待补齐")
+                    logger.trace_code_location(
+                        "log_watcher.waiting_panel_incomplete", f"{len(pending)} 行待补齐"
+                    )
                 else:
                     pending = messages[-1][:1]
             if sum(len(l) for l in pending) > max_pending_chars:
@@ -388,7 +403,7 @@ def extract_chat_block(msg_lines):
     idx = text.rfind("[CHAT]")
     if idx < 0:
         return None
-    content = text[idx + len("[CHAT]"):]
+    content = text[idx + len("[CHAT]") :]
     content = content.replace("\\n", "\n")
     lines = [l.strip() for l in content.splitlines()]
     # 去掉头部空行(保留后续空行:解析器的多行名字拼接依赖空行终止)
@@ -410,7 +425,7 @@ def _starts_with_block(msg_lines):
     idx = text.rfind("[CHAT]")
     if idx < 0:
         return False
-    content = text[idx + len("[CHAT]"):].replace("\\n", "\n")
+    content = text[idx + len("[CHAT]") :].replace("\\n", "\n")
     for l in content.splitlines():
         if not l.strip():
             continue

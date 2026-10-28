@@ -12,6 +12,7 @@ test_summary_message.py —— summary 广播的人数统计与文案渲染
   3. 文案模板只能来自配置,缺键抛 KeyError ——
      代码兜底串会悄悄覆盖用户改过的文案。
 """
+
 import json
 import unittest
 
@@ -36,17 +37,17 @@ class TestCountActions(unittest.TestCase):
 
     def test_counts_by_first_action_only(self):
         """以 actions[0] 为准:promote×3 只算 1 人升职。"""
-        recs = [_rec("甲", ["promote", "promote", "promote"]),
-                _rec("乙", ["demote"]),
-                _rec("丙", ["kick"])]
-        self.assertEqual(count_actions(recs),
-                         {"promote": 1, "demote": 1, "kick": 1})
+        recs = [
+            _rec("甲", ["promote", "promote", "promote"]),
+            _rec("乙", ["demote"]),
+            _rec("丙", ["kick"]),
+        ]
+        self.assertEqual(count_actions(recs), {"promote": 1, "demote": 1, "kick": 1})
 
     def test_records_without_actions_are_not_counted(self):
         """无操作玩家不得计入任何一类 —— 否则公告人数虚高。"""
         recs = [_rec("甲", []), _rec("乙", None), _rec("丙", ["promote"])]
-        self.assertEqual(count_actions(recs),
-                         {"promote": 1, "demote": 0, "kick": 0})
+        self.assertEqual(count_actions(recs), {"promote": 1, "demote": 0, "kick": 0})
 
     def test_missing_actions_key_is_tolerated(self):
         """record 里没有 actions 键时按"无操作"处理,不抛异常。"""
@@ -54,8 +55,9 @@ class TestCountActions(unittest.TestCase):
 
     def test_unknown_action_is_ignored(self):
         """未知动作名不进任何计数(不会 KeyError 也不会污染已知类别)。"""
-        self.assertEqual(count_actions([_rec("甲", ["teleport"])]),
-                         {"promote": 0, "demote": 0, "kick": 0})
+        self.assertEqual(
+            count_actions([_rec("甲", ["teleport"])]), {"promote": 0, "demote": 0, "kick": 0}
+        )
 
     def test_multiple_players_same_action(self):
         recs = [_rec(f"p{i}", ["kick"]) for i in range(5)]
@@ -66,19 +68,16 @@ class TestBuildSummaryMessage(unittest.TestCase):
     def test_renders_counts_from_config_template(self):
         """数值来自实统计,不是 len(records)。"""
         cfg = _cfg()
-        recs = [_rec("甲", ["promote"]), _rec("乙", ["kick"]),
-                _rec("丙", [])]          # 丙 无操作,不计入
+        recs = [_rec("甲", ["promote"]), _rec("乙", ["kick"]), _rec("丙", [])]  # 丙 无操作,不计入
         msg = build_summary_message(recs, cfg)
         # 模板原文由配置决定,这里只断言"无操作玩家没被算进人数"
         self.assertIn("1", msg)
-        self.assertNotIn("3", msg,
-                         f"无操作玩家被算进人数了: {msg}")
+        self.assertNotIn("3", msg, f"无操作玩家被算进人数了: {msg}")
 
     def test_admin_name_is_substituted(self):
         cfg = _cfg(admin="测试管理员")
         msg = build_summary_message([], cfg)
-        self.assertIn("测试管理员", msg,
-                      f"admin 未代入模板: {msg}")
+        self.assertIn("测试管理员", msg, f"admin 未代入模板: {msg}")
 
     def test_missing_admin_falls_back_to_generic_label(self):
         """admin 为空时用中性称呼,不渲染成 'None'。"""

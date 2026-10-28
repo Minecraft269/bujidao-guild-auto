@@ -16,6 +16,7 @@ pause.py —— 暂停机制与 Ctrl+C 中断菜单
 `from runtime import _paused` 拿到的是值副本，`global _paused` 写的是自己的副本，
 runtime._paused 永远 False，rg.is_paused() 永远 False，暂停门形同虚设）。
 """
+
 import time
 
 from pynput import keyboard
@@ -54,12 +55,11 @@ def _toggle_pause():
     paused_now = not runtime.is_paused()
     runtime.set_paused(paused_now)
     if paused_now:
-        _pause_event.set()      # 置位 → 所有阻塞中的 event.wait() 立即返回
+        _pause_event.set()  # 置位 → 所有阻塞中的 event.wait() 立即返回
     else:
-        _pause_event.clear()    # 复位 → 下次 event.wait() 才会阻塞
+        _pause_event.clear()  # 复位 → 下次 event.wait() 才会阻塞
         set_reset_needed(True)  # 恢复后需要重置界面
-    console(f">>> 脚本已{'暂停' if paused_now else '继续'}"
-            f"(按 {runtime.pause_key_name()} 切换) <<<")
+    console(f">>> 脚本已{'暂停' if paused_now else '继续'}(按 {runtime.pause_key_name()} 切换) <<<")
 
 
 def _on_press(key):
@@ -74,12 +74,17 @@ def _on_press(key):
         if hasattr(key, "char") and key.char == chr(3):
             import os as _os
             import signal as _sig
-            logger.log_warning("用户按 Ctrl+C(pynput 拦截),主动 os.kill(CTRL_C_EVENT)→SIGINT 走菜单")
+
+            logger.log_warning(
+                "用户按 Ctrl+C(pynput 拦截),主动 os.kill(CTRL_C_EVENT)→SIGINT 走菜单"
+            )
             try:
                 _os.kill(_os.getpid(), _sig.CTRL_C_EVENT)
             except Exception as e:
-                logger.log_warning(f"os.kill(CTRL_C_EVENT) 失败({e!r}),"
-                                   "回退为 _force_stop=True + _pause_event.set()")
+                logger.log_warning(
+                    f"os.kill(CTRL_C_EVENT) 失败({e!r}),"
+                    "回退为 _force_stop=True + _pause_event.set()"
+                )
                 runtime.set_force_stop(True)
                 runtime.set_paused(True)
                 _pause_event.set()
@@ -116,8 +121,9 @@ def wait_if_paused():
     while True:
         if runtime.is_force_stop():
             if not logged:
-                logger.log_warning("wait_if_paused: 收到 _force_stop(Ctrl+C),"
-                                   "抛 KeyboardInterrupt 进菜单")
+                logger.log_warning(
+                    "wait_if_paused: 收到 _force_stop(Ctrl+C),抛 KeyboardInterrupt 进菜单"
+                )
                 logged = True
             raise KeyboardInterrupt("Ctrl+C 触发 _force_stop,冒泡到顶层 except")
         if not runtime.is_paused():
@@ -147,11 +153,11 @@ def reset_window_state_after_pause(hwnd, detector):
     try:
         if hwnd is not None:
             activate_window(hwnd)
-        pyautogui.press("esc")   # 关闭可能残留的菜单/聊天栏
+        pyautogui.press("esc")  # 关闭可能残留的菜单/聊天栏
         time.sleep(0.2)
         if detector is not None:
             prepare_chat_state(detector, console)
-        time.sleep(0.5)          # 等待界面稳定后再发送命令
+        time.sleep(0.5)  # 等待界面稳定后再发送命令
     except Exception as e:
         logger.log_warning(f"暂停恢复重置窗口异常(忽略,继续发送): {e!r}")
     return True
@@ -181,6 +187,7 @@ def _ctrlc_pause_menu():
     console("直接回车 = 退出;输入 c 回车 = 继续运行(未完成的操作会经待办续做,不会重复执行)")
     console("=" * 56)
     import signal as _sig
+
     _prev_handler = None
     try:
         _prev_handler = _sig.signal(_sig.SIGINT, _sig.SIG_DFL)
@@ -190,11 +197,12 @@ def _ctrlc_pause_menu():
     deadline = time.time() + 5.0
     try:
         import msvcrt
+
         while time.time() < deadline:
             if msvcrt.kbhit():
                 ch = msvcrt.getwch()
                 if ch in ("\r", "\n"):
-                    break   # 回车:确认输入
+                    break  # 回车:确认输入
                 if ch == "\x03":
                     # 菜单期间再按 Ctrl+C:立即退出(不再嵌套到外层 except)
                     logger.log_info("Ctrl+C 菜单期间再按 Ctrl+C,立即退出")
@@ -226,6 +234,7 @@ def _ctrlc_pause_menu_fallback():
     """非 Windows 平台的 Ctrl+C 菜单回退实现:thread+Queue 读 stdin。"""
     import queue as _queue
     import threading
+
     q = _queue.Queue()
 
     def _read():
@@ -247,7 +256,7 @@ def _ctrlc_pause_menu_fallback():
     return ans == "c"
 
 
-def _signal_handler(sig, frame):
+def _signal_handler(_sig, _frame):
     """Ctrl+C 信号处理:置暂停 + force_stop,并 raise KeyboardInterrupt 进菜单。
 
     Windows 上 signal handler 在主线程下次字节码边界重新抛出此异常,
@@ -263,6 +272,7 @@ def _signal_handler(sig, frame):
 def install_signal_handlers():
     """注册 SIGINT/SIGTERM 处理。返回被替换的旧 handler 字典(供测试还原)。"""
     import signal as _sig
+
     prev = {}
     for name in ("SIGINT", "SIGTERM"):
         signum = getattr(_sig, name, None)

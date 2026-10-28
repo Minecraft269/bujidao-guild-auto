@@ -14,6 +14,7 @@ config.json 是 JSONC(带 // 与 /* */ 注释),用户会手改它。注释剥离
   * 转义符落在文本最后一字符(越界保护)
   * 注释出现在值之后、嵌套对象内部
 """
+
 import json
 import os
 import shutil
@@ -51,19 +52,19 @@ class TestStripJsoncBranches(unittest.TestCase):
 
     def test_trailing_backslash_at_eof_does_not_index_error(self):
         """转义符落在最后一字符时不得越界访问 text[i+1]。"""
-        _strip_jsonc('{"a": "x\\')      # 不抛 IndexError 即通过
+        _strip_jsonc('{"a": "x\\')  # 不抛 IndexError 即通过
 
     def test_comment_inside_nested_object(self):
-        src = '''{
+        src = """{
           "outer": {
             // 内层注释
             "inner": 1 /* 行尾块注释 */
           }
-        }'''
+        }"""
         self.assertEqual(json.loads(_strip_jsonc(src)), {"outer": {"inner": 1}})
 
     def test_comment_between_array_elements(self):
-        src = '[1, // 一\n 2, /* 二 */ 3]'
+        src = "[1, // 一\n 2, /* 二 */ 3]"
         self.assertEqual(json.loads(_strip_jsonc(src)), [1, 2, 3])
 
 
@@ -81,6 +82,7 @@ class TestLoadConfigWithBrokenComments(unittest.TestCase):
 
     def test_full_config_with_comments_loads(self):
         from guild_auto.config import DEFAULT_CONFIG
+
         body = json.dumps(DEFAULT_CONFIG, ensure_ascii=False, indent=2)
         # 在开头与中间各插一段注释
         commented = "// 文件头注释\n" + body.replace('"admin"', '// 管理员\n  "admin"', 1)
@@ -91,6 +93,7 @@ class TestLoadConfigWithBrokenComments(unittest.TestCase):
     def test_config_with_windows_path_and_comments(self):
         """真实场景:路径里的反斜杠 + 注释并存,不能互相干扰。"""
         from guild_auto.config import DEFAULT_CONFIG
+
         cfg = json.loads(json.dumps(DEFAULT_CONFIG))
         cfg["game_log"] = r"C:\Users\test\.minecraft\logs\latest.log"
         body = json.dumps(cfg, ensure_ascii=False, indent=2)

@@ -14,6 +14,7 @@ main.py 是最后的覆盖率洼地(15%)。其中一半是**可以纯 mock 测**
   * 伪造面板(公会名不符 / 成员数不符)必须被拒
   * 屏蔽词玩家在发命令前就判定失败,不浪费重试配额
 """
+
 import json
 import os
 import shutil
@@ -49,8 +50,9 @@ class TestAutoDetectAdmin(_Base):
     def test_configured_admin_wins(self):
         """配置里已填 admin 时直接返回,不读日志。"""
         cfg = _cfg(admin="已配置管理员")
-        with mock.patch.object(main_mod, "detect_encoding",
-                               side_effect=AssertionError("不该读日志")):
+        with mock.patch.object(
+            main_mod, "detect_encoding", side_effect=AssertionError("不该读日志")
+        ):
             self.assertEqual(main_mod.auto_detect_admin(cfg), "已配置管理员")
 
     def test_detects_from_log_username_line(self):
@@ -89,8 +91,14 @@ class TestSendAndCapture(_Base):
 
     def _args(self, **kw):
         return dict(
-            watcher=mock.Mock(), human=mock.Mock(), hwnd=None, cmd="/guild list",
-            timeout=1.0, verbose=False, detector=None, try_wait=0.1,
+            watcher=mock.Mock(),
+            human=mock.Mock(),
+            hwnd=None,
+            cmd="/guild list",
+            timeout=1.0,
+            verbose=False,
+            detector=None,
+            try_wait=0.1,
             try_times=kw.pop("try_times", 2),
             first_command=kw.pop("first_command", False),
             stop_check=kw.pop("stop_check", None),
@@ -142,23 +150,38 @@ class TestSendAndCapture(_Base):
 class TestQueryGuildList(_Base):
     def test_success_returns_info(self):
         cfg = _cfg(guild_name="演示公会")
-        with mock.patch.object(main_mod, "send_and_capture",
-                               return_value=(["面板"], False)), \
-             mock.patch.object(main_mod, "parse_guild_list",
-                               return_value={"guild_name": "演示公会", "total": 3,
-                                             "online": 1,
-                                             "groups": {"entry": ["甲", "乙", "丙"]}}):
+        with (
+            mock.patch.object(main_mod, "send_and_capture", return_value=(["面板"], False)),
+            mock.patch.object(
+                main_mod,
+                "parse_guild_list",
+                return_value={
+                    "guild_name": "演示公会",
+                    "total": 3,
+                    "online": 1,
+                    "groups": {"entry": ["甲", "乙", "丙"]},
+                },
+            ),
+        ):
             info = main_mod.query_guild_list(cfg, mock.Mock(), mock.Mock(), None)
         self.assertEqual(info["guild_name"], "演示公会")
 
     def test_guild_name_mismatch_is_rejected(self):
         """公会名不符 → 视为伪造/串服,重试耗尽后抛错。"""
         cfg = _cfg(guild_name="期望公会")
-        with mock.patch.object(main_mod, "send_and_capture",
-                               return_value=(["面板"], False)), \
-             mock.patch.object(main_mod, "parse_guild_list",
-                               return_value={"guild_name": "别的公会", "total": 3,
-                                             "online": 0, "groups": {"entry": ["甲"]}}):
+        with (
+            mock.patch.object(main_mod, "send_and_capture", return_value=(["面板"], False)),
+            mock.patch.object(
+                main_mod,
+                "parse_guild_list",
+                return_value={
+                    "guild_name": "别的公会",
+                    "total": 3,
+                    "online": 0,
+                    "groups": {"entry": ["甲"]},
+                },
+            ),
+        ):
             with self.assertRaises(RuntimeError) as cm:
                 main_mod.query_guild_list(cfg, mock.Mock(), mock.Mock(), None)
         self.assertIn("公会名不匹配", str(cm.exception))
@@ -166,18 +189,27 @@ class TestQueryGuildList(_Base):
     def test_member_count_mismatch_is_rejected(self):
         """面板声明总数与实解析人数差太多 → 疑似伪造。"""
         cfg = _cfg(guild_name="演示公会", skip_ranks=[])
-        with mock.patch.object(main_mod, "send_and_capture",
-                               return_value=(["面板"], False)), \
-             mock.patch.object(main_mod, "parse_guild_list",
-                               return_value={"guild_name": "演示公会", "total": 50,
-                                             "online": 0, "groups": {"entry": ["甲"]}}):
+        with (
+            mock.patch.object(main_mod, "send_and_capture", return_value=(["面板"], False)),
+            mock.patch.object(
+                main_mod,
+                "parse_guild_list",
+                return_value={
+                    "guild_name": "演示公会",
+                    "total": 50,
+                    "online": 0,
+                    "groups": {"entry": ["甲"]},
+                },
+            ),
+        ):
             with self.assertRaises(RuntimeError) as cm:
                 main_mod.query_guild_list(cfg, mock.Mock(), mock.Mock(), None)
         self.assertIn("成员数不一致", str(cm.exception))
 
     def test_timeout_exhausts_retries(self):
-        cfg = _cfg(timeouts={"max_retries": 2, "response_wait": 0.1,
-                             "try_wait": 0.1, "try_times": 1})
+        cfg = _cfg(
+            timeouts={"max_retries": 2, "response_wait": 0.1, "try_wait": 0.1, "try_times": 1}
+        )
         with mock.patch.object(main_mod, "send_and_capture", return_value=(None, False)):
             with self.assertRaises(RuntimeError) as cm:
                 main_mod.query_guild_list(cfg, mock.Mock(), mock.Mock(), None)
@@ -185,21 +217,31 @@ class TestQueryGuildList(_Base):
 
     def test_interrupt_does_not_consume_retry(self):
         """暂停中断不消耗重试次数 —— 否则暂停一次就少一次机会。"""
-        cfg = _cfg(guild_name="演示公会",
-                   timeouts={"max_retries": 2, "response_wait": 0.1,
-                             "try_wait": 0.1, "try_times": 1})
+        cfg = _cfg(
+            guild_name="演示公会",
+            timeouts={"max_retries": 2, "response_wait": 0.1, "try_wait": 0.1, "try_times": 1},
+        )
         calls = {"n": 0}
 
         def fake_send(*a, **k):
             calls["n"] += 1
             if calls["n"] <= 2:
-                return None, True          # 前两次都是"中断"
+                return None, True  # 前两次都是"中断"
             return ["面板"], False
 
-        with mock.patch.object(main_mod, "send_and_capture", side_effect=fake_send), \
-             mock.patch.object(main_mod, "parse_guild_list",
-                               return_value={"guild_name": "演示公会", "total": 1,
-                                             "online": 0, "groups": {"entry": ["甲"]}}):
+        with (
+            mock.patch.object(main_mod, "send_and_capture", side_effect=fake_send),
+            mock.patch.object(
+                main_mod,
+                "parse_guild_list",
+                return_value={
+                    "guild_name": "演示公会",
+                    "total": 1,
+                    "online": 0,
+                    "groups": {"entry": ["甲"]},
+                },
+            ),
+        ):
             info = main_mod.query_guild_list(cfg, mock.Mock(), mock.Mock(), None)
         self.assertEqual(info["guild_name"], "演示公会")
         self.assertGreaterEqual(calls["n"], 3, "中断后应继续重试,不能提前放弃")
@@ -214,28 +256,40 @@ class TestQueryMember(_Base):
         m_send.assert_not_called()
 
     def test_success_returns_info(self):
-        with mock.patch.object(main_mod, "send_and_capture",
-                               return_value=(["面板"], False)), \
-             mock.patch.object(main_mod, "parse_guild_member",
-                               return_value={"player": "甲", "weekly_total": 100,
-                                             "joined_at": "x", "last_online": "y",
-                                             "daily": []}):
+        with (
+            mock.patch.object(main_mod, "send_and_capture", return_value=(["面板"], False)),
+            mock.patch.object(
+                main_mod,
+                "parse_guild_member",
+                return_value={
+                    "player": "甲",
+                    "weekly_total": 100,
+                    "joined_at": "x",
+                    "last_online": "y",
+                    "daily": [],
+                },
+            ),
+        ):
             info = main_mod.query_member(_cfg(), mock.Mock(), mock.Mock(), None, "甲")
         self.assertEqual(info["weekly_total"], 100)
 
     def test_timeout_returns_none(self):
-        cfg = _cfg(timeouts={"max_retries": 2, "response_wait": 0.1,
-                             "try_wait": 0.1, "try_times": 1})
+        cfg = _cfg(
+            timeouts={"max_retries": 2, "response_wait": 0.1, "try_wait": 0.1, "try_times": 1}
+        )
         with mock.patch.object(main_mod, "send_and_capture", return_value=(None, False)):
             self.assertIsNone(main_mod.query_member(cfg, mock.Mock(), mock.Mock(), None, "甲"))
 
     def test_parse_error_retries_then_gives_up(self):
-        cfg = _cfg(timeouts={"max_retries": 2, "response_wait": 0.1,
-                             "try_wait": 0.1, "try_times": 1})
-        with mock.patch.object(main_mod, "send_and_capture",
-                               return_value=(["面板"], False)), \
-             mock.patch.object(main_mod, "parse_guild_member",
-                               side_effect=main_mod.ParseError("坏面板")):
+        cfg = _cfg(
+            timeouts={"max_retries": 2, "response_wait": 0.1, "try_wait": 0.1, "try_times": 1}
+        )
+        with (
+            mock.patch.object(main_mod, "send_and_capture", return_value=(["面板"], False)),
+            mock.patch.object(
+                main_mod, "parse_guild_member", side_effect=main_mod.ParseError("坏面板")
+            ),
+        ):
             self.assertIsNone(main_mod.query_member(cfg, mock.Mock(), mock.Mock(), None, "甲"))
 
 
@@ -248,8 +302,21 @@ class TestParseArgs(_Base):
         self.assertFalse(args.dry_run)
 
     def test_all_flags(self):
-        argv = ["prog", "--config", "c.json", "--admin", "A", "--log", "l",
-                "--options", "o", "--dry-run", "--debug", "--debug-skip", "list,member"]
+        argv = [
+            "prog",
+            "--config",
+            "c.json",
+            "--admin",
+            "A",
+            "--log",
+            "l",
+            "--options",
+            "o",
+            "--dry-run",
+            "--debug",
+            "--debug-skip",
+            "list,member",
+        ]
         with mock.patch.object(sys, "argv", argv):
             args = main_mod.parse_args()
         self.assertEqual(args.config, "c.json")
@@ -263,8 +330,15 @@ class TestParseArgs(_Base):
 
 class TestPrepareConfig(_Base):
     def _args(self, path, **kw):
-        d = dict(config=path, admin=None, log=None, options=None,
-                 dry_run=False, debug=False, debug_skip=None)
+        d = dict(
+            config=path,
+            admin=None,
+            log=None,
+            options=None,
+            dry_run=False,
+            debug=False,
+            debug_skip=None,
+        )
         d.update(kw)
         return mock.Mock(**d)
 
@@ -273,8 +347,7 @@ class TestPrepareConfig(_Base):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(_cfg(), f, ensure_ascii=False)
         exit_fn = mock.Mock()
-        cfg = main_mod.prepare_config(self._args(path),
-                                      console_fn=mock.Mock(), exit_fn=exit_fn)
+        cfg = main_mod.prepare_config(self._args(path), console_fn=mock.Mock(), exit_fn=exit_fn)
         exit_fn.assert_not_called()
         self.assertEqual(cfg["guild_qq"], DEFAULT_CONFIG["guild_qq"])
 
@@ -282,8 +355,7 @@ class TestPrepareConfig(_Base):
         path = os.path.join(self.tmp, "brand_new.json")
         exit_fn = mock.Mock()
         with mock.patch.object(main_mod, "input", return_value=""):
-            main_mod.prepare_config(self._args(path),
-                                    console_fn=mock.Mock(), exit_fn=exit_fn)
+            main_mod.prepare_config(self._args(path), console_fn=mock.Mock(), exit_fn=exit_fn)
         exit_fn.assert_called_once_with(0)
         self.assertTrue(os.path.exists(path), "首次运行必须生成配置文件")
 
@@ -292,9 +364,18 @@ class TestPrepareConfig(_Base):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(_cfg(), f, ensure_ascii=False)
         cfg = main_mod.prepare_config(
-            self._args(path, admin="CLI管理员", log="/cli/log", options="/cli/opt",
-                       dry_run=True, debug=True, debug_skip="list,member"),
-            console_fn=mock.Mock(), exit_fn=mock.Mock())
+            self._args(
+                path,
+                admin="CLI管理员",
+                log="/cli/log",
+                options="/cli/opt",
+                dry_run=True,
+                debug=True,
+                debug_skip="list,member",
+            ),
+            console_fn=mock.Mock(),
+            exit_fn=mock.Mock(),
+        )
         self.assertEqual(cfg["admin"], "CLI管理员")
         self.assertEqual(cfg["game_log"], "/cli/log")
         self.assertEqual(cfg["game_options"], "/cli/opt")
@@ -312,32 +393,36 @@ class TestPrepareConfig(_Base):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(bad, f, ensure_ascii=False)
         exit_fn = mock.Mock()
-        main_mod.prepare_config(self._args(path),
-                                console_fn=mock.Mock(), exit_fn=exit_fn)
+        main_mod.prepare_config(self._args(path), console_fn=mock.Mock(), exit_fn=exit_fn)
         exit_fn.assert_called_once_with(1)
 
 
 class TestPauseUntilResume(_Base):
     def test_debug_mode_exits_immediately(self):
-        with mock.patch.object(main_mod.runtime_mod, "set_paused") as m_set, \
-                mock.patch.object(main_mod, "wait_if_paused") as m_wait:
+        with (
+            mock.patch.object(main_mod.runtime_mod, "set_paused") as m_set,
+            mock.patch.object(main_mod, "wait_if_paused") as m_wait,
+        ):
             with self.assertRaises(SystemExit):
-                main_mod._pause_until_resume(
-                    _cfg(debug={"enabled": True, "skip_stages": []}))
+                main_mod._pause_until_resume(_cfg(debug={"enabled": True, "skip_stages": []}))
         m_set.assert_called_once_with(True)
         m_wait.assert_not_called()
 
     def test_normal_mode_blocks(self):
-        with mock.patch.object(main_mod.runtime_mod, "set_paused") as m_set, \
-                mock.patch.object(main_mod, "wait_if_paused") as m_wait:
+        with (
+            mock.patch.object(main_mod.runtime_mod, "set_paused") as m_set,
+            mock.patch.object(main_mod, "wait_if_paused") as m_wait,
+        ):
             main_mod._pause_until_resume(None)
         m_set.assert_called_once_with(True)
         m_wait.assert_called_once()
 
     def test_no_cfg_still_works(self):
         """不传 cfg 也不能崩(原实现裸读 cfg 是未定义名)。"""
-        with mock.patch.object(main_mod.runtime_mod, "set_paused"), \
-                mock.patch.object(main_mod, "wait_if_paused"):
+        with (
+            mock.patch.object(main_mod.runtime_mod, "set_paused"),
+            mock.patch.object(main_mod, "wait_if_paused"),
+        ):
             main_mod._pause_until_resume()
 
 

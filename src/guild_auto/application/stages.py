@@ -16,10 +16,12 @@ stages.py —— 流程阶段编排(双模式)
   * False = 默认串行:逐条发送 → 逐条读日志验证
   * True  = 异步(后台):主线程只发不验,验证交给 async_system
 """
+
 from guild_auto.infrastructure import logger
 from guild_auto.domain.decisions import build_notification, build_summary_message
 from guild_auto.config import console
 from guild_auto.domain.parsers import ParseError, is_masked_name, parse_guild_member
+
 
 def stage_query_async(rt, targets, cfg):
     """异步(后台)模式的查询阶段 —— 流程规格 B→D→E 的落地。
@@ -91,17 +93,20 @@ def stage_query_async(rt, targets, cfg):
         else:
             queryable.append((rk, pid))
     if blocked_targets:
-        logger.log_warning(f"(异步)跳过 {len(blocked_targets)} 名屏蔽词玩家:"
-                           f"名字为全星号,指令不可查(不消耗重试)")
-        console(f"  ⚠ {len(blocked_targets)} 名玩家名字被网易屏蔽词替换为星号,"
-                f"无法查询贡献(报告中将单列)")
+        logger.log_warning(
+            f"(异步)跳过 {len(blocked_targets)} 名屏蔽词玩家:名字为全星号,指令不可查(不消耗重试)"
+        )
+        console(
+            f"  ⚠ {len(blocked_targets)} 名玩家名字被网易屏蔽词替换为星号,"
+            f"无法查询贡献(报告中将单列)"
+        )
 
     commands = [(cmds["guild_member"].format(player=pid), pid) for _rk, pid in queryable]
 
     logger.log_info(f"(异步)阶段2 查询: {len(commands)} 条指令,主线程只发不验")
     ok_snaps, failed_snaps = run_async_round(
-        system, commands, send_only,
-        max_retries=int(cfg.get("timeouts", {}).get("max_retries", 3)))
+        system, commands, send_only, max_retries=int(cfg.get("timeouts", {}).get("max_retries", 3))
+    )
     system.stop()
 
     records, failures = [], []
@@ -111,8 +116,10 @@ def stage_query_async(rt, targets, cfg):
             info["rank"] = rank_of.get(snap["player"], snap["player"])
             records.append(info)
             if sw.get("verbose_log", True):
-                console(f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} "
-                        f"| 上次在线: {info['last_online']}")
+                console(
+                    f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} "
+                    f"| 上次在线: {info['last_online']}"
+                )
     for snap in failed_snaps:
         pid = snap["player"]
         reason = snap.get("error") or "查询失败"
@@ -122,13 +129,19 @@ def stage_query_async(rt, targets, cfg):
         logger.log_error(f"(异步)查询失败({reason}): {pid}")
 
     for rk, pid in blocked_targets:
-        failures.append({
-            "player": pid, "rank": rk, "blocked": True,
-            "reason": "屏蔽词玩家: 名字被网易过滤为星号,指令不可查,需人工确认",
-        })
+        failures.append(
+            {
+                "player": pid,
+                "rank": rk,
+                "blocked": True,
+                "reason": "屏蔽词玩家: 名字被网易过滤为星号,指令不可查,需人工确认",
+            }
+        )
 
-    logger.log_info(f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)} "
-                    f"(其中屏蔽词 {len(blocked_targets)})")
+    logger.log_info(
+        f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)} "
+        f"(其中屏蔽词 {len(blocked_targets)})"
+    )
     return records, failures
 
 
@@ -164,8 +177,7 @@ def stage_confirm_execution(rt, records, cfg):
     console(f"待执行操作: 升职 {n_p} 人, 降职 {n_d} 人, 踢出 {n_k} 人")
 
     # ---- 门 1:总确认 ----
-    ans = rt.ask("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(仅输出报告)",
-                 default=True)
+    ans = rt.ask("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(仅输出报告)", default=True)
     if not ans:
         console("已跳过执行(仅输出报告)")
         execution_enabled = False
@@ -174,14 +186,14 @@ def stage_confirm_execution(rt, records, cfg):
     pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
     skipped_kicks = False
     if execution_enabled and pending_kicks and cfg.get("kick_confirm", True):
-        console(f"⚠ 即将踢出 {len(pending_kicks)} 人(不可逆): "
-                f"{[r['player'] for r in pending_kicks]}")
-        ans = rt.ask("确认执行踢出?输入 kick-confirm 后回车执行,其他输入跳过踢出",
-                     default=False)
+        console(
+            f"⚠ 即将踢出 {len(pending_kicks)} 人(不可逆): {[r['player'] for r in pending_kicks]}"
+        )
+        ans = rt.ask("确认执行踢出?输入 kick-confirm 后回车执行,其他输入跳过踢出", default=False)
         if not ans:
             console("已跳过全部踢出(其他操作照常执行)")
             for r in pending_kicks:
-                r["executed"] = True   # 标记已处理,防止执行循环再次执行(不可逆操作)
+                r["executed"] = True  # 标记已处理,防止执行循环再次执行(不可逆操作)
                 r["error"] = "kick 已按确认要求跳过"
                 r["new_rank"] = r["rank"]
             skipped_kicks = True
@@ -293,8 +305,9 @@ def stage_execute_async(rt, records, cfg):
     from guild_auto.concurrency.async_system import AsyncVerifySystem, run_async_round
 
     failures = []
-    actionable = [r for r in records if r.get("actions")
-                  and not r.get("executed")]     # kick 被跳过的已标 executed=True
+    actionable = [
+        r for r in records if r.get("actions") and not r.get("executed")
+    ]  # kick 被跳过的已标 executed=True
     if not actionable:
         return failures
 
@@ -325,8 +338,7 @@ def stage_execute_async(rt, records, cfg):
         player = r["player"]
         for idx, a in enumerate(r["actions"]):
             cmd = build_command(cfg, a, player)
-            commands.append((cmd, player, {"action": a,
-                                           "key": (player, "action", idx)}))
+            commands.append((cmd, player, {"action": a, "key": (player, "action", idx)}))
 
     def verify(cmd, player, meta):
         action = (meta or {}).get("action")
@@ -340,16 +352,17 @@ def stage_execute_async(rt, records, cfg):
 
     console(f"[5/5] 执行操作(异步模式:主线程只发不验,{len(commands)} 条命令)...")
     logger.log_info(f"(异步)阶段5 执行: {len(commands)} 条命令(主线程只发不验)")
-    ok_snaps, failed_snaps = run_async_round(system, commands, send_only,
-                                             max_retries=retries)
+    ok_snaps, failed_snaps = run_async_round(system, commands, send_only, max_retries=retries)
     console("(异步)执行阶段验证完成,回填结果")
     system.stop()
 
     # ---- 回填:按 meta.key 精确知道"第几条动作成功",不靠命令文本匹配 ----
     ok_keys = {(s.get("meta") or {}).get("key") for s in ok_snaps}
-    err_by_key = {(s.get("meta") or {}).get("key"): (s.get("error") or "执行失败")
-                  for s in failed_snaps}
+    err_by_key = {
+        (s.get("meta") or {}).get("key"): (s.get("error") or "执行失败") for s in failed_snaps
+    }
     from guild_auto.domain.decisions import new_rank_after
+
     failures = []
     for r in records:
         if not r.get("actions") or r.get("executed"):
@@ -364,18 +377,19 @@ def stage_execute_async(rt, records, cfg):
                 per_err.append((a, err_by_key.get(k, "执行失败")))
         ok_count = len(per_ok)
         r["executed"] = True
-        r["error"] = (f"执行失败({per_err[0][0]}): {per_err[0][1]}"
-                      if per_err else None)
+        r["error"] = f"执行失败({per_err[0][0]}): {per_err[0][1]}" if per_err else None
         # 部分失败:按成功条数算 new_rank(与串行路径同一规则)
-        r["new_rank"] = (new_rank_after(r["rank"], r["actions"][:ok_count])
-                         if ok_count else r["rank"])
+        r["new_rank"] = (
+            new_rank_after(r["rank"], r["actions"][:ok_count]) if ok_count else r["rank"]
+        )
         if per_err:
             console(f"    ⚠ {player} 执行失败({per_err[0][0]}): {per_err[0][1]}")
         else:
             console(f"    ✓ {player} 全部完成")
         if per_err:
-            failures.append({"player": player, "rank": r["rank"],
-                             "actions": r["actions"], "error": r["error"]})
+            failures.append(
+                {"player": player, "rank": r["rank"], "actions": r["actions"], "error": r["error"]}
+            )
     return failures
 
 
@@ -386,4 +400,3 @@ def _report_notify(label, ok, err):
     else:
         console(f"  /gc 广播失败: {err}")
         logger.log_warning(f"/gc 广播失败 [{label}]: {err}")
-

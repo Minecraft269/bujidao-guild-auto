@@ -61,8 +61,18 @@ class VerifyTask:
       * 锁粒度只到单个任务,绝不跨任务持锁(避免死锁)
     """
 
-    __slots__ = ("task_id", "command", "player", "meta", "_state", "attempts",
-                 "ok", "error", "data", "_lock")
+    __slots__ = (
+        "task_id",
+        "command",
+        "player",
+        "meta",
+        "_state",
+        "attempts",
+        "ok",
+        "error",
+        "data",
+        "_lock",
+    )
 
     def __init__(self, task_id, command, player, meta=None):
         self.task_id = task_id
@@ -70,10 +80,10 @@ class VerifyTask:
         self.player = player
         self.meta = meta or {}
         self._state = PENDING
-        self.attempts = 0          # 已发送次数(每次重试 +1)
-        self.ok = None             # None=未验证; True/False=后台判定
+        self.attempts = 0  # 已发送次数(每次重试 +1)
+        self.ok = None  # None=未验证; True/False=后台判定
         self.error = None
-        self.data = None           # 解析结果 dict(仅验证成功时)
+        self.data = None  # 解析结果 dict(仅验证成功时)
         self._lock = threading.Lock()
 
     @property
@@ -133,8 +143,10 @@ class VerifyTask:
             return self._state in TERMINAL_STATES
 
     def __repr__(self):
-        return (f"<VerifyTask id={self.task_id} player={self.player!r} "
-                f"state={self.state} attempts={self.attempts_count}>")
+        return (
+            f"<VerifyTask id={self.task_id} player={self.player!r} "
+            f"state={self.state} attempts={self.attempts_count}>"
+        )
 
 
 class AsyncVerifySystem:
@@ -157,8 +169,14 @@ class AsyncVerifySystem:
         传 None 表示不做验证(降级/Debug/单测用),此时所有任务立即置 OK。
     """
 
-    def __init__(self, verify_fn=None, poll_interval=0.3, max_queue_size=0,
-                 task_timeout=15.0, name="async-verify"):
+    def __init__(
+        self,
+        verify_fn=None,
+        poll_interval=0.3,
+        max_queue_size=0,
+        task_timeout=15.0,
+        name="async-verify",
+    ):
         self._verify_fn = verify_fn
         self._poll = poll_interval
         self._task_timeout = float(task_timeout)
@@ -193,16 +211,18 @@ class AsyncVerifySystem:
             return
         self._stop_event.clear()
         self._all_done.clear()
-        t_send = threading.Thread(target=self._sender_loop,
-                                  name=f"{self._name}-send", daemon=True)
-        t_verify = threading.Thread(target=self._verifier_loop,
-                                    name=f"{self._name}-verify", daemon=True)
+        t_send = threading.Thread(target=self._sender_loop, name=f"{self._name}-send", daemon=True)
+        t_verify = threading.Thread(
+            target=self._verifier_loop, name=f"{self._name}-verify", daemon=True
+        )
         t_send.start()
         t_verify.start()
         self._threads = [t_send, t_verify]
         self._started = True
-        logger.log_info(f"(异步系统)已启动 verify_fn={'注入' if self._verify_fn else 'None(不验证)'}"
-                        f" task_timeout={self._task_timeout}s poll={self._poll}s")
+        logger.log_info(
+            f"(异步系统)已启动 verify_fn={'注入' if self._verify_fn else 'None(不验证)'}"
+            f" task_timeout={self._task_timeout}s poll={self._poll}s"
+        )
 
     def stop(self, timeout=5.0):
         """停止后台系统:未到终态的任务进补做队列,置位事件,join 线程。
@@ -237,7 +257,9 @@ class AsyncVerifySystem:
         for t in self._threads:
             t.join(timeout=timeout)
         if stopped:
-            logger.log_warning(f"(异步系统)停止前把 {stopped} 条未完成任务标记为 stopped 并入补做队列")
+            logger.log_warning(
+                f"(异步系统)停止前把 {stopped} 条未完成任务标记为 stopped 并入补做队列"
+            )
         logger.log_info("(异步系统)已停止")
 
     def is_alive(self):
@@ -257,9 +279,11 @@ class AsyncVerifySystem:
         with self._count_lock:
             self._pending_count += 1
         self._all_done.clear()
-        self._send_q.put(task_id)   # 主线程唯一动作;实际按键在 sender 线程
-        logger.log_trace(f"TRACE_QUEUE async_system.submit | task_id={task_id} "
-                         f"player={player!r} depth={self._send_q.qsize()}")
+        self._send_q.put(task_id)  # 主线程唯一动作;实际按键在 sender 线程
+        logger.log_trace(
+            f"TRACE_QUEUE async_system.submit | task_id={task_id} "
+            f"player={player!r} depth={self._send_q.qsize()}"
+        )
         return task_id
 
     def submit_many(self, commands):
@@ -290,8 +314,11 @@ class AsyncVerifySystem:
 
         task_ids 给了就只返回这些任务的结果(多轮闭环时避免把上一轮残留算进来)。"""
         ids = None if task_ids is None else set(task_ids)
-        return [s for s in self.get_results()
-                if s["state"] == FAILED and (ids is None or s["task_id"] in ids)]
+        return [
+            s
+            for s in self.get_results()
+            if s["state"] == FAILED and (ids is None or s["task_id"] in ids)
+        ]
 
     def get_completed(self, task_ids=None):
         """验证成功的任务快照(主线程"忽略并抛弃"的对象)。
@@ -300,8 +327,11 @@ class AsyncVerifySystem:
         上一轮的 FAILED 任务仍留在 _tasks 里,不按轮次过滤会重复计数。
         """
         ids = None if task_ids is None else set(task_ids)
-        return [s for s in self.get_results()
-                if s["state"] == OK and (ids is None or s["task_id"] in ids)]
+        return [
+            s
+            for s in self.get_results()
+            if s["state"] == OK and (ids is None or s["task_id"] in ids)
+        ]
 
     def get_retry_queue(self):
         with self._retry_lock:
@@ -314,8 +344,7 @@ class AsyncVerifySystem:
         否则指令从系统里静默消失。
         """
         with self._tasks_lock:
-            return [t.snapshot() for t in self._tasks.values()
-                    if t.state in (PENDING, SENT)]
+            return [t.snapshot() for t in self._tasks.values() if t.state in (PENDING, SENT)]
 
     def archive_finished(self, task_ids):
         """把指定任务中**已到终态**(OK/STOPPED)的从 _tasks 移出。
@@ -328,9 +357,11 @@ class AsyncVerifySystem:
         """
         ids = set(task_ids)
         with self._tasks_lock:
-            victims = [tid for tid in ids
-                       if tid in self._tasks
-                       and self._tasks[tid].state in TERMINAL_STATES]
+            victims = [
+                tid
+                for tid in ids
+                if tid in self._tasks and self._tasks[tid].state in TERMINAL_STATES
+            ]
             for tid in victims:
                 del self._tasks[tid]
         if victims:
@@ -375,8 +406,9 @@ class AsyncVerifySystem:
         if got:
             logger.log_info("(异步系统)收到后台完成信号,全部任务已到终态")
         else:
-            logger.log_warning(f"(异步系统)等待完成信号超时({timeout:.1f}s),"
-                               f"仍有 {self.pending_count()} 条未验证")
+            logger.log_warning(
+                f"(异步系统)等待完成信号超时({timeout:.1f}s),仍有 {self.pending_count()} 条未验证"
+            )
         return got
 
     # ------------------------------------------------------------------
@@ -408,8 +440,10 @@ class AsyncVerifySystem:
             task.mark_sent()
             return
         task.mark_sent()
-        logger.log_trace(f"TRACE_VERIFY send | task_id={task.task_id} "
-                         f"player={task.player!r} cmd={task.command[:60]!r}")
+        logger.log_trace(
+            f"TRACE_VERIFY send | task_id={task.task_id} "
+            f"player={task.player!r} cmd={task.command[:60]!r}"
+        )
         try:
             send_fn(task.command, task.player, task.meta)
         except Exception as e:  # 发送异常 → 记失败,由主线程决定重试
@@ -451,10 +485,12 @@ class AsyncVerifySystem:
             for task in candidates:
                 if self._stop_event.is_set():
                     break
-                if task.state != SENT:   # 已被其他路径改状态(如发送失败)则跳过
+                if task.state != SENT:  # 已被其他路径改状态(如发送失败)则跳过
                     continue
-                logger.log_trace(f"TRACE_VERIFY begin | task_id={task.task_id} "
-                                  f"player={task.player!r} attempt={task.attempts_count}")
+                logger.log_trace(
+                    f"TRACE_VERIFY begin | task_id={task.task_id} "
+                    f"player={task.player!r} attempt={task.attempts_count}"
+                )
                 try:
                     if self._verify_fn is None:
                         # 无验证函数(降级/Debug/单测):立即置 OK
@@ -468,8 +504,9 @@ class AsyncVerifySystem:
                 # 无论成功/失败/异常,任务都已离开 SENT 状态 —— 递减待验证计数
                 self._dec_pending()
                 if task.state == OK:
-                    logger.log_trace(f"TRACE_VERIFY ok | task_id={task.task_id} "
-                                     f"player={task.player!r}")
+                    logger.log_trace(
+                        f"TRACE_VERIFY ok | task_id={task.task_id} player={task.player!r}"
+                    )
                 else:
                     logger.log_warning(f"(异步系统)验证失败 player={task.player}: {task.error}")
         # stop 时兜底置完成信号,避免主线程 wait_all 挂起
@@ -490,9 +527,11 @@ class AsyncVerifySystem:
         """
         with self._tasks_lock:
             if not self._tasks:
-                return False          # 一个任务都没有 → 还不能判定"本轮完成"
-            return not any(t.state in (PENDING, SENT) for t in self._tasks.values()) \
+                return False  # 一个任务都没有 → 还不能判定"本轮完成"
+            return (
+                not any(t.state in (PENDING, SENT) for t in self._tasks.values())
                 and self._send_q.empty()
+            )
 
 
 def run_async_round(system, commands, send_fn, max_retries=3):
@@ -512,6 +551,7 @@ def run_async_round(system, commands, send_fn, max_retries=3):
     """
     results_ok = []
     final_failed = []
+
     def _biz_key(s):
         """业务去重键。
 
@@ -525,14 +565,16 @@ def run_async_round(system, commands, send_fn, max_retries=3):
 
     remaining = list(commands)
     max_rounds = max(1, int(max_retries))
-    all_round_ids = set()   # 本次闭环提交过的全部 task_id(用于收尾时只统计本次的任务)
+    all_round_ids = set()  # 本次闭环提交过的全部 task_id(用于收尾时只统计本次的任务)
 
     for round_no in range(1, max_rounds + 1):
         if not remaining:
             break
-        logger.log_info(f"(异步系统)第 {round_no}/{max_rounds} 轮:投递 {len(remaining)} 条指令(只发不验)")
+        logger.log_info(
+            f"(异步系统)第 {round_no}/{max_rounds} 轮:投递 {len(remaining)} 条指令(只发不验)"
+        )
         system.attach_sender(send_fn)
-        system.start()   # 幂等
+        system.start()  # 幂等
         # 本轮 task_id 集合:用于只统计本轮结果,避免多轮共用 system 时重复计数
         round_ids = set(system.submit_many(remaining))
         all_round_ids |= round_ids
@@ -553,14 +595,21 @@ def run_async_round(system, commands, send_fn, max_retries=3):
         if round_no < max_rounds:
             # 重试必须携带原 meta:否则 verify_fn 在第二轮拿不到 action 等上下文
             # (执行阶段就是靠 meta["action"] 定位该执行哪个动作)。
-            remaining = [((s["command"], s["player"], s["meta"])
-                          if s.get("meta") else (s["command"], s["player"]))
-                         for s in failed]
+            remaining = [
+                (
+                    (s["command"], s["player"], s["meta"])
+                    if s.get("meta")
+                    else (s["command"], s["player"])
+                )
+                for s in failed
+            ]
             logger.log_warning(f"(异步系统)第 {round_no} 轮有 {len(remaining)} 条失败需重试")
         else:
             final_failed.extend(failed)
             remaining = []
-            logger.log_warning(f"(异步系统)第 {round_no} 轮(末轮)仍有 {len(failed)} 条失败,重试耗尽")
+            logger.log_warning(
+                f"(异步系统)第 {round_no} 轮(末轮)仍有 {len(failed)} 条失败,重试耗尽"
+            )
 
     # 收尾兜底:本闭环内仍处于 FAILED(理论上末轮已全部收进 final_failed,
     # 这里防的是边界情况如 max_rounds=1)。按 task_id 去重,同一条失败不重复计入。
@@ -583,7 +632,8 @@ def run_async_round(system, commands, send_fn, max_retries=3):
         logger.log_warning(
             f"(异步系统)⚠ {len(stranded)} 条指令在 wait_all 超时后仍未验证完成,"
             f"已保留在系统内并计入失败清单(指令未静默丢弃): "
-            f"{[s['player'] for s in stranded][:5]}")
+            f"{[s['player'] for s in stranded][:5]}"
+        )
         seen = {_biz_key(s) for s in final_failed}
         for s in stranded:
             if _biz_key(s) not in seen:
@@ -597,9 +647,9 @@ def run_async_round(system, commands, send_fn, max_retries=3):
     dedup_fail, seen_fail = [], set()
     for s in final_failed:
         key = _biz_key(s)
-        if key in ok_keys:          # 后续轮次成功了 → 不算最终失败
+        if key in ok_keys:  # 后续轮次成功了 → 不算最终失败
             continue
-        if key in seen_fail:        # 同一条失败不重复计入
+        if key in seen_fail:  # 同一条失败不重复计入
             continue
         seen_fail.add(key)
         dedup_fail.append(s)

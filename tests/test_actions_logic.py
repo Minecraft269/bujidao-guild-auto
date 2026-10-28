@@ -18,6 +18,7 @@ test_actions_logic.py —— 决策/文案/命令边界补齐 + 硬件层 mock �
   * time.sleep               → patch 为空操作,测试秒级完成且无真实等待
   这样硬件交互层的分支逻辑与异常路径都能被确定性验证,且不产生真实副作用。
 """
+
 import os
 import sys
 import threading
@@ -35,8 +36,15 @@ from guild_auto.domain.decisions import (  # noqa: E402
 from guild_auto.infrastructure.action_executor import ActionExecutor  # noqa: E402
 from guild_auto.config import DEFAULT_CONFIG  # noqa: E402
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -83,15 +91,19 @@ class TestNewRankAfterChainBounds(unittest.TestCase):
 
     def test_promote_one_step_up(self):
         for i in range(len(RANK_ORDER) - 1):
-            self.assertEqual(new_rank_after(RANK_ORDER[i], ["promote"]),
-                             RANK_ORDER[i + 1],
-                             f"{RANK_ORDER[i]} 升一级应变 {RANK_ORDER[i + 1]}")
+            self.assertEqual(
+                new_rank_after(RANK_ORDER[i], ["promote"]),
+                RANK_ORDER[i + 1],
+                f"{RANK_ORDER[i]} 升一级应变 {RANK_ORDER[i + 1]}",
+            )
 
     def test_demote_one_step_down(self):
         for i in range(1, len(RANK_ORDER)):
-            self.assertEqual(new_rank_after(RANK_ORDER[i], ["demote"]),
-                             RANK_ORDER[i - 1],
-                             f"{RANK_ORDER[i]} 降一级应变 {RANK_ORDER[i - 1]}")
+            self.assertEqual(
+                new_rank_after(RANK_ORDER[i], ["demote"]),
+                RANK_ORDER[i - 1],
+                f"{RANK_ORDER[i]} 降一级应变 {RANK_ORDER[i - 1]}",
+            )
 
     def test_promote_beyond_top_capped(self):
         """超出链顶封顶,不越界(补 line 104 封顶分支)。"""
@@ -108,8 +120,9 @@ class TestBuildCommand(unittest.TestCase):
 
     def test_player_with_space_in_command(self):
         """含空格的玩家名必须原样嵌入命令(真实样本存在"带空格 名字")。"""
-        self.assertEqual(build_command(CFG, "promote", "带空格 演示名"),
-                         "/guild promote 带空格 演示名")
+        self.assertEqual(
+            build_command(CFG, "promote", "带空格 演示名"), "/guild promote 带空格 演示名"
+        )
 
     def test_query_command_not_via_build_command(self):
         """查询命令(/guild member)不经 build_command —— 它只管升/降/踢三类动作。
@@ -127,13 +140,15 @@ class TestBuildCommand(unittest.TestCase):
 
     def test_kick_command_includes_reason(self):
         """踢出必须带原因文本(业务规则 §2)。"""
-        self.assertEqual(build_command(CFG, "kick", "演示甲"),
-                         "/guild kick 演示甲 未完成一周最低标准")
+        self.assertEqual(
+            build_command(CFG, "kick", "演示甲"), "/guild kick 演示甲 未完成一周最低标准"
+        )
 
     def test_kick_reason_configurable(self):
         """踢出原因可配置。"""
-        cfg = {"commands": {"guild_kick": "/guild kick {player} {reason}",
-                            "kick_reason": "自定义原因"}}
+        cfg = {
+            "commands": {"guild_kick": "/guild kick {player} {reason}", "kick_reason": "自定义原因"}
+        }
         self.assertEqual(build_command(cfg, "kick", "甲"), "/guild kick 甲 自定义原因")
 
     def test_unknown_action_raises(self):
@@ -144,8 +159,9 @@ class TestBuildCommand(unittest.TestCase):
 
     def test_player_with_space_in_command(self):
         """含空格的玩家名必须原样嵌入命令(真实样本存在"带空格 名字")。"""
-        self.assertEqual(build_command(CFG, "promote", "带空格 演示名"),
-                         "/guild promote 带空格 演示名")
+        self.assertEqual(
+            build_command(CFG, "promote", "带空格 演示名"), "/guild promote 带空格 演示名"
+        )
 
 
 class TestBuildNotificationEdge(unittest.TestCase):
@@ -211,13 +227,15 @@ def _panel(*body_lines):
     服务端下发的样子,用它测通过只能证明"裸行能被识别",而那正是
     要防住的伪造路径。
     """
-    return [f"[148月2026 21:55:41.046] [Render thread/INFO] "
-            f"[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
-            + "\\n".join([PANEL_START, *body_lines, PANEL_END]) + " [C]"]
+    return [
+        f"[148月2026 21:55:41.046] [Render thread/INFO] "
+        f"[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
+        + "\\n".join([PANEL_START, *body_lines, PANEL_END])
+        + " [C]"
+    ]
 
 
-def _make_executor(read_until_lines=None, stop_check=None, detector=None,
-                   error_patterns=None):
+def _make_executor(read_until_lines=None, stop_check=None, detector=None, error_patterns=None):
     """构造一个全 mock 的 ActionExecutor(硬件层测试夹具)。
 
     绝不触碰真实键盘/剪贴板/日志文件:
@@ -227,10 +245,17 @@ def _make_executor(read_until_lines=None, stop_check=None, detector=None,
       * detector=None        → 跳过 OCR
     """
     cfg = dict(CFG)
-    cfg["error_patterns"] = list(error_patterns if error_patterns is not None
-                                else ["权限不足", "玩家不存在"])
-    ex = ActionExecutor(cfg=cfg, human_input=MagicMock(), watcher=MagicMock(),
-                        hwnd=None, detector=detector, stop_check=stop_check)
+    cfg["error_patterns"] = list(
+        error_patterns if error_patterns is not None else ["权限不足", "玩家不存在"]
+    )
+    ex = ActionExecutor(
+        cfg=cfg,
+        human_input=MagicMock(),
+        watcher=MagicMock(),
+        hwnd=None,
+        detector=detector,
+        stop_check=stop_check,
+    )
     ex.watcher.read_until.return_value = list(read_until_lines or [])
     return ex
 
@@ -325,8 +350,11 @@ class TestActionExecutorErrorDetection(unittest.TestCase):
         ok, err = ex.execute_action("promote", "演示甲", retries=3)
         self.assertFalse(ok)
         self.assertEqual(err, "玩家不存在")
-        self.assertEqual(ex.input.send_chat_text.call_count, 3,
-                         f"应重试 3 次,实际 {ex.input.send_chat_text.call_count} 次")
+        self.assertEqual(
+            ex.input.send_chat_text.call_count,
+            3,
+            f"应重试 3 次,实际 {ex.input.send_chat_text.call_count} 次",
+        )
 
     @patch("time.sleep", return_value=None)
     def test_no_echo_retries_then_exhausts(self, _s):
@@ -342,12 +370,15 @@ class TestActionExecutorErrorDetection(unittest.TestCase):
         """先失败后成功:应提前结束,不再重试。"""
         w = MagicMock()
         w.read_until.side_effect = [
-            ["[CHAT] 权限不足"], ["[CHAT] 权限不足"],
-            _panel("成功设置演示甲的职位为管理员!")]
+            ["[CHAT] 权限不足"],
+            ["[CHAT] 权限不足"],
+            _panel("成功设置演示甲的职位为管理员!"),
+        ]
         cfg = dict(CFG)
         cfg["error_patterns"] = ["权限不足"]
-        ex = ActionExecutor(cfg=cfg, human_input=MagicMock(), watcher=w,
-                            hwnd=None, detector=None, stop_check=None)
+        ex = ActionExecutor(
+            cfg=cfg, human_input=MagicMock(), watcher=w, hwnd=None, detector=None, stop_check=None
+        )
         ok, err = ex.execute_action("promote", "演示甲", retries=5)
         self.assertTrue(ok, f"重试后成功应判定成功:{err}")
         self.assertEqual(ex.input.send_chat_text.call_count, 3, "成功后不应继续重试")
@@ -367,8 +398,7 @@ class TestActionExecutorPauseGate(unittest.TestCase):
     def test_resume_after_pause_sends(self, _s):
         """暂停解除后应正常发送。"""
         paused = {"v": False}
-        ex = _make_executor(_panel("成功设置演示甲的职位为管理员!"),
-                            stop_check=lambda: paused["v"])
+        ex = _make_executor(_panel("成功设置演示甲的职位为管理员!"), stop_check=lambda: paused["v"])
         ok, err = ex.execute_action("promote", "演示甲", retries=1)
         self.assertTrue(ok, f"暂停解除后应能发送:{err}")
         self.assertEqual(ex.input.send_chat_text.call_count, 1)
@@ -397,13 +427,13 @@ class TestActionExecutorPauseGate(unittest.TestCase):
         t.start()
         # 门内去抖至少 3 个 50ms 周期 + 二次复查 0.2s;给足时间仍应被暂停拦住
         threading.Event().wait(0.3)
-        self.assertEqual(ex.input.send_chat_text.call_count, 0,
-                         "暂停期间仍发出了指令 —— 会误操作公会")
+        self.assertEqual(
+            ex.input.send_chat_text.call_count, 0, "暂停期间仍发出了指令 —— 会误操作公会"
+        )
         paused["v"] = False
         t.join(timeout=3)
         self.assertFalse(t.is_alive(), "解除暂停后发送门未放行")
-        self.assertEqual(ex.input.send_chat_text.call_count, 1,
-                         "解除暂停后应恰好发出 1 条")
+        self.assertEqual(ex.input.send_chat_text.call_count, 1, "解除暂停后应恰好发出 1 条")
 
 
 class TestActionExecutorGcBroadcast(unittest.TestCase):
@@ -428,8 +458,7 @@ class TestActionExecutorGcBroadcast(unittest.TestCase):
     @patch("time.sleep", return_value=None)
     def test_broadcast_detects_error_pattern(self, _s):
         """广播遇到错误回显 → 失败并带错误文本。"""
-        ex = _make_executor(["[CHAT] 你没有权限发言"],
-                            error_patterns=["没有权限"])
+        ex = _make_executor(["[CHAT] 你没有权限发言"], error_patterns=["没有权限"])
         ok, err = ex.gc_broadcast_with_retry("测试", retries=1, timeout=1)
         self.assertFalse(ok)
         self.assertEqual(err, "没有权限")
@@ -479,15 +508,17 @@ class TestActionExecutorSendGateSerializes(unittest.TestCase):
                 inside["n"] -= 1
 
         ex.input.send_chat_text.side_effect = fake_send
-        threads = [threading.Thread(target=lambda n=i: ex._send_with_gate(f"/cmd {n}"))
-                   for i in range(5)]
+        threads = [
+            threading.Thread(target=lambda n=i: ex._send_with_gate(f"/cmd {n}")) for i in range(5)
+        ]
         for t in threads:
             t.start()
         for t in threads:
             t.join(timeout=5)
         self.assertEqual(len(concurrent), 5, f"应发出 5 条,实际 {len(concurrent)}")
-        self.assertEqual(inside["max"], 1,
-                         f"发送未串行化,最大并发={inside['max']}(剪贴板/键盘会串)")
+        self.assertEqual(
+            inside["max"], 1, f"发送未串行化,最大并发={inside['max']}(剪贴板/键盘会串)"
+        )
 
 
 class TestZeroHardcoding(unittest.TestCase):
@@ -504,8 +535,12 @@ class TestZeroHardcoding(unittest.TestCase):
 
     def test_missing_template_raises_not_falls_back(self):
         """缺 notify_templates 时必须抛 KeyError,不能用硬编码文案兜底。"""
-        for kind, actions in (("none", []), ("kick", ["kick"]),
-                             ("demote", ["demote"]), ("promote", ["promote"])):
+        for kind, actions in (
+            ("none", []),
+            ("kick", ["kick"]),
+            ("demote", ["demote"]),
+            ("promote", ["promote"]),
+        ):
             with self.subTest(template=kind):
                 cfg = {"notify_templates": {}, "guild_qq": "G"}
                 with self.assertRaises(KeyError):
@@ -525,8 +560,9 @@ class TestZeroHardcoding(unittest.TestCase):
             "guild_qq": "G",
         }
         msg = build_notification("演示甲", 42, [], cfg)
-        self.assertEqual(msg, "自定义无操作:演示甲/42",
-                         "改配置后输出没变 —— 代码没读配置或用了硬编码")
+        self.assertEqual(
+            msg, "自定义无操作:演示甲/42", "改配置后输出没变 —— 代码没读配置或用了硬编码"
+        )
 
     def test_command_edit_is_actually_used(self):
         """正向验证:改命令格式配置必须改变输出。"""

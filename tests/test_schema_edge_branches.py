@@ -14,6 +14,7 @@ src-layout 拆分后,schema.py 里一批"用户把配置写坏"的分支没有�
   * debug.simulation.contribution_range 形状非法(长度/元素类型/min>max)
   * game_log 指向脚本自己的 logs/latest.log(自读自写死循环)
 """
+
 import json
 import os
 import unittest
@@ -39,23 +40,20 @@ class TestSwitchesSection(unittest.TestCase):
         cfg = _cfg()
         cfg["switches"] = "全部开启"
         errs = _errors(cfg)
-        self.assertTrue(any("switches" in e for e in errs),
-                        f"switches 类型错误未被报出: {errs}")
+        self.assertTrue(any("switches" in e for e in errs), f"switches 类型错误未被报出: {errs}")
 
     def test_bool_written_as_string_is_rejected(self):
         """JSON 里 "false" 带引号就永远是真 —— 这是"开关关不掉"的经典原因。"""
         cfg = _cfg()
         cfg["switches"]["kick_enabled"] = "false"
         errs = _errors(cfg)
-        self.assertTrue(any("kick_enabled" in e for e in errs),
-                        f"字符串 'false' 未被拒绝: {errs}")
+        self.assertTrue(any("kick_enabled" in e for e in errs), f"字符串 'false' 未被拒绝: {errs}")
 
     def test_notify_mode_invalid_value_rejected(self):
         cfg = _cfg()
         cfg["switches"]["notify_mode"] = "逐条"
         errs = _errors(cfg)
-        self.assertTrue(any("notify_mode" in e for e in errs),
-                        f"非法 notify_mode 未被拒绝: {errs}")
+        self.assertTrue(any("notify_mode" in e for e in errs), f"非法 notify_mode 未被拒绝: {errs}")
 
     def test_valid_notify_modes_accepted(self):
         for mode in ("summary", "per_player"):
@@ -67,17 +65,17 @@ class TestSwitchesSection(unittest.TestCase):
 class TestScalarTypeChecks(unittest.TestCase):
     def test_pause_key_non_string_rejected(self):
         cfg = _cfg()
-        cfg["pause_key"] = 117      # 数字键码
+        cfg["pause_key"] = 117  # 数字键码
         errs = _errors(cfg)
-        self.assertTrue(any("pause_key" in e for e in errs),
-                        f"pause_key 类型错误未被报出: {errs}")
+        self.assertTrue(any("pause_key" in e for e in errs), f"pause_key 类型错误未被报出: {errs}")
 
     def test_kick_confirm_non_bool_rejected(self):
         cfg = _cfg()
         cfg["kick_confirm"] = "yes"
         errs = _errors(cfg)
-        self.assertTrue(any("kick_confirm" in e for e in errs),
-                        f"kick_confirm 类型错误未被报出: {errs}")
+        self.assertTrue(
+            any("kick_confirm" in e for e in errs), f"kick_confirm 类型错误未被报出: {errs}"
+        )
 
     def test_skip_ranks_unknown_rank_is_warning_not_error(self):
         """未知等级只是 warning(可能是用户新加的自定义等级),不该拦启动。"""
@@ -87,8 +85,7 @@ class TestScalarTypeChecks(unittest.TestCase):
         errs = [m for lvl, m in issues if lvl == "error"]
         warns = [m for lvl, m in issues if lvl == "warning"]
         self.assertEqual(errs, [], f"未知等级不该报 error: {errs}")
-        self.assertTrue(any("不存在的等级" in w for w in warns),
-                        f"未知等级应有 warning: {warns}")
+        self.assertTrue(any("不存在的等级" in w for w in warns), f"未知等级应有 warning: {warns}")
 
 
 class TestContributionRange(unittest.TestCase):
@@ -102,25 +99,23 @@ class TestContributionRange(unittest.TestCase):
     def test_wrong_length_rejected(self):
         for bad in ([1], [1, 2, 3], "0-50000"):
             errs = self._with_range(bad)
-            self.assertTrue(any("contribution_range" in e for e in errs),
-                            f"{bad!r} 未被拒绝: {errs}")
+            self.assertTrue(
+                any("contribution_range" in e for e in errs), f"{bad!r} 未被拒绝: {errs}"
+            )
 
     def test_non_numeric_element_rejected(self):
         """元素是字符串时不能去做 > 比较 —— 那会 TypeError 把校验打崩。"""
         errs = self._with_range(["0", "50000"])
-        self.assertTrue(any("contribution_range" in e for e in errs),
-                        f"字符串元素未被拒绝: {errs}")
+        self.assertTrue(any("contribution_range" in e for e in errs), f"字符串元素未被拒绝: {errs}")
 
     def test_bool_element_rejected(self):
         """bool 是 int 子类,true/false 不该被当成 0/1 通过。"""
         errs = self._with_range([False, True])
-        self.assertTrue(any("contribution_range" in e for e in errs),
-                        f"布尔元素未被拒绝: {errs}")
+        self.assertTrue(any("contribution_range" in e for e in errs), f"布尔元素未被拒绝: {errs}")
 
     def test_min_greater_than_max_rejected(self):
         errs = self._with_range([50000, 0])
-        self.assertTrue(any("contribution_range" in e for e in errs),
-                        f"min>max 未被拒绝: {errs}")
+        self.assertTrue(any("contribution_range" in e for e in errs), f"min>max 未被拒绝: {errs}")
 
     def test_valid_range_accepted(self):
         self.assertEqual(self._with_range([0, 50000]), [])
@@ -141,8 +136,7 @@ class TestGameLogSelfReadGuard(unittest.TestCase):
         cfg["game_log"] = os.path.abspath(os.path.join(script_dir, log_dir, "latest.log"))
 
         errs = _errors(cfg)
-        self.assertTrue(any("game_log" in e for e in errs),
-                        f"指向自身 latest.log 未被拒绝: {errs}")
+        self.assertTrue(any("game_log" in e for e in errs), f"指向自身 latest.log 未被拒绝: {errs}")
 
     def test_normal_external_path_accepted(self):
         cfg = _cfg()

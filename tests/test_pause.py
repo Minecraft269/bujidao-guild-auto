@@ -17,6 +17,7 @@ test_pause.py —— 暂停门与 Ctrl+C 中断菜单
 零真实硬件:pyautogui / activate_window / prepare_chat_state / console
 全部 patch 掉。
 """
+
 import os
 import sys
 import threading
@@ -29,8 +30,16 @@ from guild_auto.infrastructure import logger  # noqa: E402
 from guild_auto.application import pause  # noqa: E402
 from guild_auto.application import runtime  # noqa: E402
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception", "trace_code_location"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+    "trace_code_location",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -43,8 +52,7 @@ class _PauseCase(unittest.TestCase):
         self.addCleanup(runtime.reset_state)
         self.console_lines = []
         for p in (
-            mock.patch.object(pause, "console",
-                              lambda m, **k: self.console_lines.append(str(m))),
+            mock.patch.object(pause, "console", lambda m, **k: self.console_lines.append(str(m))),
             mock.patch.object(pause.pyautogui, "press", lambda *a, **k: None),
             mock.patch.object(pause, "activate_window", lambda *a, **k: None),
             mock.patch.object(pause, "prepare_chat_state", lambda *a, **k: None),
@@ -62,7 +70,8 @@ class TestStateHasSingleOwner(_PauseCase):
             self.assertFalse(
                 hasattr(pause, name),
                 f"pause.py 里出现了 {name} 模块级定义 —— "
-                f"它就是导致暂停门失效的值副本形态,状态必须只由 runtime 持有")
+                f"它就是导致暂停门失效的值副本形态,状态必须只由 runtime 持有",
+            )
 
     def test_set_paused_is_visible_through_runtime_reader(self):
         """经 set_paused 写入后,runtime.is_paused() 必须立即可见。"""
@@ -92,29 +101,33 @@ class TestTogglePauseSideEffects(_PauseCase):
     def test_pause_sets_event_and_resume_clears_it(self):
         runtime.set_paused(False)
         runtime._pause_event.clear()
-        runtime.consume_reset_flag()      # 清残留
+        runtime.consume_reset_flag()  # 清残留
 
-        pause._toggle_pause()             # → 暂停
-        self.assertTrue(runtime._pause_event.is_set(),
-                        "暂停必须置位 _pause_event,否则阻塞中的 wait 收不到通知")
-        self.assertFalse(runtime.consume_reset_flag(),
-                         "暂停动作本身不需要重置窗口")
+        pause._toggle_pause()  # → 暂停
+        self.assertTrue(
+            runtime._pause_event.is_set(), "暂停必须置位 _pause_event,否则阻塞中的 wait 收不到通知"
+        )
+        self.assertFalse(runtime.consume_reset_flag(), "暂停动作本身不需要重置窗口")
 
-        pause._toggle_pause()             # → 恢复
-        self.assertFalse(runtime._pause_event.is_set(),
-                         "恢复必须清掉 _pause_event,否则下次 wait 直接穿透")
-        self.assertTrue(runtime.consume_reset_flag(),
-                        "恢复后必须置 _reset_needed —— 执行阶段据此重置窗口,"
-                        "否则恢复后直接发命令时窗口状态未知")
+        pause._toggle_pause()  # → 恢复
+        self.assertFalse(
+            runtime._pause_event.is_set(), "恢复必须清掉 _pause_event,否则下次 wait 直接穿透"
+        )
+        self.assertTrue(
+            runtime.consume_reset_flag(),
+            "恢复后必须置 _reset_needed —— 执行阶段据此重置窗口,否则恢复后直接发命令时窗口状态未知",
+        )
 
     def test_pause_message_includes_current_pause_key(self):
         """提示语要带当前暂停键名,否则用户不知道按哪个键恢复。"""
         runtime.set_pause_key_cfg("u")
         pause._toggle_pause()
-        self.assertTrue(any("暂停" in m for m in self.console_lines),
-                        f"未打印暂停提示: {self.console_lines}")
-        self.assertTrue(any("u" in m for m in self.console_lines),
-                        f"提示语未带暂停键名: {self.console_lines}")
+        self.assertTrue(
+            any("暂停" in m for m in self.console_lines), f"未打印暂停提示: {self.console_lines}"
+        )
+        self.assertTrue(
+            any("u" in m for m in self.console_lines), f"提示语未带暂停键名: {self.console_lines}"
+        )
 
 
 class TestWaitIfPaused(_PauseCase):
@@ -174,8 +187,10 @@ class TestResetWindowStateAfterPause(_PauseCase):
 
     def test_with_flag_activates_and_escapes(self):
         runtime.set_reset_needed(True)
-        with mock.patch.object(pause, "activate_window") as act, \
-                mock.patch.object(pause.pyautogui, "press") as press:
+        with (
+            mock.patch.object(pause, "activate_window") as act,
+            mock.patch.object(pause.pyautogui, "press") as press,
+        ):
             self.assertTrue(pause.reset_window_state_after_pause(999, None))
             act.assert_called_once_with(999)
             press.assert_called_once_with("esc")
@@ -195,14 +210,18 @@ class TestResetWindowStateAfterPause(_PauseCase):
         这正是"宁可记日志不抛"的理由。
         """
         runtime.set_reset_needed(True)
-        with mock.patch.object(pause.pyautogui, "press",
-                               side_effect=RuntimeError("pyautogui 挂了")):
+        with mock.patch.object(
+            pause.pyautogui, "press", side_effect=RuntimeError("pyautogui 挂了")
+        ):
             self.assertTrue(pause.reset_window_state_after_pause(1, None))
 
     def test_works_without_hwnd_or_detector(self):
         """无窗口句柄、无 OCR 检测器时也必须完成重置(两者都是可选依赖)。"""
         runtime.set_reset_needed(True)
-        with mock.patch.object(pause, "activate_window") as act,                 mock.patch.object(pause, "prepare_chat_state") as prep:
+        with (
+            mock.patch.object(pause, "activate_window") as act,
+            mock.patch.object(pause, "prepare_chat_state") as prep,
+        ):
             self.assertTrue(pause.reset_window_state_after_pause(None, None))
             act.assert_not_called()
             prep.assert_not_called()
@@ -211,8 +230,9 @@ class TestResetWindowStateAfterPause(_PauseCase):
         """标志必须被消费 —— 重复消费会让后续每次发送都白按一次 Esc。"""
         runtime.set_reset_needed(True)
         self.assertTrue(pause.reset_window_state_after_pause(None, None))
-        self.assertFalse(pause.reset_window_state_after_pause(None, None),
-                         "第二次调用不该再动作(标志已被消费)")
+        self.assertFalse(
+            pause.reset_window_state_after_pause(None, None), "第二次调用不该再动作(标志已被消费)"
+        )
 
     def test_consume_reset_flag_helper_matches_runtime(self):
         """_consume_reset_flag 必须是 runtime 的同一行为(供 executor 注入)。"""
@@ -235,6 +255,7 @@ class TestStartPauseListener(_PauseCase):
 
     def test_named_key_resolves_to_pynput_key(self):
         from pynput import keyboard as kb
+
         with mock.patch.object(pause.keyboard, "Listener"):
             pause.start_pause_listener("esc")
         self.assertEqual(runtime.pause_key(), kb.Key.esc)
@@ -242,6 +263,7 @@ class TestStartPauseListener(_PauseCase):
     def test_unknown_key_name_falls_back_to_u(self):
         """配置写了个不认识的名字时不能崩,回退到 u(与拆分前行为一致)。"""
         from pynput import keyboard as kb
+
         runtime.set_pause_key_cfg("not_a_real_key")
         self.assertEqual(runtime.pause_key_name(), "not_a_real_key")
         self.assertEqual(runtime.pause_key(), kb.KeyCode.from_char("u"))
@@ -252,6 +274,7 @@ class TestOnPress(_PauseCase):
 
     def test_pause_key_toggles(self):
         from pynput import keyboard as kb
+
         runtime.set_pause_key_cfg("u")
         runtime.set_paused(False)
         pause._on_press(kb.KeyCode.from_char("u"))
@@ -261,6 +284,7 @@ class TestOnPress(_PauseCase):
 
     def test_other_key_does_not_touch_state(self):
         from pynput import keyboard as kb
+
         runtime.set_pause_key_cfg("u")
         runtime.reset_state()
         pause._on_press(kb.KeyCode.from_char("z"))
@@ -271,6 +295,7 @@ class TestOnPress(_PauseCase):
         """Ctrl+C 必须主动 os.kill(CTRL_C_EVENT) 转 SIGINT 进菜单。"""
         import signal as _sig
         from pynput import keyboard as kb
+
         with mock.patch("os.kill") as kill:
             pause._on_press(kb.KeyCode.from_char(chr(3)))
         self.assertGreaterEqual(kill.call_count, 1, "未主动发 CTRL_C_EVENT")
@@ -279,6 +304,7 @@ class TestOnPress(_PauseCase):
     def test_ctrl_c_falls_back_when_kill_fails(self):
         """os.kill 不可用时必须回退置 _force_stop + 置位事件,不能静默失效。"""
         from pynput import keyboard as kb
+
         runtime.reset_state()
         with mock.patch("os.kill", side_effect=OSError("no console")):
             pause._on_press(kb.KeyCode.from_char(chr(3)))
@@ -288,12 +314,13 @@ class TestOnPress(_PauseCase):
 
     def test_exception_inside_callback_is_swallowed_and_logged(self):
         """回调里出异常不能把 pynput 监听线程带崩(原实现会静默挂掉)。"""
+
         class Boom:
             @property
             def char(self):
                 raise RuntimeError("boom")
 
-        pause._on_press(Boom())   # 不抛异常即通过
+        pause._on_press(Boom())  # 不抛异常即通过
 
 
 class TestSignalHandler(_PauseCase):
@@ -305,11 +332,11 @@ class TestSignalHandler(_PauseCase):
             pause._signal_handler(None, None)
         self.assertTrue(runtime.is_paused(), "Ctrl+C 必须置暂停,后台链路立即阻断")
         self.assertTrue(runtime.is_force_stop(), "Ctrl+C 必须置 force_stop")
-        self.assertTrue(runtime.consume_reset_flag(),
-                        "Ctrl+C 后恢复需重置界面,标志必须置位")
+        self.assertTrue(runtime.consume_reset_flag(), "Ctrl+C 后恢复需重置界面,标志必须置位")
 
     def test_install_registers_both_signals(self):
         import signal as _sig
+
         prev = pause.install_signal_handlers()
         try:
             self.assertIs(_sig.getsignal(_sig.SIGINT), pause._signal_handler)
@@ -347,11 +374,13 @@ class TestCtrlCMenuInput(_PauseCase):
         def fake_sleep(s):
             clock["t"] += s
             if not seq:
-                clock["t"] += 10.0    # 没键可读了 → 直接跨过 5s deadline
+                clock["t"] += 10.0  # 没键可读了 → 直接跨过 5s deadline
 
-        with mock.patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}), \
-                mock.patch.object(pause.time, "time", fake_time), \
-                mock.patch.object(pause.time, "sleep", fake_sleep):
+        with (
+            mock.patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}),
+            mock.patch.object(pause.time, "time", fake_time),
+            mock.patch.object(pause.time, "sleep", fake_sleep),
+        ):
             return pause._ctrlc_pause_menu()
 
     def test_enter_means_exit(self):
@@ -380,8 +409,9 @@ class TestCtrlCMenuInput(_PauseCase):
         不能因此让整个菜单失效。
         """
         import signal as _sig
+
         with mock.patch.object(_sig, "signal", side_effect=ValueError("not allowed")):
-                        self.assertFalse(self._run_menu([chr(13)]))
+            self.assertFalse(self._run_menu([chr(13)]))
 
     def test_timeout_without_input_means_exit(self):
         """5s 内没按键 → 默认退出(不阻塞用户)。"""
@@ -389,9 +419,10 @@ class TestCtrlCMenuInput(_PauseCase):
 
     def test_msvcrt_missing_falls_back(self):
         """非 Windows 无 msvcrt → 回退 thread+Queue 实现。"""
-        with mock.patch.dict(sys.modules, {"msvcrt": None}), \
-                mock.patch.object(pause, "_ctrlc_pause_menu_fallback",
-                                  return_value=True) as fb:
+        with (
+            mock.patch.dict(sys.modules, {"msvcrt": None}),
+            mock.patch.object(pause, "_ctrlc_pause_menu_fallback", return_value=True) as fb,
+        ):
             self.assertTrue(pause._ctrlc_pause_menu())
             fb.assert_called_once()
 
@@ -428,11 +459,11 @@ class TestResetState(_PauseCase):
 
         runtime.reset_state()
 
-        self.assertFalse(runtime.is_paused(), "重启后必须不是暂停态,"
-                                             "否则第一个 wait_if_paused 就卡住")
+        self.assertFalse(
+            runtime.is_paused(), "重启后必须不是暂停态,否则第一个 wait_if_paused 就卡住"
+        )
         self.assertFalse(runtime.is_force_stop())
-        self.assertFalse(runtime._pause_event.is_set(),
-                         "事件残留会让阻塞调用直接穿透")
+        self.assertFalse(runtime._pause_event.is_set(), "事件残留会让阻塞调用直接穿透")
 
 
 if __name__ == "__main__":

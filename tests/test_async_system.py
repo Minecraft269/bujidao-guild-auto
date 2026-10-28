@@ -19,6 +19,7 @@ test_async_system.py —— 异步后台验证系统单元测试
   C. 完成信号判定用"没有 PENDING/SENT",不是"全部 OK"
      (若等"全部 OK",一个永远失败的任务会让每轮空等到超时 —— 实测 3 轮 12s)
 """
+
 import os
 import sys
 import threading
@@ -38,18 +39,27 @@ from guild_auto.concurrency.async_system import (  # noqa: E402
     run_async_round,
 )
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
 
 def _ok(player=None, delay=0.0):
     """恒成功的 verify_fn。"""
+
     def _v(cmd, p, meta):
         if delay:
             time.sleep(delay)
         return True, None, {"player": p}
+
     return _v
 
 
@@ -77,7 +87,7 @@ class TestVerifyTaskStateMachine(unittest.TestCase):
         t = VerifyTask(1, "cmd", "甲")
         t.mark_sent()
         t.mark_verified(False, error="第一次失败")
-        t.mark_sent()          # 重试
+        t.mark_sent()  # 重试
         self.assertIsNone(t.error, "重试时上轮 error 未被清空")
         self.assertIsNone(t.ok)
         self.assertEqual(t.attempts_count, 2)
@@ -110,8 +120,10 @@ class TestVerifyTaskStateMachine(unittest.TestCase):
 
     def test_ok_is_done_failed_is_not(self):
         """关键语义:FAILED 不是终态 —— 它等主线程重试,不能算"完成"。"""
-        t_ok = VerifyTask(1, "c", "甲"); t_ok.mark_verified(True)
-        t_fail = VerifyTask(2, "c", "乙"); t_fail.mark_verified(False, error="x")
+        t_ok = VerifyTask(1, "c", "甲")
+        t_ok.mark_verified(True)
+        t_fail = VerifyTask(2, "c", "乙")
+        t_fail.mark_verified(False, error="x")
         self.assertTrue(t_ok.is_done())
         self.assertFalse(t_fail.is_done(), "FAILED 被误判为终态,会导致完成信号提前置位")
 
@@ -141,8 +153,7 @@ class TestSubmitDoesNotBlock(unittest.TestCase):
             s.submit_many([(f"/guild member P{i}", f"P{i}") for i in range(5)])
             submit_ms = (time.time() - t0) * 1000
             # 串行验证需 5*300=1500ms;主线程不应等这么久
-            self.assertLess(submit_ms, 500,
-                            f"主线程提交耗时 {submit_ms:.0f}ms,疑似等待了验证")
+            self.assertLess(submit_ms, 500, f"主线程提交耗时 {submit_ms:.0f}ms,疑似等待了验证")
         finally:
             s.stop()
 
@@ -161,8 +172,10 @@ class TestSubmitDoesNotBlock(unittest.TestCase):
 
     def test_send_exception_marks_failed(self):
         """发送函数抛异常 → 记为失败(而不是让后台线程崩溃)。"""
+
         def boom(c, p, m):
             raise RuntimeError("模拟按键失败")
+
         s = AsyncVerifySystem(verify_fn=_ok(), poll_interval=0.02)
         s.attach_sender(boom)
         s.start()
@@ -208,8 +221,9 @@ class TestWaitAllCompletionSignal(unittest.TestCase):
             got = s.wait_all(timeout=1.0)
             elapsed = time.time() - t0
             self.assertFalse(got, "空任务集被判为'已完成' —— 调用方会提前收尾")
-            self.assertGreaterEqual(elapsed, 0.95,
-                                    f"等待 {elapsed:.3f}s 就返回,疑似短路而非等到超时")
+            self.assertGreaterEqual(
+                elapsed, 0.95, f"等待 {elapsed:.3f}s 就返回,疑似短路而非等到超时"
+            )
         finally:
             s.stop()
 
@@ -222,8 +236,8 @@ class TestWaitAllCompletionSignal(unittest.TestCase):
         s = AsyncVerifySystem(verify_fn=None)
         self.assertFalse(
             s._all_tasks_terminal(),
-            "空任务集被判为'全部完成' —— 验证线程会在启动瞬间退出,"
-            "之后 submit 的任务永远无人验证")
+            "空任务集被判为'全部完成' —— 验证线程会在启动瞬间退出,之后 submit 的任务永远无人验证",
+        )
         # 反向确认:这个方法确实会返回 True(否则上面那条断言可能恒真)
         s.attach_sender(lambda c, p, m: None)
         s.start()
@@ -267,10 +281,12 @@ class TestWaitAllCompletionSignal(unittest.TestCase):
 
     def test_wait_all_times_out_without_blocking_forever(self):
         """保险 A:后台卡死时 wait_all 必须按超时返回,不能永久阻塞。"""
+
         # verify 永久挂起(模拟后台卡死)
         def hang(cmd, p, meta):
             time.sleep(30)
             return True, None, None
+
         s = AsyncVerifySystem(verify_fn=hang, poll_interval=0.02, task_timeout=1)
         s.attach_sender(lambda c, p, m: None)
         s.start()
@@ -293,7 +309,7 @@ class TestWaitAllCompletionSignal(unittest.TestCase):
         s.attach_sender(lambda c, p, m: None)
         s.start()
         try:
-            time.sleep(0.3)      # 空跑一段时间,验证线程会经历"无任务"状态
+            time.sleep(0.3)  # 空跑一段时间,验证线程会经历"无任务"状态
             s.submit("/c", "迟到的任务")
             got = s.wait_all(timeout=5)
             self.assertTrue(got, "空跑后提交的任务未被验证(验证线程已提前退出)")
@@ -328,9 +344,11 @@ class TestStopPreservesUnfinished(unittest.TestCase):
 
     def test_stop_moves_unfinished_to_retry_queue(self):
         """stop 时未验证完的任务必须进补做队列。"""
+
         def slow(cmd, p, meta):
             time.sleep(5)
             return True, None, None
+
         s = AsyncVerifySystem(verify_fn=slow, poll_interval=0.02, task_timeout=30)
         s.attach_sender(lambda c, p, m: None)
         s.start()
@@ -343,8 +361,10 @@ class TestStopPreservesUnfinished(unittest.TestCase):
 
     def test_stop_drains_unsent_queue(self):
         """发送队列里还没取走的任务,stop 时也要标记 stopped 而非悬挂。"""
+
         def block(c, p, m):
             time.sleep(3)
+
         s = AsyncVerifySystem(verify_fn=_ok(), poll_interval=0.02)
         s.attach_sender(block)
         s.start()
@@ -353,8 +373,11 @@ class TestStopPreservesUnfinished(unittest.TestCase):
         s.stop(timeout=2)
         # 不应抛异常,且所有任务都有明确终态
         for snap in s.get_results():
-            self.assertIn(snap["state"], (OK, FAILED, STOPPED),
-                          f"任务 {snap['task_id']} 停留在 {snap['state']}")
+            self.assertIn(
+                snap["state"],
+                (OK, FAILED, STOPPED),
+                f"任务 {snap['task_id']} 停留在 {snap['state']}",
+            )
 
     def test_stop_without_start_is_safe(self):
         """未 start 就 stop 不应抛异常,且系统进入可用停止态。"""
@@ -362,7 +385,7 @@ class TestStopPreservesUnfinished(unittest.TestCase):
         # 不抛异常即通过;再补两个状态断言,避免"只跑不验"
         self.assertFalse(s.is_alive())
         self.assertEqual(s.get_results(), [])
-        s.stop()   # 二次 stop 也要安全(幂等)
+        s.stop()  # 二次 stop 也要安全(幂等)
         self.assertFalse(s.is_alive())
 
     def test_start_is_idempotent(self):
@@ -457,8 +480,10 @@ class TestVerifyFnException(unittest.TestCase):
 
         断言:全部任务因发送异常失败后,pending_count 必须归零。
         """
+
         def boom(cmd, p, m):
             raise RuntimeError("模拟按键失败")
+
         s = AsyncVerifySystem(verify_fn=_ok(), poll_interval=0.02, task_timeout=3)
         s.attach_sender(boom)
         s.start()
@@ -467,8 +492,9 @@ class TestVerifyFnException(unittest.TestCase):
             self.assertEqual(len(ids), 3)
             s.wait_all(timeout=5)
             self.assertEqual(len(s.get_failed()), 3, "发送异常未记为失败")
-            self.assertEqual(s.pending_count(), 0,
-                             f"pending_count={s.pending_count()} 未归零 —— 计数泄漏")
+            self.assertEqual(
+                s.pending_count(), 0, f"pending_count={s.pending_count()} 未归零 —— 计数泄漏"
+            )
         finally:
             s.stop()
 
@@ -481,9 +507,11 @@ class TestVerifyFnException(unittest.TestCase):
 
         这里用挂死的 verify 制造"超时后仍在途"的真实场景。
         """
+
         def hang(cmd, p, meta):
-            time.sleep(30)          # 远超 wait_all 超时
+            time.sleep(30)  # 远超 wait_all 超时
             return True, None, None
+
         s = AsyncVerifySystem(verify_fn=hang, poll_interval=0.02, task_timeout=2)
         s.attach_sender(lambda c, p, m: None)
         s.start()
@@ -492,8 +520,7 @@ class TestVerifyFnException(unittest.TestCase):
             self.assertFalse(s.wait_all(timeout=0.5), "后台挂死却报完成")
             # 关键断言:归档后,"在途"任务仍在系统里,且能被 get_stranded 看见
             s.archive_finished(ids)
-            self.assertEqual(len(s.get_stranded()), 3,
-                             "在途任务被归档抹掉了 —— 指令会静默丢失")
+            self.assertEqual(len(s.get_stranded()), 3, "在途任务被归档抹掉了 —— 指令会静默丢失")
             self.assertEqual(len(s.get_results()), 3, "在途任务从 _tasks 消失")
             # 它们也不能被算成成功/失败(还没验证完)
             self.assertEqual(s.get_completed(), [])
@@ -521,11 +548,10 @@ class TestVerifyFnException(unittest.TestCase):
         try:
             ok_id = s.submit("/ok", "OK")
             sent_id = s.submit("/sent", "SENT")
-            s._tasks[ok_id].mark_verified(True)      # 终态
-            s._tasks[sent_id].mark_sent()            # 在途
+            s._tasks[ok_id].mark_verified(True)  # 终态
+            s._tasks[sent_id].mark_sent()  # 在途
             removed = s.archive_finished([ok_id, sent_id])
-            self.assertEqual(removed, 1,
-                             f"只应移出 1 条终态任务,实际 {removed}")
+            self.assertEqual(removed, 1, f"只应移出 1 条终态任务,实际 {removed}")
             self.assertIn(sent_id, s._tasks, "SENT 任务被误归档")
             self.assertNotIn(ok_id, s._tasks, "OK 任务未被归档")
         finally:
@@ -534,6 +560,7 @@ class TestVerifyFnException(unittest.TestCase):
     def test_verify_exception_marks_failed_not_crash(self):
         def boom(cmd, p, meta):
             raise ValueError("解析炸了")
+
         s = AsyncVerifySystem(verify_fn=boom, poll_interval=0.02, task_timeout=3)
         s.attach_sender(lambda c, p, m: None)
         s.start()
@@ -575,10 +602,12 @@ class TestRunAsyncRoundRetryLoop(unittest.TestCase):
     def test_retry_until_success(self):
         """第 3 次才成功 → 应重试到成功,最终 fail 为空。"""
         calls = {}
+
         def flaky(cmd, p, meta):
             calls[p] = calls.get(p, 0) + 1
             good = calls[p] >= 3
             return good, None if good else "没有数据", None
+
         s = AsyncVerifySystem(verify_fn=flaky, poll_interval=0.02, task_timeout=3)
         ok, fail = run_async_round(s, [("/c 甲", "甲")], lambda c, p, m: None, max_retries=3)
         s.stop()
@@ -599,13 +628,16 @@ class TestRunAsyncRoundRetryLoop(unittest.TestCase):
 
     def test_partial_success_partial_failure(self):
         """部分成功部分失败 → ok/fail 精确分流。"""
+
         def mix(cmd, p, meta):
             if p == "坏玩家":
                 return False, "没有数据", None
             return True, None, None
+
         s = AsyncVerifySystem(verify_fn=mix, poll_interval=0.02, task_timeout=2)
         ok, fail = run_async_round(
-            s, [("/c 好", "好玩家"), ("/c 坏", "坏玩家")], lambda c, p, m: None, max_retries=2)
+            s, [("/c 好", "好玩家"), ("/c 坏", "坏玩家")], lambda c, p, m: None, max_retries=2
+        )
         s.stop()
         self.assertEqual(len(ok), 1)
         self.assertEqual(len(fail), 1)
@@ -614,10 +646,12 @@ class TestRunAsyncRoundRetryLoop(unittest.TestCase):
     def test_multi_round_reuses_same_system(self):
         """同一 system 跑多轮 → 结果不重复计数(第 2 轮才成功的任务只算一次)。"""
         calls = {}
+
         def two_round(cmd, p, meta):
             calls[p] = calls.get(p, 0) + 1
             good = calls[p] >= 2
             return good, None if good else "等待", None
+
         s = AsyncVerifySystem(verify_fn=two_round, poll_interval=0.02, task_timeout=3)
         ok, fail = run_async_round(s, [("/c 甲", "甲")], lambda c, p, m: None, max_retries=3)
         s.stop()
@@ -641,8 +675,10 @@ class TestRunAsyncRoundRetryLoop(unittest.TestCase):
 
     def test_many_players_mixed(self):
         """多玩家混合:2 成功 2 失败。"""
+
         def mix(cmd, p, meta):
             return (p.startswith("好"), None if p.startswith("好") else "没有数据", None)
+
         cmds = [(f"/c {i}", i) for i in ["好1", "坏1", "好2", "坏2"]]
         s = AsyncVerifySystem(verify_fn=mix, poll_interval=0.02, task_timeout=2)
         ok, fail = run_async_round(s, cmds, lambda c, p, m: None, max_retries=2)

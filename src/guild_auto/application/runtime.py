@@ -12,6 +12,7 @@ Runtime 是 main.py 能从"不可测"变"可测"的关键:把所有与外界交�
 拆出本文件的动机:main.py 曾接近 2000 行,"暂停机制 / 阶段编排 / 依赖容器"
 混在一起。按关注点拆分后每个模块可单独读、单独测。
 """
+
 import threading
 import time
 
@@ -31,11 +32,11 @@ from guild_auto.infrastructure import logger
 # 否则主线程与后台会读到不同步的快照。
 _paused = False
 _pause_lock = threading.Lock()
-_reset_needed = False          # 暂停恢复后需要重置界面
+_reset_needed = False  # 暂停恢复后需要重置界面
 _reset_lock = threading.Lock()  # 保护重置标志
 _pause_key = None
 _pause_key_name = "?"
-_force_stop = False            # Ctrl+C 标志:sig handler 置位,阻塞调用据此中断
+_force_stop = False  # Ctrl+C 标志:sig handler 置位,阻塞调用据此中断
 
 # 暂停事件:主线程后台链路在 wait/IO 阻塞时也会被 _toggle_pause 置位,
 # wait_if_paused / wait_for_chat_block 等通过 _pause_event.wait() 立即响应。
@@ -108,12 +109,12 @@ def set_pause_key_cfg(pause_key_cfg):
     """
     global _pause_key, _pause_key_name
     from pynput import keyboard
+
     _pause_key_name = str(pause_key_cfg)
     if len(_pause_key_name) == 1:
         _pause_key = keyboard.KeyCode.from_char(_pause_key_name)
     else:
-        _pause_key = getattr(keyboard.Key, _pause_key_name,
-                             keyboard.KeyCode.from_char("u"))
+        _pause_key = getattr(keyboard.Key, _pause_key_name, keyboard.KeyCode.from_char("u"))
     return _pause_key, _pause_key_name
 
 
@@ -156,9 +157,21 @@ class Runtime:
     不得继续发送任何命令。这是"每个阶段推进前等用户确认"的执行点。
     """
 
-    def __init__(self, cfg, watcher=None, human=None, executor=None, detector=None,
-                 hwnd=None, ask_confirm=None, sleep=None, listener=None,
-                 async_executor=None, async_enabled=False, stop_check=None):
+    def __init__(
+        self,
+        cfg,
+        watcher=None,
+        human=None,
+        executor=None,
+        detector=None,
+        hwnd=None,
+        ask_confirm=None,
+        sleep=None,
+        listener=None,
+        async_executor=None,
+        async_enabled=False,
+        stop_check=None,
+    ):
         self.cfg = cfg
         self.watcher = watcher
         self.human = human
@@ -189,8 +202,10 @@ class Runtime:
         实现委托给 main.reset_window_state_after_pause(pyautogui + detector 细节)。
         """
         from guild_auto.main import reset_window_state_after_pause as _reset
-        return _reset(self.hwnd if hwnd is None else hwnd,
-                      self.detector if detector is None else detector)
+
+        return _reset(
+            self.hwnd if hwnd is None else hwnd, self.detector if detector is None else detector
+        )
 
     def confirm(self, prompt, default=False):
         """统一的阶段确认点。
@@ -243,26 +258,27 @@ class Runtime:
         返回 task_id。
         """
         from guild_auto.concurrency.async_system import AsyncVerifySystem
+
         if self.async_system is None:
             self.async_system = AsyncVerifySystem(
                 verify_fn=self._async_verify_fn,
-                task_timeout=float(self.cfg.get("timeouts", {})
-                                   .get("response_wait", 12.0)) + 5.0)
+                task_timeout=float(self.cfg.get("timeouts", {}).get("response_wait", 12.0)) + 5.0,
+            )
             self.async_system.attach_sender(self._async_send_fn)
             self.async_system.start()
         return self.async_system.submit(command, player, meta or {})
 
     def _async_send_fn(self, command, player, meta):
         """后台发送:把已提交的指令发出去(不读日志)。"""
-        self.human.send_chat_text(command, detector=self.detector,
-                                  stop_check=self.is_paused)
+        self.human.send_chat_text(command, detector=self.detector, stop_check=self.is_paused)
         self.human.wait_between_commands()
 
     def _async_verify_fn(self, command, player, meta):
         """后台验证:读日志 → 提取块 → 判定(按命令类型分流)。"""
         block = self.watcher.wait_for_chat_block(
             timeout=float(self.cfg.get("timeouts", {}).get("response_wait", 12.0)),
-            stop_check=self.is_paused)
+            stop_check=self.is_paused,
+        )
         if block is None:
             return False, "等待响应超时", None
         if str(meta.get("msg", "")).startswith("/gc "):
@@ -333,7 +349,9 @@ def build_runtime(cfg, console_fn=None):
         return _paused
 
     human = HumanInput(cfg, stop_check=is_paused)
-    console_fn(f"聊天键: {human.chat_key}(来自 {'options.txt' if cfg['chat_key']=='auto' else '配置'})")
+    console_fn(
+        f"聊天键: {human.chat_key}(来自 {'options.txt' if cfg['chat_key'] == 'auto' else '配置'})"
+    )
 
     # 聊天键是 enter 时警告但不拒绝:网易版 enter 是发送键不是开聊天栏键
     if human.chat_key == "enter":
@@ -347,15 +365,18 @@ def build_runtime(cfg, console_fn=None):
     sc = cfg.get("state_check", {})
     if sc.get("enabled", True):
         detector = GameStateDetector(
-            sc.get("menu_keywords"), sc.get("chat_bar_keywords"),
+            sc.get("menu_keywords"),
+            sc.get("chat_bar_keywords"),
             float(sc.get("cache_seconds", 3.0)),
             chat_bar_state=sc.get("chat_bar_state", "auto"),
         )
         if not detector.available:
             console_fn("⚠ 界面状态检测不可用(缺少 winsdk/系统OCR),使用试错式发送")
         else:
-            console_fn("界面状态检测已启用(菜单界面自动 Esc;发送:首条直接粘贴试探,"
-                       "无响应自动开聊天栏重试,仍失败暂停等待用户)")
+            console_fn(
+                "界面状态检测已启用(菜单界面自动 Esc;发送:首条直接粘贴试探,"
+                "无响应自动开聊天栏重试,仍失败暂停等待用户)"
+            )
 
     hwnd = find_game_window(cfg["window_keywords"])
     if hwnd:
@@ -363,16 +384,17 @@ def build_runtime(cfg, console_fn=None):
     else:
         console_fn("⚠ 未找到游戏窗口(请确认游戏已启动、窗口标题包含关键词)")
 
-    executor = ActionExecutor(cfg, human, watcher, hwnd=hwnd, detector=detector,
-                              stop_check=is_paused)
+    executor = ActionExecutor(
+        cfg, human, watcher, hwnd=hwnd, detector=detector, stop_check=is_paused
+    )
     # 注入暂停恢复标志的消费函数:reset_ui / _send_with_gate 内部据此在
     # "恢复后首次发送前"执行 Esc+OCR 菜单重置。
     # 延迟 import:pause.py 依赖 runtime(拿 _pause_event / set_reset_needed),
     # 模块级互引会成环。
     from guild_auto.application.pause import _consume_reset_flag
+
     executor.set_reset_hook(_consume_reset_flag)
 
-    return Runtime(cfg=cfg, watcher=watcher, human=human, executor=executor,
-                   detector=detector, hwnd=hwnd)
-
-
+    return Runtime(
+        cfg=cfg, watcher=watcher, human=human, executor=executor, detector=detector, hwnd=hwnd
+    )

@@ -13,6 +13,7 @@ stages.py 的两段此前几乎没测到(37%):
   4. 执行阶段:部分成功只按成功条数推进 new_rank
   5. 执行阶段:失败必须进 failures 且 record 打 error
 """
+
 import json
 import unittest
 from unittest import mock
@@ -57,9 +58,15 @@ class _FakeRT:
 
 
 def _record(player="甲", actions=None, weekly=100, rank="entry"):
-    return {"player": player, "rank": rank, "weekly_total": weekly,
-            "joined_at": "x", "last_online": "y", "daily": [],
-            "actions": actions if actions is not None else []}
+    return {
+        "player": player,
+        "rank": rank,
+        "weekly_total": weekly,
+        "joined_at": "x",
+        "last_online": "y",
+        "daily": [],
+        "actions": actions if actions is not None else [],
+    }
 
 
 class TestStageNotify(unittest.TestCase):
@@ -83,8 +90,11 @@ class TestStageNotify(unittest.TestCase):
         """Debug 模拟数据绝不能发进真实公会频道。"""
         rt = _FakeRT()
         self.assertEqual(
-            stages_mod.stage_notify(rt, [_record(actions=["kick"])], self.cfg,
-                                    debug_notify_skipped=True), [])
+            stages_mod.stage_notify(
+                rt, [_record(actions=["kick"])], self.cfg, debug_notify_skipped=True
+            ),
+            [],
+        )
         self.assertEqual(len(rt.submitted), 0, "不该提交任何广播")
 
     def test_summary_serial_success(self):
@@ -114,8 +124,9 @@ class TestStageNotify(unittest.TestCase):
         rt = _FakeRT(async_enabled=True)
         recs = [_record("甲", ["kick"]), _record("乙", []), _record("丙", ["promote"])]
         stages_mod.stage_notify(rt, recs, cfg)
-        self.assertEqual(len(rt.submitted), 3,
-                         "per_player 模式必须每个查询成功的玩家都发一条(含无操作)")
+        self.assertEqual(
+            len(rt.submitted), 3, "per_player 模式必须每个查询成功的玩家都发一条(含无操作)"
+        )
 
 
 class TestStageExecuteAsync(unittest.TestCase):
@@ -144,8 +155,7 @@ class TestStageExecuteAsync(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertTrue(rec["executed"])
         self.assertIsNone(rec["error"])
-        self.assertEqual(rec["new_rank"],
-                         new_rank_after("entry", ["promote"]))
+        self.assertEqual(rec["new_rank"], new_rank_after("entry", ["promote"]))
 
     def test_failure_is_recorded_and_rank_unchanged(self):
         rt = _FakeRT(async_enabled=True)
@@ -164,8 +174,7 @@ class TestStageExecuteAsync(unittest.TestCase):
         rt.executor.execute_action.side_effect = lambda a, p: next(calls)
         rec = _record("甲", ["promote", "promote"])
         stages_mod.stage_execute_async(rt, [rec], self.cfg)
-        self.assertEqual(rec["new_rank"],
-                         new_rank_after("entry", ["promote"]))
+        self.assertEqual(rec["new_rank"], new_rank_after("entry", ["promote"]))
 
     def test_sender_uses_human_not_executor_in_main_thread(self):
         """主线程只发:发送走 human.send_chat_text,而不是直接调 execute_action。"""

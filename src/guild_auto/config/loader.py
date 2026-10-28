@@ -5,12 +5,14 @@ config/loader.py —— 加载 / 保存 / 热重载 / 命令行覆盖 / 控制�
 只负责"把文件读成 dict、把 dict 写回文件",不含业务校验规则
 (校验在 schema.validate_config)。
 """
+
 import json
 import os
 import sys
 
 from guild_auto.config.defaults import CONFIG_COMMENTS, DEFAULT_CONFIG
 from guild_auto.config.schema import validate_config
+
 
 def _deep_merge(base, override):
     """递归合并:override 中的键覆盖 base,保留 base 中 override 没有的键。"""
@@ -41,8 +43,10 @@ def _dump_jsonc(obj, indent=0, prefix=""):
                 out.append(_dump_jsonc(v, indent + 4, path))
                 out.append(f"{pad}  }}" + ("," if i < len(keys) - 1 else ""))
             else:
-                out.append(f'{pad}  "{k}": {json.dumps(v, ensure_ascii=False)}'
-                            + ("," if i < len(keys) - 1 else ""))
+                out.append(
+                    f'{pad}  "{k}": {json.dumps(v, ensure_ascii=False)}'
+                    + ("," if i < len(keys) - 1 else "")
+                )
     return "\n".join(out)
 
 
@@ -50,8 +54,11 @@ def _strip_comment_keys(node):
     """递归删除 '//' 与 '_' 开头的键(兼容旧版生成的"注释即数据键"格式;
     新版为行首 // 注释行,加载前已剥离,此处过滤对新格式无副作用)。"""
     if isinstance(node, dict):
-        return {k: _strip_comment_keys(v) for k, v in node.items()
-                if not (k.startswith("//") or k.startswith("_"))}
+        return {
+            k: _strip_comment_keys(v)
+            for k, v in node.items()
+            if not (k.startswith("//") or k.startswith("_"))
+        }
     if isinstance(node, list):
         return [_strip_comment_keys(v) for v in node]
     return node
@@ -71,7 +78,7 @@ def _strip_jsonc(text):
     while i < n:
         ch = text[i]
         if in_str:
-            if ch == "\\":                      # 转义符(路径里的反斜杠)连同下一字符一起放行
+            if ch == "\\":  # 转义符(路径里的反斜杠)连同下一字符一起放行
                 out.append(ch)
                 if i + 1 < n:
                     out.append(text[i + 1])
@@ -89,13 +96,13 @@ def _strip_jsonc(text):
             continue
         if ch == "/" and i + 1 < n:
             nxt = text[i + 1]
-            if nxt == "/":                     # 行注释:跳到换行(保留换行符本身)
+            if nxt == "/":  # 行注释:跳到换行(保留换行符本身)
                 j = text.find("\n", i)
                 if j == -1:
                     break
                 i = j
                 continue
-            if nxt == "*":                     # 块注释:跳到 '*/';未闭合时容忍到文件末尾
+            if nxt == "*":  # 块注释:跳到 '*/';未闭合时容忍到文件末尾
                 j = text.find("*/", i + 2)
                 if j == -1:
                     break
@@ -122,8 +129,10 @@ def ensure_default_config(path):
     加载时自动剥离注释行,不影响 JSON 解析。"""
     if os.path.exists(path):
         return False
-    header = ("// 布吉岛公会管理脚本配置文件。每个配置键前有 '//' 中文注释行,说明其作用与取值范围;"
-                "详细说明见 docs/《配置说明.md》。修改后保存即可,重启脚本生效。")
+    header = (
+        "// 布吉岛公会管理脚本配置文件。每个配置键前有 '//' 中文注释行,说明其作用与取值范围;"
+        "详细说明见 docs/《配置说明.md》。修改后保存即可,重启脚本生效。"
+    )
     text = "{\n" + _dump_jsonc(DEFAULT_CONFIG, 2) + "\n}"
     with open(path, "w", encoding="utf-8") as f:
         f.write(header + "\n" + text + "\n")
@@ -145,7 +154,6 @@ def save_config(path, cfg):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
         f.write("\n")
-
 
 
 def apply_cli_overrides(cfg, args):
@@ -177,7 +185,7 @@ def console(msg, level="info"):
         sys.stdout.buffer.write((msg + "\n").encode("utf-8", errors="replace"))
     try:
         from guild_auto.infrastructure import logger as _logger_mod
+
         getattr(_logger_mod, f"log_{level}", _logger_mod.log_info)(str(msg))
     except Exception:
         pass  # 日志系统不可用时不影响控制台输出
-

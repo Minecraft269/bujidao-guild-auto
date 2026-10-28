@@ -11,6 +11,7 @@ action_executor.py —— 硬件执行层(ActionExecutor)
 以免悄悄改变已验证的发送/暂停/重试语义。测试用 monkeypatch 目标相应改为
 本模块(action_executor.activate_window / .prepare_chat_state)。
 """
+
 import threading
 import time
 
@@ -78,11 +79,15 @@ class ActionExecutor:
             # ---- 恢复后重置窗口状态(_reset_needed 由 main._toggle_pause 置位,
             #      reset_ui 内部消费该标志;无残留标志时 reset_ui 仍做一次轻量校验) ----
             self.reset_ui()
-            logger.trace_code_location("ActionExecutor._send_with_gate", f"准备发送 cmd={cmd[:60]!r}")
+            logger.trace_code_location(
+                "ActionExecutor._send_with_gate", f"准备发送 cmd={cmd[:60]!r}"
+            )
             t_send = time.monotonic()
             self.input.send_chat_text(cmd)
             send_ms = int((time.monotonic() - t_send) * 1000)
-            logger.trace_code_location("ActionExecutor._send_with_gate", f"send_chat_text 完成({send_ms}ms)")
+            logger.trace_code_location(
+                "ActionExecutor._send_with_gate", f"send_chat_text 完成({send_ms}ms)"
+            )
 
     def reset_ui(self):
         """发送前界面保障:激活游戏窗口;若暂停恢复标志置位则按 Esc 清残留并 OCR 处理菜单。
@@ -94,7 +99,7 @@ class ActionExecutor:
         consume = getattr(self, "_consume_reset_flag", None)
         need_reset = bool(consume()) if callable(consume) else False
         if need_reset:
-            pyautogui.press("esc")   # 关闭可能残留的菜单/聊天栏
+            pyautogui.press("esc")  # 关闭可能残留的菜单/聊天栏
             time.sleep(0.2)
             if self.detector is not None:
                 prepare_chat_state(self.detector, console)
@@ -142,8 +147,12 @@ class ActionExecutor:
         """
         try:
             from guild_auto.infrastructure.log_watcher import extract_chat_block, split_messages
-            block = extract_chat_block(split_messages(list(lines))[0]) \
-                if split_messages(list(lines)) else None
+
+            block = (
+                extract_chat_block(split_messages(list(lines))[0])
+                if split_messages(list(lines))
+                else None
+            )
         except Exception:
             return []
         return list(block) if block else []
@@ -181,14 +190,14 @@ class ActionExecutor:
                 console("执行暂停，等待恢复...")
                 while self.stop_check():
                     time.sleep(0.1)
-                continue   # 不消耗重试次数;恢复后的窗口重置由 _send_with_gate 内 reset_ui 完成
+                continue  # 不消耗重试次数;恢复后的窗口重置由 _send_with_gate 内 reset_ui 完成
 
             self._ensure_window()
             if self.verbose:
-                print(f"  → 发送: {cmd} (尝试 {attempt+1}/{retries})")
+                print(f"  → 发送: {cmd} (尝试 {attempt + 1}/{retries})")
             # 带暂停门的串行发送(锁内:暂停阻塞→恢复重置→发送)
             self._send_with_gate(cmd)
-            logger.trace_code_location("execute_action.sent", f"cmd={cmd} attempt={attempt+1}")
+            logger.trace_code_location("execute_action.sent", f"cmd={cmd} attempt={attempt + 1}")
             lines = self.watcher.read_until(timeout=self.error_check_window)
             logger.trace_code_location("execute_action.received", f"lines={len(lines)}")
 
@@ -202,7 +211,7 @@ class ActionExecutor:
                         error = err
                         break
             if error is not None:
-                logger.log_warning(f"执行失败 [{action}] {player}: {error} (尝试 {attempt+1})")
+                logger.log_warning(f"执行失败 [{action}] {player}: {error} (尝试 {attempt + 1})")
                 if attempt < retries - 1:
                     time.sleep(1.0)
                     attempt += 1
@@ -218,7 +227,7 @@ class ActionExecutor:
                 return res
 
             # 无错误无成功，重试
-            logger.log_debug(f"执行无回显 [{action}] {player} (尝试 {attempt+1})")
+            logger.log_debug(f"执行无回显 [{action}] {player} (尝试 {attempt + 1})")
             if attempt < retries - 1:
                 time.sleep(1.0)
             attempt += 1

@@ -175,7 +175,9 @@ def build_notification(player, weekly, actions, cfg, count=None):
     用户改过配置后悄悄覆盖他的设置,使"文案不得改动"失去唯一真源
     (见 CLAUDE.md 第 1 条)。
     """
-    logger.trace_code_location("build_notification.start", f"player={player} weekly={weekly} actions={actions}")
+    logger.trace_code_location(
+        "build_notification.start", f"player={player} weekly={weekly} actions={actions}"
+    )
     templates = cfg.get("notify_templates", {})
     guild_qq = cfg.get("guild_qq", "")
 
@@ -184,8 +186,8 @@ def build_notification(player, weekly, actions, cfg, count=None):
             return templates[key]
         except KeyError:
             raise KeyError(
-                f"配置缺少 notify_templates.{key} —— 业务文案必须由配置提供,"
-                f"代码不提供兜底串") from None
+                f"配置缺少 notify_templates.{key} —— 业务文案必须由配置提供,代码不提供兜底串"
+            ) from None
 
     if not actions:
         tmpl = _tpl("none")
@@ -276,10 +278,13 @@ def build_summary_message(records, cfg):
     if "summary" not in templates:
         raise KeyError(
             "配置缺少 notify_templates.summary —— 业务文案必须由配置提供,"
-            "代码不提供兜底串(硬编码文案会覆盖用户修改)")
+            "代码不提供兜底串(硬编码文案会覆盖用户修改)"
+        )
     tmpl = templates["summary"]
-    return tmpl.format(promote=c["promote"], demote=c["demote"], kick=c["kick"],
-                       admin=cfg.get("admin") or "管理员")
+    return tmpl.format(
+        promote=c["promote"], demote=c["demote"], kick=c["kick"], admin=cfg.get("admin") or "管理员"
+    )
+
 
 # ---------------------------------------------------------------------------
 # 名单匹配与优先级短路(阶段 5)
@@ -334,8 +339,9 @@ def name_list_block_reason(player, cfg):
 
 def is_protected(player, cfg):
     """是否在保护名单(免降职/踢出,升职仍生效)。"""
-    return name_matches(player, cfg.get("whitelist_protected") or [],
-                        bool(cfg.get("match_wildcard", True)))
+    return name_matches(
+        player, cfg.get("whitelist_protected") or [], bool(cfg.get("match_wildcard", True))
+    )
 
 
 def decide_for_player(player, rank, weekly, cfg):

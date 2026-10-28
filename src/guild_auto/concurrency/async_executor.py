@@ -53,8 +53,8 @@ class AsyncCommandExecutor:
         self._retry_queue = []  # 失败任务的补做队列(若缺失在插入任务)
         # 按 player 维度的"完成事件"+ 结果:后台 worker 完成任务后置位,
         # 主线程用 wait_for_result(player, timeout) 异步等待(不阻塞后台 worker)
-        self._player_results = {}           # {player: result_dict}
-        self._player_events = {}            # {player: threading.Event}
+        self._player_results = {}  # {player: result_dict}
+        self._player_events = {}  # {player: threading.Event}
         self._player_results_lock = threading.Lock()
 
     def _get_player_event(self, player):
@@ -96,8 +96,14 @@ class AsyncCommandExecutor:
             if self._stop_event.is_set():
                 # stop 已置位但任务刚取出:不再执行,标记 skipped 并退出
                 with self._results_lock:
-                    self._results.append({"command": cmd, "player": player,
-                                          "status": "skipped", "error": "executor stopped"})
+                    self._results.append(
+                        {
+                            "command": cmd,
+                            "player": player,
+                            "status": "skipped",
+                            "error": "executor stopped",
+                        }
+                    )
                 self._queue.task_done()
                 break
 
@@ -112,20 +118,29 @@ class AsyncCommandExecutor:
             while retries_left > 0 and not self._stop_event.is_set():
                 attempt += 1
                 try:
-                    _log.log_debug(f"(异步)开始验证 player={player} cmd={cmd[:60]} "
-                                   f"attempt={attempt}/{max(1, self._max_retries)}")
+                    _log.log_debug(
+                        f"(异步)开始验证 player={player} cmd={cmd[:60]} "
+                        f"attempt={attempt}/{max(1, self._max_retries)}"
+                    )
                     if verify_fn is not None:
                         ok, error = verify_fn(cmd, player)
                     else:
                         ok, error = True, None
                     if ok:
-                        result = {"command": cmd, "player": player,
-                                  "status": "ok",
-                                  "retries": attempt,
-                                  "data": error}
-                        _log.log_debug(f"(异步)验证成功 player={player} retries={result['retries']}")
+                        result = {
+                            "command": cmd,
+                            "player": player,
+                            "status": "ok",
+                            "retries": attempt,
+                            "data": error,
+                        }
+                        _log.log_debug(
+                            f"(异步)验证成功 player={player} retries={result['retries']}"
+                        )
                         break
-                    _log.log_warning(f"(异步)验证失败 {player}: {error},剩余 attempt {retries_left - 1}")
+                    _log.log_warning(
+                        f"(异步)验证失败 {player}: {error},剩余 attempt {retries_left - 1}"
+                    )
                 except Exception as e:
                     _log.log_error(f"(异步)验证异常 {player}: {e!r}")
                     error = repr(e)
@@ -136,8 +151,13 @@ class AsyncCommandExecutor:
             if result is None:
                 status = "skipped" if self._stop_event.is_set() else "failed"
                 err_txt = str(error or ("executor stopped" if status == "skipped" else "重试耗尽"))
-                result = {"command": cmd, "player": player, "status": status,
-                          "error": err_txt, "retries": attempt}
+                result = {
+                    "command": cmd,
+                    "player": player,
+                    "status": status,
+                    "error": err_txt,
+                    "retries": attempt,
+                }
                 if status == "failed":
                     # 失败的任务入 retry_queue(主线程阶段切换前统一重做)
                     with self._retry_lock:
@@ -162,8 +182,10 @@ class AsyncCommandExecutor:
             t.start()
             self._workers.append(t)
         self._started = True
-        _log.log_info(f"(异步)执行器已启动 workers={self._num_workers} "
-                      f"max_queue={self._queue.maxsize} max_retries={self._max_retries}")
+        _log.log_info(
+            f"(异步)执行器已启动 workers={self._num_workers} "
+            f"max_queue={self._queue.maxsize} max_retries={self._max_retries}"
+        )
 
     def submit(self, command_str, player, verify_fn=None):
         """提交命令到异步队列(非阻塞)。返回 False 表示队列已满被丢弃(调用方可感知)。"""
@@ -171,7 +193,9 @@ class AsyncCommandExecutor:
             self._queue.put((command_str, player, verify_fn), block=False)
             return True
         except queue.Full:
-            _log.log_warning(f"(异步)队列已满({self._queue.maxsize}),丢弃任务: {player} {command_str[:50]}")
+            _log.log_warning(
+                f"(异步)队列已满({self._queue.maxsize}),丢弃任务: {player} {command_str[:50]}"
+            )
             return False
 
     def get_results(self):
@@ -208,8 +232,14 @@ class AsyncCommandExecutor:
             except queue.Empty:
                 break
             with self._results_lock:
-                self._results.append({"command": cmd, "player": player,
-                                      "status": "skipped", "error": "drained on stop"})
+                self._results.append(
+                    {
+                        "command": cmd,
+                        "player": player,
+                        "status": "skipped",
+                        "error": "drained on stop",
+                    }
+                )
             self._queue.task_done()
             drained += 1
         if drained:

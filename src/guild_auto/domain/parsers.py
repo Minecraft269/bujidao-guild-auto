@@ -52,14 +52,14 @@ import re
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
-CHAT_TAG = "[CHAT]"        # 日志中聊天内容的标记
-BULLET = "●"              # /guild list 面板的条目分隔符
-MAX_NAME_LEN = 48          # 玩家 ID 长度上限(与游戏一致)
+CHAT_TAG = "[CHAT]"  # 日志中聊天内容的标记
+BULLET = "●"  # /guild list 面板的条目分隔符
+MAX_NAME_LEN = 48  # 玩家 ID 长度上限(与游戏一致)
 # 整串星号(网易屏蔽词)名的长度上限。704 是**真实观测到**的最大值
 # (一次真实运行里,中等活跃段约 78 人名字被抹平连成一片的字符数),
 # 取 4096 留足余量;超过此值视为非真实面板产物,拒绝。
 MASKED_NAME_MAX_LEN = 4096
-WEEKLY_HEADER = "公会经验周贡献"   # 周贡献段标题
+WEEKLY_HEADER = "公会经验周贡献"  # 周贡献段标题
 
 # 分组标题:"-- 会长 --"(允许任意前导/尾随空白)
 _GROUP_TITLE_RE = re.compile(r"^\s*--\s*(.+?)\s*--\s*$")
@@ -146,9 +146,9 @@ def validate_player_name(pid):
     if is_masked_name(s):
         if len(s) > MASKED_NAME_MAX_LEN:
             raise ParseError(
-                f"屏蔽词占位名异常超长({len(s)}>{MASKED_NAME_MAX_LEN}): "
-                f"疑似非真实面板产物,已拒绝")
-        return s                      # 屏蔽词占位名:合法但不可用,原样放行
+                f"屏蔽词占位名异常超长({len(s)}>{MASKED_NAME_MAX_LEN}): 疑似非真实面板产物,已拒绝"
+            )
+        return s  # 屏蔽词占位名:合法但不可用,原样放行
     if len(s) > MAX_NAME_LEN:
         raise ParseError(f"玩家名超长({len(s)}>{MAX_NAME_LEN}): {pid!r}")
     bad = _NAME_FORBIDDEN_RE.search(s)
@@ -165,7 +165,7 @@ def strip_chat_prefix(line):
     无 [CHAT] 标记时原样返回(仍剥离复制标记)。
     """
     idx = line.rfind(CHAT_TAG)
-    return _strip_all(line[idx + len(CHAT_TAG):] if idx >= 0 else line)
+    return _strip_all(line[idx + len(CHAT_TAG) :] if idx >= 0 else line)
 
 
 # ---------------------------------------------------------------------------
@@ -198,13 +198,13 @@ def parse_weekly_exp(lines):
         s = _strip_all(raw)
         if not s:
             continue
-        if _WEEKLY_HEADER_RE.search(s):        # 进入周贡献段
+        if _WEEKLY_HEADER_RE.search(s):  # 进入周贡献段
             in_section = True
             continue
-        if not in_section:                     # 段之前的行一律不看
+        if not in_section:  # 段之前的行一律不看
             continue
         if s.startswith("-") or "加入时间" in s or "上次在线" in s:
-            break                              # 段结束:分隔线 / 段外字段
+            break  # 段结束:分隔线 / 段外字段
         md = _DATE_LINE_RE.match(s)
         if md:
             label, number = md.group(1), md.group(2)
@@ -213,7 +213,7 @@ def parse_weekly_exp(lines):
             if mt:
                 label, number = "今天", mt.group(1)
             else:
-                mf = _ANY_EXP_RE.search(s)     # 段内其它数值行:只进总数
+                mf = _ANY_EXP_RE.search(s)  # 段内其它数值行:只进总数
                 if not mf:
                     continue
                 label, number = None, mf.group(1)
@@ -225,7 +225,8 @@ def parse_weekly_exp(lines):
     if in_section and not parsed_any:
         raise ParseError(
             "周贡献段存在但一行有效数值都没解析到(可能被网易屏蔽词遮成 *** 或 ???): "
-            "无法区分「真实零贡献」与「数据缺失」,不做任何升/降/踢判定,需人工确认")
+            "无法区分「真实零贡献」与「数据缺失」,不做任何升/降/踢判定,需人工确认"
+        )
     return total, daily
 
 
@@ -247,22 +248,22 @@ def _join_truncated_names(rows, is_structural):
     out = []
     pending = ""
     for row in rows:
-        if row is None:                        # 空行:打断续行,但不进 out
+        if row is None:  # 空行:打断续行,但不进 out
             if pending:
                 out.append(pending)
                 pending = ""
             continue
-        if is_structural(row):                 # 结构行:打断续行,先保住未收齐的名字
+        if is_structural(row):  # 结构行:打断续行,先保住未收齐的名字
             if pending:
                 out.append(pending)
                 pending = ""
             out.append(row)
             continue
         pending = f"{pending} {row}" if pending else row
-        if pending.endswith(BULLET):           # 收齐了,含续行本身也带 ● 的情况
+        if pending.endswith(BULLET):  # 收齐了,含续行本身也带 ● 的情况
             out.append(pending)
             pending = ""
-    if pending:                               # 块尾的残缺名字(面板被截断)
+    if pending:  # 块尾的残缺名字(面板被截断)
         out.append(pending)
     return out
 
@@ -283,8 +284,12 @@ def parse_guild_list(block_lines, rank_names):
     title_to_key = {str(v).strip(): k for k, v in (rank_names or {}).items()}
 
     def is_structural(row):
-        return (row == guild_name or _GROUP_TITLE_RE.match(row)
-                or _TOTAL_RE.search(row) or _ONLINE_RE.search(row))
+        return (
+            row == guild_name
+            or _GROUP_TITLE_RE.match(row)
+            or _TOTAL_RE.search(row)
+            or _ONLINE_RE.search(row)
+        )
 
     groups = {key: [] for key in (rank_names or {})}
     total = online = None
@@ -294,7 +299,7 @@ def parse_guild_list(block_lines, rank_names):
             continue
         m = _GROUP_TITLE_RE.match(row)
         if m:
-            current = title_to_key.get(m.group(1).strip())   # 未登记的职位 → None
+            current = title_to_key.get(m.group(1).strip())  # 未登记的职位 → None
             continue
         if current is None:
             continue
@@ -347,10 +352,10 @@ def parse_guild_member(block_lines, expected_id=None):
         if is_masked_name(pid):
             raise ParseError(
                 f"玩家名被网易屏蔽词替换为星号({len(pid)} 个 *),无法确认身份:"
-                f"不做任何升/降/踢判定,需人工确认")
+                f"不做任何升/降/踢判定,需人工确认"
+            )
         if not any(pid in row for row in rows):
-            raise ParseError(
-                f"响应块中未找到目标玩家 [{pid}]:面板输出未完成,或误捕获了其他内容")
+            raise ParseError(f"响应块中未找到目标玩家 [{pid}]:面板输出未完成,或误捕获了其他内容")
     if len(rows) < 2:
         raise ParseError(f"guild member 输出过短(仅 {len(rows)} 行),缺少公会名/玩家名")
     if not any(_WEEKLY_HEADER_RE.search(r) for r in rows):

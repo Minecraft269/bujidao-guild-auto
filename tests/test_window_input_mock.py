@@ -19,6 +19,7 @@ test_window_input_mock.py —— window_input.py 硬件交互层 mock 覆盖
   options.txt         → tempfile.mkdtemp() 下的临时文件(utf-8 / gbk / 不可解码三态)
   真实设备调用:0 次(press/hotkey/screenshot/clipboard 全部被 mock)
 """
+
 import os
 import shutil
 import sys
@@ -152,11 +153,13 @@ class WindowInputMockBase(unittest.TestCase):
         sleep = MagicMock(name="time.sleep")
         logger_p = MagicMock(name="window_input.logger")
         self.uniform = MagicMock(name="random.uniform", return_value=0.5)
-        for p in (patch(f"{MODULE}.pyautogui", pyautogui),
-                  patch(f"{MODULE}.pyperclip", pyperclip),
-                  patch(f"{MODULE}.time.sleep", sleep),
-                  patch(f"{MODULE}.random.uniform", self.uniform),
-                  patch(f"{MODULE}.logger", logger_p)):
+        for p in (
+            patch(f"{MODULE}.pyautogui", pyautogui),
+            patch(f"{MODULE}.pyperclip", pyperclip),
+            patch(f"{MODULE}.time.sleep", sleep),
+            patch(f"{MODULE}.random.uniform", self.uniform),
+            patch(f"{MODULE}.logger", logger_p),
+        ):
             p.start()
             self.addCleanup(p.stop)
         self.pyautogui = pyautogui
@@ -216,8 +219,7 @@ class TestEnumWindows(WindowInputMockBase):
     def test_returns_visible_titled_windows(self):
         u32 = FakeUser32([(10, 1, True, "Minecraft 1.20"), (11, 2, True, "记事本")])
         with patch(f"{MODULE}.user32", u32):
-            self.assertEqual(window_input._enum_windows(),
-                             [(10, "Minecraft 1.20"), (11, "记事本")])
+            self.assertEqual(window_input._enum_windows(), [(10, "Minecraft 1.20"), (11, "记事本")])
 
     def test_invisible_window_skipped(self):
         u32 = FakeUser32([(10, 1, False, "隐藏的游戏窗口")])
@@ -232,11 +234,9 @@ class TestEnumWindows(WindowInputMockBase):
 
     def test_exclude_pid_drops_own_process_window(self):
         """打包 exe 后自身窗口标题可能含关键词,必须按 pid 排除。"""
-        u32 = FakeUser32([(10, 1, True, "bujidao.exe 控制台"),
-                          (11, 2, True, "Minecraft 1.20")])
+        u32 = FakeUser32([(10, 1, True, "bujidao.exe 控制台"), (11, 2, True, "Minecraft 1.20")])
         with patch(f"{MODULE}.user32", u32):
-            self.assertEqual(window_input._enum_windows(exclude_pid=1),
-                             [(11, "Minecraft 1.20")])
+            self.assertEqual(window_input._enum_windows(exclude_pid=1), [(11, "Minecraft 1.20")])
 
 
 # ---------------------------------------------------------------------------
@@ -253,15 +253,18 @@ class TestFindGameWindow(WindowInputMockBase):
 
     def test_excludes_own_pid(self):
         """always 排除脚本自身进程 —— 与 docstring 的打包 exe 场景一致。"""
-        with patch(f"{MODULE}._enum_windows", return_value=[]) as en, \
-                patch(f"{MODULE}.os.getpid", return_value=4242):
+        with (
+            patch(f"{MODULE}._enum_windows", return_value=[]) as en,
+            patch(f"{MODULE}.os.getpid", return_value=4242),
+        ):
             find_game_window(["minecraft"])
         en.assert_called_once_with(exclude_pid=4242)
 
     def test_keyword_match_case_insensitive(self):
-        with patch(f"{MODULE}._enum_windows",
-                   return_value=[(10, "Minecraft 1.20 - bujidao")]), \
-                patch(f"{MODULE}._get_process_name", return_value="notepad.exe"):
+        with (
+            patch(f"{MODULE}._enum_windows", return_value=[(10, "Minecraft 1.20 - bujidao")]),
+            patch(f"{MODULE}._get_process_name", return_value="notepad.exe"),
+        ):
             self.assertEqual(find_game_window(["BuJiDao"]), 10)
 
     def test_game_process_whitelist_wins_over_title_match(self):
@@ -271,9 +274,10 @@ class TestFindGameWindow(WindowInputMockBase):
         """
         windows = [(10, "bujidao 记事本草稿"), (11, "Minecraft 1.20")]
         names = {10: "notepad.exe", 11: "javaw.exe"}
-        with patch(f"{MODULE}._enum_windows", return_value=windows), \
-                patch(f"{MODULE}._get_process_name",
-                      side_effect=lambda h: names[h]):
+        with (
+            patch(f"{MODULE}._enum_windows", return_value=windows),
+            patch(f"{MODULE}._get_process_name", side_effect=lambda h: names[h]),
+        ):
             self.assertEqual(find_game_window(["bujidao", "minecraft"]), 11)
 
     def test_whitelist_present_skips_non_game_titles(self):
@@ -281,8 +285,10 @@ class TestFindGameWindow(WindowInputMockBase):
         先命中的关键词(此处 notepad)因此被跳过,最终选 java.exe 的游戏窗口。"""
         windows = [(10, "minecraft 使用说明"), (11, "Minecraft 1.20")]
         names = {10: "explorer.exe", 11: "java.exe"}
-        with patch(f"{MODULE}._enum_windows", return_value=windows), \
-                patch(f"{MODULE}._get_process_name", side_effect=lambda h: names[h]):
+        with (
+            patch(f"{MODULE}._enum_windows", return_value=windows),
+            patch(f"{MODULE}._get_process_name", side_effect=lambda h: names[h]),
+        ):
             self.assertEqual(find_game_window(["minecraft"]), 11)
 
     def test_falls_back_to_all_windows_when_no_game_process(self):
@@ -290,14 +296,17 @@ class TestFindGameWindow(WindowInputMockBase):
         更早命中关键词也照用。这与 docstring 的回退措辞一致:白名单只是**优先**,
         不是硬排除;真正的自身进程排除由 exclude_pid 负责。"""
         windows = [(10, "Minecraft 移植版")]
-        with patch(f"{MODULE}._enum_windows", return_value=windows), \
-                patch(f"{MODULE}._get_process_name", return_value="unknowngame.exe"):
+        with (
+            patch(f"{MODULE}._enum_windows", return_value=windows),
+            patch(f"{MODULE}._get_process_name", return_value="unknowngame.exe"),
+        ):
             self.assertEqual(find_game_window(["minecraft"]), 10)
 
     def test_no_match_returns_none(self):
-        with patch(f"{MODULE}._enum_windows",
-                   return_value=[(10, "记事本")]), \
-                patch(f"{MODULE}._get_process_name", return_value="notepad.exe"):
+        with (
+            patch(f"{MODULE}._enum_windows", return_value=[(10, "记事本")]),
+            patch(f"{MODULE}._get_process_name", return_value="notepad.exe"),
+        ):
             self.assertIsNone(find_game_window(["minecraft"]))
 
     def test_no_windows_at_all_returns_none(self):
@@ -317,10 +326,13 @@ class TestActivateWindow(WindowInputMockBase):
             self.assertTrue(activate_window(4321))
         self.assertEqual(
             u32.calls,
-            [("ShowWindow", 4321, SW_RESTORE),
-             ("keybd_event", VK_MENU, 0, 0, 0),
-             ("keybd_event", VK_MENU, 0, KEYEVENTF_KEYUP, 0),
-             ("SetForegroundWindow", 4321)])
+            [
+                ("ShowWindow", 4321, SW_RESTORE),
+                ("keybd_event", VK_MENU, 0, 0, 0),
+                ("keybd_event", VK_MENU, 0, KEYEVENTF_KEYUP, 0),
+                ("SetForegroundWindow", 4321),
+            ],
+        )
 
     def test_alt_key_released(self):
         """Alt 解锁必须成对(按下+抬起),否则 Alt 卡住影响后续打字。"""
@@ -348,7 +360,6 @@ class TestActivateWindow(WindowInputMockBase):
 # 键名映射
 # ---------------------------------------------------------------------------
 class TestKeyMap(unittest.TestCase):
-
     def test_letters_mapped_to_themselves(self):
         for c in "abcdefghijklmnopqrstuvwxyz":
             self.assertEqual(MC_KEY_TO_PYAUTOGUI[f"key.keyboard.{c}"], c, c)
@@ -373,24 +384,22 @@ class TestKeyMap(unittest.TestCase):
         self.assertEqual(MC_KEY_TO_PYAUTOGUI["key.keyboard.right.control"], "ctrlright")
 
     def test_game_process_whitelist_contents(self):
-        self.assertEqual(GAME_PROCESS_NAMES,
-                         {"java.exe", "javaw.exe", "minecraft.exe",
-                          "minecraftlauncher.exe"})
+        self.assertEqual(
+            GAME_PROCESS_NAMES, {"java.exe", "javaw.exe", "minecraft.exe", "minecraftlauncher.exe"}
+        )
 
 
 # ---------------------------------------------------------------------------
 # read_chat_key_from_options
 # ---------------------------------------------------------------------------
 class TestReadChatKeyFromOptions(WindowInputMockBase):
-
     def test_utf8_file(self):
         p = self.write_options("version:3465\nkey_key.chat:key.keyboard.t\n")
         self.assertEqual(read_chat_key_from_options(p), "t")
 
     def test_gbk_file_falls_through_utf8(self):
         """GBK 字节在 utf-8 下必然解码失败 → 落到 gbk 分支。"""
-        p = self.write_options("key_key.chat:key.keyboard.enter\n# 布吉岛",
-                               encoding="gbk")
+        p = self.write_options("key_key.chat:key.keyboard.enter\n# 布吉岛", encoding="gbk")
         self.assertEqual(read_chat_key_from_options(p), "enter")
 
     def test_undecodable_bytes_use_replace_fallback(self):
@@ -401,8 +410,7 @@ class TestReadChatKeyFromOptions(WindowInputMockBase):
         self.assertEqual(read_chat_key_from_options(p), "space")
 
     def test_missing_file_returns_none(self):
-        self.assertIsNone(
-            read_chat_key_from_options(os.path.join(self.tmpdir, "nope.txt")))
+        self.assertIsNone(read_chat_key_from_options(os.path.join(self.tmpdir, "nope.txt")))
 
     def test_missing_chat_line_returns_none(self):
         p = self.write_options("version:3465\nkey_keyboard.sneak:true\n")
@@ -432,17 +440,17 @@ class TestReadChatKeyFromOptions(WindowInputMockBase):
 # resolve_chat_key
 # ---------------------------------------------------------------------------
 class TestResolveChatKey(WindowInputMockBase):
-
     def test_auto_reads_options_txt(self):
         p = self.write_options("key_key.chat:key.keyboard.enter\n")
-        self.assertEqual(resolve_chat_key({"chat_key": "auto", "game_options": p}),
-                         "enter")
+        self.assertEqual(resolve_chat_key({"chat_key": "auto", "game_options": p}), "enter")
 
     def test_auto_falls_back_to_t_when_file_missing(self):
         self.assertEqual(
-            resolve_chat_key({"chat_key": "auto",
-                              "game_options": os.path.join(self.tmpdir, "nope.txt")}),
-            "t")
+            resolve_chat_key(
+                {"chat_key": "auto", "game_options": os.path.join(self.tmpdir, "nope.txt")}
+            ),
+            "t",
+        )
 
     def test_auto_falls_back_to_t_when_key_unmappable(self):
         p = self.write_options("key_key.chat:key.keyboard.f13\n")
@@ -473,7 +481,6 @@ class TestResolveChatKey(WindowInputMockBase):
 # HumanInput._rand / wait_between_commands / open_chat / _open_chat
 # ---------------------------------------------------------------------------
 class TestDelays(WindowInputMockBase):
-
     def test_rand_defaults_when_no_delays_configured(self):
         h = self.make_input()
         self.assertEqual(h._rand("min_a", "max_a"), 0.5)
@@ -491,8 +498,9 @@ class TestDelays(WindowInputMockBase):
         self.sleep.assert_called_once_with(0.5)
 
     def test_open_chat_presses_chat_key_then_waits(self):
-        h = self.make_input(chat_key="enter",
-                            delays={"min_chat_key_delay": 0.11, "max_chat_key_delay": 0.22})
+        h = self.make_input(
+            chat_key="enter", delays={"min_chat_key_delay": 0.11, "max_chat_key_delay": 0.22}
+        )
         h.open_chat()
         self.press.assert_called_once_with("enter")
         self.uniform.assert_called_once_with(0.11, 0.22)
@@ -536,7 +544,6 @@ class TestOpenChatDetector(WindowInputMockBase):
 # _copy 剪贴板重试
 # ---------------------------------------------------------------------------
 class TestCopyRetry(WindowInputMockBase):
-
     def test_first_attempt_success_no_sleep(self):
         h = self.make_input()
         h._copy("你好")
@@ -546,8 +553,7 @@ class TestCopyRetry(WindowInputMockBase):
     def test_retries_then_succeeds(self):
         """重点场景5:剪贴板被占用时前两次失败、第三次成功 → 不抛。"""
         h = self.make_input()
-        self.pyperclip.copy.side_effect = [
-            PyperclipBusy("占用"), PyperclipBusy("占用"), None]
+        self.pyperclip.copy.side_effect = [PyperclipBusy("占用"), PyperclipBusy("占用"), None]
         h._copy("你好")
         self.assertEqual(self.pyperclip.copy.call_count, 3)
         self.assertEqual(self.sleep.call_args_list, [call(0.3), call(0.3)])
@@ -581,7 +587,6 @@ class PyperclipBusy(Exception):
 # send_chat_text
 # ---------------------------------------------------------------------------
 class TestSendChatText(WindowInputMockBase):
-
     def test_happy_path_press_paste_enter(self):
         """开栏 → ctrl+v → enter,顺序固定。"""
         h = self.make_input(chat_key="t")
@@ -617,6 +622,7 @@ class TestSendChatText(WindowInputMockBase):
         def check():
             state["n"] += 1
             return state["n"] > n
+
         return check
 
     def test_self_stop_check_aborts_before_copy(self):
@@ -659,7 +665,6 @@ class TestSendChatText(WindowInputMockBase):
 # paste_and_enter / send_command
 # ---------------------------------------------------------------------------
 class TestPasteAndEnter(WindowInputMockBase):
-
     def test_pastes_without_pressing_chat_key(self):
         """试探式发送:不按 chat_key,只 ctrl+v + enter,并返回 True。"""
         h = self.make_input(chat_key="t")
@@ -674,6 +679,7 @@ class TestPasteAndEnter(WindowInputMockBase):
         def check():
             state["n"] += 1
             return state["n"] > n
+
         return check
 
     def test_stop_before_copy_returns_false(self):
@@ -711,7 +717,6 @@ class TestPasteAndEnter(WindowInputMockBase):
 
 
 class TestSendCommand(WindowInputMockBase):
-
     def test_send_and_wait(self):
         h = self.make_input(chat_key="t")
         h.send_command("/guild promote 甲")

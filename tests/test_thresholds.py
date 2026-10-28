@@ -35,6 +35,7 @@ test_thresholds.py —— 阈值矩阵边界三点全覆盖
 本文件补齐 tests/test_actions.py 的缺口:那边只测了"边界/边界+1"两点,
 这里补上"边界-1",凑满验收要求的三点全覆盖。
 """
+
 import os
 import sys
 import unittest
@@ -45,8 +46,15 @@ from guild_auto.domain.decisions import decide_actions, new_rank_after  # noqa: 
 from guild_auto.config import DEFAULT_CONFIG  # noqa: E402
 
 # logger 未 init 时不写文件,这里只需保证被调用的 log_* 函数可用
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -101,8 +109,9 @@ class TestMidRankThresholdMatrix(unittest.TestCase):
 
     def test_demote_at_boundary_no_action(self):
         """5000(mid_demote 边界):< 5000 **不含**边界 → 无动作(关键!)。"""
-        self.assertEqual(decide_actions("mid", 5000, _t()), ([], None),
-                         "mid_demote 用 < ,边界值 5000 不应降职")
+        self.assertEqual(
+            decide_actions("mid", 5000, _t()), ([], None), "mid_demote 用 < ,边界值 5000 不应降职"
+        )
 
     def test_demote_boundary_minus_one_demote(self):
         """4999(mid_demote 边界-1):< 5000 → 降职 1 次。"""
@@ -123,13 +132,15 @@ class TestLowRankThresholdMatrix(unittest.TestCase):
 
     def test_promote2_at_boundary(self):
         """30000(low_promote_2 边界):>= → 升职 **2** 次。"""
-        self.assertEqual(decide_actions("low", 30000, _t()),
-                         (["promote", "promote"], "low_promote_2"))
+        self.assertEqual(
+            decide_actions("low", 30000, _t()), (["promote", "promote"], "low_promote_2")
+        )
 
     def test_promote2_boundary_plus_one(self):
         """30001 → 升职 2 次。"""
-        self.assertEqual(decide_actions("low", 30001, _t()),
-                         (["promote", "promote"], "low_promote_2"))
+        self.assertEqual(
+            decide_actions("low", 30001, _t()), (["promote", "promote"], "low_promote_2")
+        )
 
     def test_promote1_boundary_minus_one_no_action(self):
         """9999:>= 10000? 否;< 3500? 否 → 无动作(区间内取值)。"""
@@ -149,8 +160,9 @@ class TestLowRankThresholdMatrix(unittest.TestCase):
 
     def test_demote_at_boundary_no_action(self):
         """3500(low_demote 边界):< 3500 **不含**边界 → 无动作(关键!)。"""
-        self.assertEqual(decide_actions("low", 3500, _t()), ([], None),
-                         "low_demote 用 < ,边界值 3500 不应降职")
+        self.assertEqual(
+            decide_actions("low", 3500, _t()), ([], None), "low_demote 用 < ,边界值 3500 不应降职"
+        )
 
     def test_demote_boundary_minus_one_demote(self):
         """3499(low_demote 边界-1):< 3500 → 降职 1 次。"""
@@ -162,18 +174,23 @@ class TestEntryRankThresholdMatrix(unittest.TestCase):
 
     def test_promote3_boundary_minus_one_falls_to_promote2(self):
         """29999(entry_promote_3 边界-1)→ 落到 entry_promote_2 → 升职 2 次。"""
-        self.assertEqual(decide_actions("entry", 29999, _t()),
-                         (["promote", "promote"], "entry_promote_2"))
+        self.assertEqual(
+            decide_actions("entry", 29999, _t()), (["promote", "promote"], "entry_promote_2")
+        )
 
     def test_promote3_at_boundary(self):
         """30000(entry_promote_3 边界):>= → 升职 **3** 次。"""
-        self.assertEqual(decide_actions("entry", 30000, _t()),
-                         (["promote", "promote", "promote"], "entry_promote_3"))
+        self.assertEqual(
+            decide_actions("entry", 30000, _t()),
+            (["promote", "promote", "promote"], "entry_promote_3"),
+        )
 
     def test_promote3_boundary_plus_one(self):
         """30001 → 升职 3 次。"""
-        self.assertEqual(decide_actions("entry", 30001, _t()),
-                         (["promote", "promote", "promote"], "entry_promote_3"))
+        self.assertEqual(
+            decide_actions("entry", 30001, _t()),
+            (["promote", "promote", "promote"], "entry_promote_3"),
+        )
 
     def test_promote2_boundary_minus_one_falls_to_promote1(self):
         """9999(entry_promote_2 边界-1)→ 落到 entry_promote_1 → 升职 1 次。"""
@@ -181,13 +198,15 @@ class TestEntryRankThresholdMatrix(unittest.TestCase):
 
     def test_promote2_at_boundary(self):
         """10000(entry_promote_2 边界):>= → 升职 2 次。"""
-        self.assertEqual(decide_actions("entry", 10000, _t()),
-                         (["promote", "promote"], "entry_promote_2"))
+        self.assertEqual(
+            decide_actions("entry", 10000, _t()), (["promote", "promote"], "entry_promote_2")
+        )
 
     def test_promote2_boundary_plus_one(self):
         """10001 → 升职 2 次。"""
-        self.assertEqual(decide_actions("entry", 10001, _t()),
-                         (["promote", "promote"], "entry_promote_2"))
+        self.assertEqual(
+            decide_actions("entry", 10001, _t()), (["promote", "promote"], "entry_promote_2")
+        )
 
     def test_promote1_boundary_minus_one_kicks(self):
         """3499(entry_promote_1 边界-1)→ 落到 entry_kick → 踢出。"""
@@ -249,10 +268,18 @@ class TestUnknownRankAndAbnormalInput(unittest.TestCase):
 
     def test_custom_thresholds_override_defaults(self):
         """阈值可配置:传入自定义阈值时按自定义判定,不受默认值影响。"""
-        custom = {"high_demote": 100, "mid_promote": 200, "mid_demote": 50,
-                  "low_promote_2": 300, "low_promote_1": 100, "low_demote": 30,
-                  "entry_promote_3": 400, "entry_promote_2": 200, "entry_promote_1": 60,
-                  "entry_kick": 60}
+        custom = {
+            "high_demote": 100,
+            "mid_promote": 200,
+            "mid_demote": 50,
+            "low_promote_2": 300,
+            "low_promote_1": 100,
+            "low_demote": 30,
+            "entry_promote_3": 400,
+            "entry_promote_2": 200,
+            "entry_promote_1": 60,
+            "entry_kick": 60,
+        }
         self.assertEqual(decide_actions("high", 100, custom), (["demote"], "high_demote"))
         self.assertEqual(decide_actions("high", 101, custom), ([], None))
         self.assertEqual(decide_actions("mid", 200, custom), (["promote"], "mid_promote"))
@@ -314,8 +341,9 @@ class TestTriggerKeyUniqueness(unittest.TestCase):
         triggered = set()
         for key, (rank, weekly) in reachable.items():
             actions, trigger = decide_actions(rank, weekly, t)
-            self.assertEqual(trigger, key,
-                             f"{rank}@{weekly} 应触发 {key},实际 {trigger} actions={actions}")
+            self.assertEqual(
+                trigger, key, f"{rank}@{weekly} 应触发 {key},实际 {trigger} actions={actions}"
+            )
             triggered.add(trigger)
         self.assertEqual(len(triggered), 10, "10 个阈值键应全部可达")
 

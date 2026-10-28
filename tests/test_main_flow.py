@@ -18,6 +18,7 @@ test_main_flow.py —— main() 端到端控制流(全 mock 硬件)
 零真实硬件:build_runtime / find_game_window / activate_window /
 start_pause_listener / pyautogui / 报告写入 全部替换。
 """
+
 import json
 import os
 import shutil
@@ -30,7 +31,7 @@ from guild_auto import main as main_mod
 from guild_auto.config import DEFAULT_CONFIG
 
 
-NO_RET = object()      # 哨兵:patch 但不设 return_value(None 本身是合法返回值)
+NO_RET = object()  # 哨兵:patch 但不设 return_value(None 本身是合法返回值)
 
 
 def _base_cfg():
@@ -91,22 +92,49 @@ class _MainCase(unittest.TestCase):
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
         self.cfg_path = os.path.join(self.tmp, "config.json")
 
-    def _run(self, *, async_enabled=False, pending_cont=True, confirm_answer=True,
-             window=123, guild=None, records=None, query_failures=None,
-             notify_failures=None, exec_failures=None, stage_conf=(True, False),
-             cfg_override=None, input_value=""):
+    def _run(
+        self,
+        *,
+        async_enabled=False,
+        pending_cont=True,
+        confirm_answer=True,
+        window=123,
+        guild=None,
+        records=None,
+        query_failures=None,
+        notify_failures=None,
+        exec_failures=None,
+        stage_conf=(True, False),
+        cfg_override=None,
+        input_value="",
+    ):
         """跑一次 main(),返回断言用的 mocks 字典。
 
         用 ExitStack 而不是一条超长 with 链:Python 限制静态嵌套 20 层,
         这里要替换 ~28 个名字,链式 with 会直接 SyntaxError。
         """
-        guild = guild or {"guild_name": "演示公会", "total": 2, "online": 1,
-                          "groups": {"entry": ["甲", "乙"]}}
-        records = records if records is not None else [
-            {"player": "甲", "rank": "entry", "weekly_total": 100,
-             "joined_at": "x", "last_online": "y", "daily": [],
-             "actions": ["promote"], "trigger": "entry_promote_1"},
-        ]
+        guild = guild or {
+            "guild_name": "演示公会",
+            "total": 2,
+            "online": 1,
+            "groups": {"entry": ["甲", "乙"]},
+        }
+        records = (
+            records
+            if records is not None
+            else [
+                {
+                    "player": "甲",
+                    "rank": "entry",
+                    "weekly_total": 100,
+                    "joined_at": "x",
+                    "last_online": "y",
+                    "daily": [],
+                    "actions": ["promote"],
+                    "trigger": "entry_promote_1",
+                },
+            ]
+        )
         rt = _FakeRuntime(async_enabled)
         rt.ask_confirm = lambda p, d=False: confirm_answer
 
@@ -153,31 +181,42 @@ class _MainCase(unittest.TestCase):
                 if target == "parse_args":
                     m = stack.enter_context(mock.patch.object(main_mod, "parse_args"))
                     m.return_value = mock.Mock(
-                        config=self.cfg_path, admin=None, log=None, options=None,
-                        dry_run=False, debug=False, debug_skip=None)
+                        config=self.cfg_path,
+                        admin=None,
+                        log=None,
+                        options=None,
+                        dry_run=False,
+                        debug=False,
+                        debug_skip=None,
+                    )
                     entered[target] = m
                 elif target == "start_pause_listener":
-                    m = stack.enter_context(
-                        mock.patch.object(main_mod, "start_pause_listener"))
+                    m = stack.enter_context(mock.patch.object(main_mod, "start_pause_listener"))
                     m.return_value = mock.Mock(name="listener")
                     entered[target] = m
                 elif "." in target:
                     mod_name, attr = target.split(".", 1)
                     obj = getattr(main_mod, mod_name)
                     entered[target] = stack.enter_context(
-                        mock.patch.object(obj, attr, return_value=value))
+                        mock.patch.object(obj, attr, return_value=value)
+                    )
                 elif value is NO_RET:
                     entered[target] = stack.enter_context(mock.patch.object(main_mod, target))
                 else:
                     entered[target] = stack.enter_context(
-                        mock.patch.object(main_mod, target, return_value=value))
+                        mock.patch.object(main_mod, target, return_value=value)
+                    )
 
             # 注意:run_pending 必须在 prepare_config 之后被调用；上面的
             # stage_* 都已被替换成固定返回值,所以 main() 不会碰硬件。
             main_mod.main()
 
-        return {"rt": rt, "listener": entered["start_pause_listener"],
-                "stage_exec_async": entered["stage_execute_async"], "cfg": cfg}
+        return {
+            "rt": rt,
+            "listener": entered["start_pause_listener"],
+            "stage_exec_async": entered["stage_execute_async"],
+            "cfg": cfg,
+        }
 
 
 class TestSerialMode(_MainCase):
@@ -201,9 +240,12 @@ class TestAsyncMode(_MainCase):
 
     def test_async_failures_do_not_crash_report(self):
         """异步执行失败必须并入 failures 且不打断报告输出。"""
-        self._run(async_enabled=True,
-                  exec_failures=[{"player": "甲", "rank": "entry",
-                                  "actions": ["promote"], "error": "超时"}])
+        self._run(
+            async_enabled=True,
+            exec_failures=[
+                {"player": "甲", "rank": "entry", "actions": ["promote"], "error": "超时"}
+            ],
+        )
 
 
 class TestEarlyReturns(_MainCase):
@@ -224,10 +266,17 @@ class TestEarlyReturns(_MainCase):
 
 class TestDebugSkipStages(_MainCase):
     def _debug_cfg(self, skip):
-        return {"debug": {"enabled": True, "skip_stages": skip,
-                          "simulation": {"guild_name": "Debug公会",
-                                         "players_per_rank": 1,
-                                         "contribution_range": [0, 100]}}}
+        return {
+            "debug": {
+                "enabled": True,
+                "skip_stages": skip,
+                "simulation": {
+                    "guild_name": "Debug公会",
+                    "players_per_rank": 1,
+                    "contribution_range": [0, 100],
+                },
+            }
+        }
 
     def test_skip_list_uses_simulated_guild(self):
         self._run(cfg_override=self._debug_cfg(["list"]))

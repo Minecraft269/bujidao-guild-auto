@@ -18,6 +18,7 @@ mock 铁律(本文件零违规):
   5. min_wait_after_start 起步守卫 / stop_check 去抖 / _force_stop(Ctrl+C) 立即中断
   6. max_pending_chars 超限截断(防 pending 无限增长)
 """
+
 import contextlib
 import os
 import shutil
@@ -43,7 +44,7 @@ from guild_auto.infrastructure.log_watcher import (  # noqa: E402
 # 公共素材(格式取自真实 latest.log:首行带时间戳前缀,面板首尾是分隔线)
 # ---------------------------------------------------------------------------
 HEAD = "[10月2026 21:23:46.135] [Render thread/INFO] [ChatComponent/]: "
-CHAT_TAG = "".join(("[", "CHAT", "]"))     # 避免源码里直接出现裸标签
+CHAT_TAG = "".join(("[", "CHAT", "]"))  # 避免源码里直接出现裸标签
 START_LINE = "-" * 20 + "公会" + "-" * 21
 END_LINE = "-" * 44
 
@@ -75,7 +76,7 @@ class FakeClock:
     def __init__(self, start=1_700_000_000.0):
         self.now = float(start)
         self.sleeps = []
-        self.on_sleep = None      # 可选回调:第 n 次 sleep 时模拟"游戏写入"
+        self.on_sleep = None  # 可选回调:第 n 次 sleep 时模拟"游戏写入"
 
     def time(self):
         return self.now
@@ -150,10 +151,12 @@ class _Base(unittest.TestCase):
         self.logs = []
         self._patches = [
             mock.patch.object(lw, "time", self.clock),
-            mock.patch.object(logger_mod, "log_debug",
-                              lambda m: self.logs.append(("debug", str(m)))),
-            mock.patch.object(logger_mod, "log_warning",
-                              lambda m: self.logs.append(("warning", str(m)))),
+            mock.patch.object(
+                logger_mod, "log_debug", lambda m: self.logs.append(("debug", str(m)))
+            ),
+            mock.patch.object(
+                logger_mod, "log_warning", lambda m: self.logs.append(("warning", str(m)))
+            ),
             mock.patch.object(logger_mod, "log_trace", lambda *a, **k: None),
             mock.patch.object(logger_mod, "trace_code_location", lambda *a, **k: None),
         ]
@@ -211,8 +214,9 @@ class TestEncodingDetection(_Base):
         → 走最后一行 `return "gbk"` 回退(errors=replace 尽力解码中文)。"""
         write(self.path, b"\xff\xfe" * 100 + b"plain ascii" * 100)
         for enc in ("utf-8", "gbk", "gb2312"):
-            with self.assertRaises(UnicodeDecodeError,
-                                   msg=f"{enc} 竟能解码 0xFF/0xFE,测试前提失效"):
+            with self.assertRaises(
+                UnicodeDecodeError, msg=f"{enc} 竟能解码 0xFF/0xFE,测试前提失效"
+            ):
                 (b"\xff\xfe" * 100 + b"plain ascii" * 100).decode(enc)
         self.assertEqual(detect_encoding(self.path), "gbk")
 
@@ -220,8 +224,9 @@ class TestEncodingDetection(_Base):
         """业务坑:开头 200KB 纯 ASCII、中文只出现在尾部 64KB。
         只采样头部会误判 utf-8 → 中文乱码 → 解析全失败;必须采样多处。"""
         write(self.path, b"A" * 200_000 + ("中文尾巴" * 5000).encode("gbk"))
-        self.assertNotEqual(detect_encoding(self.path), "utf-8",
-                            "长 ASCII 头 + GBK 尾被误判为 utf-8(中文将乱码)")
+        self.assertNotEqual(
+            detect_encoding(self.path), "utf-8", "长 ASCII 头 + GBK 尾被误判为 utf-8(中文将乱码)"
+        )
         self.assertEqual(detect_encoding(self.path), "gbk")
 
     def test_empty_file_detects_utf8(self):
@@ -247,8 +252,9 @@ class TestOpenClose(_Base):
         self.assertIn("game_log", msg)
         self.assertEqual(w._fh, None, "open 失败后不得留下半开的句柄")
         self.assertTrue(self.clock.sleeps, "必须轮询 sleep,不能直接抛错")
-        self.assertTrue(all(s == 1.0 for s in self.clock.sleeps),
-                        f"轮询间隔应为 1.0s,实际 {self.clock.sleeps}")
+        self.assertTrue(
+            all(s == 1.0 for s in self.clock.sleeps), f"轮询间隔应为 1.0s,实际 {self.clock.sleeps}"
+        )
         self.assertGreaterEqual(self.clock.now - self.t0, 3.0, "必须等到超时才抛")
 
     def test_open_seeks_to_end_and_reads_only_new_lines(self):
@@ -264,7 +270,7 @@ class TestOpenClose(_Base):
 
     def test_open_detects_encoding_when_auto(self):
         write(self.path, ("中文日志 " * 300).encode("gbk"))
-        w = LogWatcher(self.path, poll_interval_ms=100)   # encoding 默认 auto
+        w = LogWatcher(self.path, poll_interval_ms=100)  # encoding 默认 auto
         self.addCleanup(w.close)
         w.open()
         self.assertEqual(w.encoding, "gbk", "auto 模式必须在 open 时把编码定下来")
@@ -276,7 +282,7 @@ class TestOpenClose(_Base):
         self.assertIsNotNone(w._fh)
         w.close()
         self.assertIsNone(w._fh)
-        w.close()          # 重复关闭:不抛异常
+        w.close()  # 重复关闭:不抛异常
         self.assertIsNone(w._fh)
 
     def test_close_swallows_oserror(self):
@@ -326,13 +332,15 @@ class TestDiscardAndRotation(_Base):
         write(self.path, "残留\n")
         w = self.watcher()
         w.open()
-        w.close()                 # Windows 上必须先放句柄,否则文件删不掉
+        w.close()  # Windows 上必须先放句柄,否则文件删不掉
         os.remove(self.path)
         w.discard_buffer()
         self.assertEqual(w._size, 0)
         self.assertIsNone(w._fh)
-        self.assertTrue(any("重开异常" in m for m in self.debug_logs()),
-                        f"应记录重开异常日志,实际 {self.debug_logs()}")
+        self.assertTrue(
+            any("重开异常" in m for m in self.debug_logs()),
+            f"应记录重开异常日志,实际 {self.debug_logs()}",
+        )
 
     def test_discard_buffer_survives_close_error(self):
         """旧句柄 close() 抛异常也必须继续重开(异常分支不能提前 return)。"""
@@ -350,7 +358,7 @@ class TestDiscardAndRotation(_Base):
         w = self.watcher()
         w.open()
         self.assertFalse(w._reopen_if_rotated(), "文件未变化时不应重开")
-        write(self.path, "B" * 10)            # 被截断重写
+        write(self.path, "B" * 10)  # 被截断重写
         self.assertTrue(w._reopen_if_rotated(), "文件变小应判定为轮转")
         self.assertEqual(w._size, 0)
         self.assertIsNone(w._fh, "轮转时必须先关掉旧句柄")
@@ -388,7 +396,7 @@ class TestDiscardAndRotation(_Base):
         w.open()
 
         def _on_sleep(_sec):
-            self.clock.on_sleep = None      # 只触发一次
+            self.clock.on_sleep = None  # 只触发一次
             append(self.path, "轮询到的新行\n")
 
         self.clock.on_sleep = _on_sleep
@@ -431,8 +439,10 @@ class TestWaitForChatBlock(_Base):
         write(self.path, b"")
         w = self.watcher()
         w.open()
-        append(self.path, "\n".join([chat_line(START_LINE), "-- 低活跃成员 --",
-                                     "●玩家B", END_LINE]) + "\n")
+        append(
+            self.path,
+            "\n".join([chat_line(START_LINE), "-- 低活跃成员 --", "●玩家B", END_LINE]) + "\n",
+        )
         with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=5)
         self.assertEqual(block, ["-- 低活跃成员 --", "●玩家B"])
@@ -442,11 +452,17 @@ class TestWaitForChatBlock(_Base):
         write(self.path, b"")
         w = self.watcher()
         w.open()
-        append(self.path, "\n".join([
-            chat_line("普通闲聊"),
-            chat_line("\\n".join(self._panel())),
-            chat_line(START_LINE + "\\n还在写入中的内容"),
-        ]) + "\n")
+        append(
+            self.path,
+            "\n".join(
+                [
+                    chat_line("普通闲聊"),
+                    chat_line("\\n".join(self._panel())),
+                    chat_line(START_LINE + "\\n还在写入中的内容"),
+                ]
+            )
+            + "\n",
+        )
         with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=5)
         self.assertEqual(block, ["-- 高活跃成员 --", "●玩家A"])
@@ -474,8 +490,9 @@ class TestWaitForChatBlock(_Base):
         with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=0.4, min_wait_after_start=5.0)
         self.assertIsNone(block, "min_wait 未到且窗口关闭,不应返回块")
-        self.assertTrue(any("超时" in m for m in self.debug_logs()),
-                        f"应记录超时日志,实际 {self.debug_logs()}")
+        self.assertTrue(
+            any("超时" in m for m in self.debug_logs()), f"应记录超时日志,实际 {self.debug_logs()}"
+        )
 
     def test_stop_check_transient_true_does_not_abort(self):
         """去抖:瞬时 True(False→True→False)不得放弃等待(用户原话"按下暂停键后不暂停")。
@@ -489,14 +506,15 @@ class TestWaitForChatBlock(_Base):
 
         def stop_check():
             calls["n"] += 1
-            return calls["n"] == 1          # 只有外层门那一次 True,随后一直 False
+            return calls["n"] == 1  # 只有外层门那一次 True,随后一直 False
 
         with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=5, stop_check=stop_check)
         self.assertIsNotNone(block, "瞬时 stop_check=True 不该放弃等待")
         # 外层门 1 次 + 去抖窗口内 ceil(100/50)=2 次复检
-        self.assertGreaterEqual(calls["n"], 3,
-                                f"去抖窗口内必须反复复检 stop_check,实际只调了 {calls['n']} 次")
+        self.assertGreaterEqual(
+            calls["n"], 3, f"去抖窗口内必须反复复检 stop_check,实际只调了 {calls['n']} 次"
+        )
         self.assertEqual(calls["n"], 3, f"复检次数应恰为 3(poll=100ms/50ms 子步),实际 {calls['n']}")
         self.assert_no_long_sleeps()
 
@@ -509,8 +527,10 @@ class TestWaitForChatBlock(_Base):
         with fake_force_stop(False):
             block = w.wait_for_chat_block(timeout=60, stop_check=lambda: True)
         self.assertIsNone(block, "持续暂停必须放弃等待")
-        self.assertTrue(any("持续暂停中断" in m for m in self.debug_logs()),
-                        f"应记录中断日志,实际 {self.debug_logs()}")
+        self.assertTrue(
+            any("持续暂停中断" in m for m in self.debug_logs()),
+            f"应记录中断日志,实际 {self.debug_logs()}",
+        )
         self.assertLess(self.clock.now - self.t0, 10, "命中去抖后必须立即返回,不能死等")
 
     def test_max_pending_chars_truncates_pending(self):
@@ -546,8 +566,10 @@ class TestWaitForChatBlock(_Base):
             block = w.wait_for_chat_block(timeout=60)
         self.assertIsNone(block, "_force_stop 时必须返回 None")
         self.assertLess(self.clock.now - self.t0, 10, "_force_stop 必须立即返回而非等满 timeout")
-        self.assertTrue(any("_force_stop" in m for m in self.debug_logs()),
-                        f"应记录 _force_stop 日志,实际 {self.debug_logs()}")
+        self.assertTrue(
+            any("_force_stop" in m for m in self.debug_logs()),
+            f"应记录 _force_stop 日志,实际 {self.debug_logs()}",
+        )
 
     def test_force_stop_import_failure_falls_back_to_false(self):
         """runtime 不可导入 → 回退 False,照常轮询到超时。"""
@@ -558,8 +580,9 @@ class TestWaitForChatBlock(_Base):
         with no_runtime():
             block = w.wait_for_chat_block(timeout=0.4)
         self.assertIsNone(block, "没有面板块时应超时返回 None")
-        self.assertGreaterEqual(self.clock.now - self.t0, 0.4,
-                                "回退 False 后必须正常轮询到超时,不能提前放弃")
+        self.assertGreaterEqual(
+            self.clock.now - self.t0, 0.4, "回退 False 后必须正常轮询到超时,不能提前放弃"
+        )
 
     def test_pending_keeps_only_head_of_plain_chat_message(self):
         """普通聊天只保留消息头(防止 pending 无限增长);面板写入中则完整保留。"""
@@ -567,8 +590,9 @@ class TestWaitForChatBlock(_Base):
         w = self.watcher()
         w.open()
         append(self.path, "\n".join([chat_line("普通闲聊 A"), "  续行1", "  续行2"]) + "\n")
-        append(self.path, "\n".join([chat_line(START_LINE),
-                                     "面板行1", "面板行2", "面板行3"]) + "\n")
+        append(
+            self.path, "\n".join([chat_line(START_LINE), "面板行1", "面板行2", "面板行3"]) + "\n"
+        )
         seen = []
         real_split = lw.split_messages
 
@@ -580,8 +604,10 @@ class TestWaitForChatBlock(_Base):
             with fake_force_stop(False):
                 block = w.wait_for_chat_block(timeout=0.4)
         self.assertIsNone(block, "未闭合面板不应返回块")
-        self.assertTrue(any(len(s) > 1 for s in seen),
-                        "存在面板消息时 pending 必须保留多行(否则块中间行会永久丢失)")
+        self.assertTrue(
+            any(len(s) > 1 for s in seen),
+            "存在面板消息时 pending 必须保留多行(否则块中间行会永久丢失)",
+        )
 
 
 # ===========================================================================
@@ -620,8 +646,11 @@ class TestReadUntil(_Base):
             out = w.read_until(timeout=60)
         self.assertEqual(out, ["回显一"], "已收到的行不能被丢弃")
         self.assertGreaterEqual(flag.checks, 4, "内层 sleep 循环必须反复复检 _force_stop")
-        self.assertLess(self.clock.now - self.t0, 0.25,
-                        f"应在 0.1s 内提前 break,实际耗时 {self.clock.now - self.t0:.3f}s")
+        self.assertLess(
+            self.clock.now - self.t0,
+            0.25,
+            f"应在 0.1s 内提前 break,实际耗时 {self.clock.now - self.t0:.3f}s",
+        )
 
     def test_import_failure_falls_back_and_still_collects(self):
         write(self.path, b"")
@@ -684,20 +713,21 @@ class TestBlockHelpers(unittest.TestCase):
     def test_extract_block_rejects_non_block_head(self):
         """首行不是分隔线 → None(普通聊天消息不误判成面板)。"""
         self.assertIsNone(extract_chat_block([chat_line("普通聊天")]))
-        self.assertIsNone(extract_chat_block(
-            ["[148月2026 21:00:00.000] [INFO]: 没有聊天标签的行"]))
+        self.assertIsNone(extract_chat_block(["[148月2026 21:00:00.000] [INFO]: 没有聊天标签的行"]))
 
     def test_extract_block_none_when_no_end_line(self):
         self.assertIsNone(extract_chat_block([chat_line(START_LINE + "\\n只有内容没有结尾")]))
 
     def test_starts_with_block_boundaries(self):
-        self.assertFalse(_starts_with_block(["没有 CHAT 标记的行"]),
-                         "无 [CHAT] 标签的消息不得被当成面板")
+        self.assertFalse(
+            _starts_with_block(["没有 CHAT 标记的行"]), "无 [CHAT] 标签的消息不得被当成面板"
+        )
         self.assertTrue(_starts_with_block([chat_line(START_LINE + "\\n未闭合")]))
         # 面板首线前有空行时,应跳过空行找到首条非空行再判定
         self.assertTrue(_starts_with_block(["头 " + CHAT_TAG, "", "   ", START_LINE]))
-        self.assertFalse(_starts_with_block(["头 " + CHAT_TAG, "", "   "]),
-                         "[CHAT] 后全为空行 → 无块首线")
+        self.assertFalse(
+            _starts_with_block(["头 " + CHAT_TAG, "", "   "]), "[CHAT] 后全为空行 → 无块首线"
+        )
         self.assertFalse(_starts_with_block([chat_line("普通聊天")]))
 
 
@@ -737,8 +767,10 @@ class TestRotationWindowRetry(unittest.TestCase):
                 raise FileNotFoundError("轮转窗口")
             return real_open(*a, **k)
 
-        with mock.patch("builtins.open", side_effect=flaky), \
-                mock.patch("time.sleep", return_value=None):
+        with (
+            mock.patch("builtins.open", side_effect=flaky),
+            mock.patch("time.sleep", return_value=None),
+        ):
             ok = w._open_existing(wait_seconds=5)
         self.assertTrue(ok, "重试后仍报失败")
         self.assertGreaterEqual(calls["n"], 3, f"只试了 {calls['n']} 次,没有重试")
@@ -746,8 +778,10 @@ class TestRotationWindowRetry(unittest.TestCase):
     def test_open_gives_up_after_timeout_without_raising(self):
         """一直失败 → 超时返回 False(**不抛异常**)并清空句柄。"""
         w = self._watcher()
-        with mock.patch("builtins.open", side_effect=FileNotFoundError("轮转中")), \
-                mock.patch("time.sleep", return_value=None):
+        with (
+            mock.patch("builtins.open", side_effect=FileNotFoundError("轮转中")),
+            mock.patch("time.sleep", return_value=None),
+        ):
             ok = w._open_existing(wait_seconds=0.5)
         self.assertFalse(ok, "文件始终不存在却报成功")
         self.assertIsNone(w._fh, "超时后应清空句柄,避免调用方用到失效句柄")
@@ -755,13 +789,17 @@ class TestRotationWindowRetry(unittest.TestCase):
     def test_read_new_lines_survives_missing_file(self):
         """read_new_lines 在文件暂缺时不得抛 FileNotFoundError。"""
         w = self._watcher()
-        with mock.patch.object(w, "_reopen_if_rotated", return_value=True), \
-                mock.patch("time.sleep", return_value=None):
+        with (
+            mock.patch.object(w, "_reopen_if_rotated", return_value=True),
+            mock.patch("time.sleep", return_value=None),
+        ):
             try:
                 lines = w.read_new_lines(block=False)
             except FileNotFoundError:
-                self.fail("read_new_lines 抛了 FileNotFoundError —— "
-                          "轮询循环遇到瞬时文件缺失本该重试而非崩掉")
+                self.fail(
+                    "read_new_lines 抛了 FileNotFoundError —— "
+                    "轮询循环遇到瞬时文件缺失本该重试而非崩掉"
+                )
         self.assertIsInstance(lines, list)
 
 

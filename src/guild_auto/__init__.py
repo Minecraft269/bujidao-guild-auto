@@ -14,4 +14,5 @@ guild_auto —— 布吉岛公会管理脚本
 ⚠ 并发层目录名是 concurrency/ 而不是 async/ —— async 是 Python 保留字,
 `from guild_auto.async import x` 会直接 SyntaxError。
 """
+
 __version__ = "2.0.0"

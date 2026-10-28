@@ -9,6 +9,7 @@ test_modules.py —— 补漏测模块的单元测试
   * config: validate_config / ensure_default_config / load_config(JSONC round-trip)
 全部用临时目录/合成数据,零真实设备操作。
 """
+
 import json
 import os
 import sys
@@ -68,7 +69,7 @@ class TestMessageSplitAndBlock(unittest.TestCase):
         ]
         msgs = split_messages(lines)
         self.assertEqual(len(msgs), 2)
-        self.assertEqual(len(msgs[0]), 2)   # 首条含续行
+        self.assertEqual(len(msgs[0]), 2)  # 首条含续行
         self.assertEqual(len(msgs[1]), 1)
 
     def test_split_messages_no_leading_head_dropped(self):
@@ -82,12 +83,14 @@ class TestMessageSplitAndBlock(unittest.TestCase):
 
     def test_extract_chat_block_single_physical_line(self):
         # 网易版:整个面板是单物理行,内部换行是字面 \n(实测 184 人面板单行 2233 字符)
-        panel = "\\n".join([
-            "--------------------公会---------------------",
-            "-- 高活跃成员 --",
-            "●玩家A",
-            "--------------------------------------------",
-        ])
+        panel = "\\n".join(
+            [
+                "--------------------公会---------------------",
+                "-- 高活跃成员 --",
+                "●玩家A",
+                "--------------------------------------------",
+            ]
+        )
         msg = ["[148月2026 21:00:00.000] [Render thread/INFO]: [CHAT] " + panel]
         block = extract_chat_block(msg)
         self.assertIsNotNone(block)
@@ -156,22 +159,46 @@ class TestReports(unittest.TestCase):
         self.d = tempfile.mkdtemp()
 
     def test_contribution_report_grouping(self):
-        recs = [{"player": "P1", "rank": "high", "weekly_total": 25000, "actions": ["demote"]},
-                {"player": "P2", "rank": "entry", "weekly_total": 40000, "actions": ["promote"] * 3},
-                {"player": "P3", "rank": "mid", "weekly_total": 100, "actions": []}]
+        recs = [
+            {"player": "P1", "rank": "high", "weekly_total": 25000, "actions": ["demote"]},
+            {"player": "P2", "rank": "entry", "weekly_total": 40000, "actions": ["promote"] * 3},
+            {"player": "P3", "rank": "mid", "weekly_total": 100, "actions": []},
+        ]
         p = write_contribution_report(self.d, "演示公会", recs, "AdminX")
         self.assertTrue(os.path.exists(p))
         c = open(p, encoding="utf-8").read()
-        for seg in ("---高活跃---", "---中等活跃---", "---入门成员---",
-                    "玩家:P1 周贡献为:25000 执行操作:降职",
-                    "玩家:P3 周贡献为:100 执行操作:无"):
+        for seg in (
+            "---高活跃---",
+            "---中等活跃---",
+            "---入门成员---",
+            "玩家:P1 周贡献为:25000 执行操作:降职",
+            "玩家:P3 周贡献为:100 执行操作:无",
+        ):
             self.assertIn(seg, c)
 
     def test_action_report_sections_and_contact(self):
-        recs = [{"player": "K1", "rank": "entry", "new_rank": "kicked", "weekly_total": 3000,
-                 "actions": ["kick"], "trigger": "entry_kick", "executed": True, "error": None},
-                {"player": "D1", "rank": "high", "new_rank": "mid", "weekly_total": 20000,
-                 "actions": ["demote"], "trigger": "high_demote", "executed": True, "error": None}]
+        recs = [
+            {
+                "player": "K1",
+                "rank": "entry",
+                "new_rank": "kicked",
+                "weekly_total": 3000,
+                "actions": ["kick"],
+                "trigger": "entry_kick",
+                "executed": True,
+                "error": None,
+            },
+            {
+                "player": "D1",
+                "rank": "high",
+                "new_rank": "mid",
+                "weekly_total": 20000,
+                "actions": ["demote"],
+                "trigger": "high_demote",
+                "executed": True,
+                "error": None,
+            },
+        ]
         cfg = {"contact_text": "若有异议联系群管理员{admin}", "admin": "Boss"}
         p = write_action_report(self.d, "演示公会", recs, cfg)
         c = open(p, encoding="utf-8").read()
@@ -181,8 +208,17 @@ class TestReports(unittest.TestCase):
         self.assertIn("若有异议联系群管理员Boss", c)
 
     def test_action_report_failed_section(self):
-        recs = [{"player": "F1", "rank": "mid", "new_rank": "mid", "weekly_total": 500,
-                 "actions": ["demote"], "executed": True, "error": "权限不足"}]
+        recs = [
+            {
+                "player": "F1",
+                "rank": "mid",
+                "new_rank": "mid",
+                "weekly_total": 500,
+                "actions": ["demote"],
+                "executed": True,
+                "error": "权限不足",
+            }
+        ]
         p = write_action_report(self.d, "G", recs, {"contact_text": "c{admin}", "admin": "A"})
         self.assertIn("【未执行】(1人)", open(p, encoding="utf-8").read())
 
@@ -202,12 +238,14 @@ class TestReports(unittest.TestCase):
         合理兜底,改它反而是在给死分支加行为。
         """
         from guild_auto.domain.reporter import action_display
+
         self.assertEqual(action_display(["unknown_action"]), "未知")
         self.assertEqual(action_display([]), "无")
 
     def test_action_display_real_operations(self):
         """正向:四种真实操作的展示文本与报告口径一致。"""
         from guild_auto.domain.reporter import action_display
+
         self.assertEqual(action_display(["promote"]), "升职(1次)")
         self.assertEqual(action_display(["promote"] * 3), "升职(3次)")
         self.assertEqual(action_display(["demote"]), "降职")
@@ -223,19 +261,19 @@ class TestConfigContract(unittest.TestCase):
 
     def test_ensure_default_creates_once(self):
         self.assertTrue(ensure_default_config(self.path))
-        self.assertFalse(ensure_default_config(self.path))   # 第二次不重建
+        self.assertFalse(ensure_default_config(self.path))  # 第二次不重建
         raw = open(self.path, encoding="utf-8").read()
-        self.assertIn("// ", raw)                            # JSONC 注释存在
+        self.assertIn("// ", raw)  # JSONC 注释存在
 
     def test_load_strips_comments_and_merges_defaults(self):
         ensure_default_config(self.path)
         cfg = load_config(self.path)
-        self.assertEqual(cfg["thresholds"]["high_demote"], 30000)   # 默认值继承
+        self.assertEqual(cfg["thresholds"]["high_demote"], 30000)  # 默认值继承
         self.assertEqual(cfg["log"]["level"], 4)
 
     def test_load_partial_user_config_keeps_defaults(self):
         with open(self.path, "w", encoding="utf-8") as f:
-            f.write('{"admin": "自定义管理员"}')   # 只有部分键
+            f.write('{"admin": "自定义管理员"}')  # 只有部分键
         cfg = load_config(self.path)
         self.assertEqual(cfg["admin"], "自定义管理员")
         self.assertEqual(cfg["guild_qq"], DEFAULT_CONFIG["guild_qq"])  # 其余取默认
@@ -250,38 +288,57 @@ class TestConfigContract(unittest.TestCase):
         self.assertTrue(any("log.level" in m for m in msgs))
 
     def test_validate_accepts_default(self):
-        errors = [lvl for lvl, _ in validate_config(json.loads(json.dumps(DEFAULT_CONFIG)))
-                  if lvl == "error"]
+        errors = [
+            lvl
+            for lvl, _ in validate_config(json.loads(json.dumps(DEFAULT_CONFIG)))
+            if lvl == "error"
+        ]
         self.assertEqual(errors, [])
 
 
 class TestSecurityHardening(unittest.TestCase):
     """第 3 轮安全修复的回归测试:
-      * parsers.validate_player_name 黑名单(伪造面板注入防线)
-      * reporter._safe_guild_name 文件名消毒(路径注入防线)
-      * LogWatcher 轮转后 seek 末尾(陈旧块复活防线)
+    * parsers.validate_player_name 黑名单(伪造面板注入防线)
+    * reporter._safe_guild_name 文件名消毒(路径注入防线)
+    * LogWatcher 轮转后 seek 末尾(陈旧块复活防线)
     """
 
     def test_player_name_blacklist(self):
         from guild_auto.domain.parsers import validate_player_name, ParseError
+
         # 危险名:路径符/●/花括号/控制字符/超长/空 → 全拒
-        for bad in (r"..\..\evil", "A●B", "{0.__class__}", "a/b", 'x"y', "", "x" * 49,
-                    "tab\tname", "nl\nname"):
+        for bad in (
+            r"..\..\evil",
+            "A●B",
+            "{0.__class__}",
+            "a/b",
+            'x"y',
+            "",
+            "x" * 49,
+            "tab\tname",
+            "nl\nname",
+        ):
             with self.assertRaises(ParseError, msg=f"{bad!r} 应被拒绝"):
                 validate_player_name(bad)
         # 真实样本合法名(含空格/中文/下划线)→ 全过
-        for good in ("带空格 演示名", "GuildLeader_01", "ViceAdmin_02", "演示玩家甲",
-                     "一个超长的演示玩家名字被游戏截断成两行"):
+        for good in (
+            "带空格 演示名",
+            "GuildLeader_01",
+            "ViceAdmin_02",
+            "演示玩家甲",
+            "一个超长的演示玩家名字被游戏截断成两行",
+        ):
             self.assertEqual(validate_player_name(good), good)
 
     def test_guild_name_sanitized_for_filename(self):
         from guild_auto.domain.reporter import _safe_guild_name
+
         s = _safe_guild_name("..\\..\\evil")
         self.assertNotIn("\\", s)
         self.assertNotIn("/", s)
         self.assertFalse(s.startswith("."))
-        self.assertEqual(_safe_guild_name("演示公会"), "演示公会")   # 合法名不变
-        self.assertEqual(_safe_guild_name(""), "unknown")        # 空兜底
+        self.assertEqual(_safe_guild_name("演示公会"), "演示公会")  # 合法名不变
+        self.assertEqual(_safe_guild_name(""), "unknown")  # 空兜底
         self.assertEqual(_safe_guild_name(None), "unknown")
 
     def test_long_guild_name_does_not_break_report_writes(self):
@@ -295,23 +352,35 @@ class TestSecurityHardening(unittest.TestCase):
         """
         import shutil
         import tempfile
-        from guild_auto.domain.reporter import (_MAX_GUILD_NAME_LEN, _safe_guild_name,
-                              write_action_report, write_contribution_report)
+        from guild_auto.domain.reporter import (
+            _MAX_GUILD_NAME_LEN,
+            _safe_guild_name,
+            write_action_report,
+            write_contribution_report,
+        )
+
         tmp = tempfile.mkdtemp()
         try:
-            long_name = "超长公会名演示" * 80    # 640 字符,远超真实公会名
+            long_name = "超长公会名演示" * 80  # 640 字符,远超真实公会名
             safe = _safe_guild_name(long_name)
-            self.assertLessEqual(len(safe), _MAX_GUILD_NAME_LEN + 1,
-                                 f"未截断: {len(safe)} 字符")
-            recs = [{"player": "合成玩家甲", "rank": "entry",
-                     "weekly_total": 100, "actions": []}]
-            act = [{"player": "合成玩家甲", "rank": "entry", "new_rank": "low",
-                    "weekly_total": 1, "actions": ["promote"],
-                    "executed": True, "error": None}]
+            self.assertLessEqual(len(safe), _MAX_GUILD_NAME_LEN + 1, f"未截断: {len(safe)} 字符")
+            recs = [{"player": "合成玩家甲", "rank": "entry", "weekly_total": 100, "actions": []}]
+            act = [
+                {
+                    "player": "合成玩家甲",
+                    "rank": "entry",
+                    "new_rank": "low",
+                    "weekly_total": 1,
+                    "actions": ["promote"],
+                    "executed": True,
+                    "error": None,
+                }
+            ]
             # 两份报告都必须写成功(不抛 OSError)
             p1 = write_contribution_report(tmp, long_name, recs, "演示管理员")
-            p2 = write_action_report(tmp, long_name, act,
-                                     {"contact_text": "c{admin}", "admin": "A"})
+            p2 = write_action_report(
+                tmp, long_name, act, {"contact_text": "c{admin}", "admin": "A"}
+            )
             self.assertTrue(os.path.exists(p1))
             self.assertTrue(os.path.exists(p2))
         finally:
@@ -319,6 +388,7 @@ class TestSecurityHardening(unittest.TestCase):
 
     def test_log_rotation_seeks_to_end(self):
         from guild_auto.infrastructure.log_watcher import LogWatcher
+
         d = tempfile.mkdtemp()
         p = os.path.join(d, "latest.log")
         with open(p, "w", encoding="utf-8") as f:

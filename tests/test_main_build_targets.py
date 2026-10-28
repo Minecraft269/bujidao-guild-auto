@@ -20,16 +20,30 @@ import unittest
 from guild_auto.infrastructure import logger  # noqa: E402
 from guild_auto.main import build_targets  # noqa: E402
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
 
 def _groups(**kw):
     """构造 guild["groups"](等级 -> 玩家列表)。"""
-    base = {"leader": [], "vice_leader": [], "admin": [],
-            "high": [], "mid": [], "low": [], "entry": []}
+    base = {
+        "leader": [],
+        "vice_leader": [],
+        "admin": [],
+        "high": [],
+        "mid": [],
+        "low": [],
+        "entry": [],
+    }
     base.update(kw)
     return base
 
@@ -45,8 +59,7 @@ class TestBuildTargetsBasic(unittest.TestCase):
 
     def test_skip_ranks_excluded(self):
         g = _groups(leader=["会长"], admin=["管理"], high=["甲"], entry=["乙"])
-        targets, _ = build_targets(
-            g, scope="all", skip_ranks=("leader", "admin"))
+        targets, _ = build_targets(g, scope="all", skip_ranks=("leader", "admin"))
         self.assertEqual([p for _, p in targets], ["甲", "乙"])
 
     def test_scope_single_rank_only(self):
@@ -76,8 +89,9 @@ class TestBuildTargetsDedup(unittest.TestCase):
         g = _groups(high=["重复玩家"], mid=["重复玩家", "乙"])
         targets, dropped = build_targets(g, scope="all")
         self.assertEqual(dropped, 1)
-        self.assertEqual(targets, [("high", "重复玩家"), ("mid", "乙")],
-                         "必须保留首次出现的等级,且不重复")
+        self.assertEqual(
+            targets, [("high", "重复玩家"), ("mid", "乙")], "必须保留首次出现的等级,且不重复"
+        )
 
     def test_duplicate_cannot_cause_double_execution(self):
         """护栏:重复玩家必须只剩**一条**目标 —— 否则执行阶段会重复发命令。
@@ -89,11 +103,9 @@ class TestBuildTargetsDedup(unittest.TestCase):
         保留哪一条取决于 dict 迭代顺序(面板等级段顺序),那是实现细节;
         这里真正要锁的业务不变式是"一条都不能多"。
         """
-        g = _groups(entry=["危险玩家"], low=["危险玩家"],
-                    mid=["危险玩家"], high=["危险玩家"])
+        g = _groups(entry=["危险玩家"], low=["危险玩家"], mid=["危险玩家"], high=["危险玩家"])
         targets, dropped = build_targets(g, scope="all")
-        self.assertEqual(len(targets), 1,
-                         f"重复玩家产生了 {len(targets)} 条目标")
+        self.assertEqual(len(targets), 1, f"重复玩家产生了 {len(targets)} 条目标")
         self.assertEqual(dropped, 3)
         # 保留下来的那条必须仍是这个玩家(等级取面板首次出现的那一个)
         self.assertEqual(targets[0][1], "危险玩家")
@@ -132,7 +144,8 @@ class TestBuildTargetsDedupWithScope(unittest.TestCase):
     def test_skip_and_dedup_together(self):
         g = _groups(leader=["甲"], high=["甲", "乙"], entry=["乙"])
         targets, dropped = build_targets(
-            g, scope="all", skip_ranks=("leader", "admin", "vice_leader"))
+            g, scope="all", skip_ranks=("leader", "admin", "vice_leader")
+        )
         self.assertEqual([p for _, p in targets], ["甲", "乙"])
         self.assertEqual(dropped, 1)
 

@@ -13,6 +13,7 @@ test_name_lists.py —— 黑白名单与保护名单(阶段 5)
   4. 保护名单只剥夺降职/踢出,**升职仍生效**
   5. 名单不命中时,阈值判定与改造前完全一致(业务规则零改动)
 """
+
 import json
 import unittest
 
@@ -126,6 +127,7 @@ class TestDecideForPlayer(unittest.TestCase):
 
     def test_protected_player_keeps_promote(self):
         from guild_auto.domain.decisions import decide_actions
+
         cfg = self._cfg_with_th(whitelist_protected=["甲"])
         actions, trigger = decide_for_player("甲", "entry", 20000, cfg)
         # 与纯阈值判定逐字对照(不硬编码期望,避免夹具阈值不全导致误判)
@@ -143,13 +145,13 @@ class TestDecideForPlayer(unittest.TestCase):
     def test_unlisted_player_behaves_exactly_as_before(self):
         """名单为空时,判定必须与 decide_actions 逐字一致 —— 回归护栏。"""
         from guild_auto.domain.decisions import decide_actions
+
         cfg = self._cfg_with_th()
         for rank in ("entry", "low", "mid", "high"):
             for weekly in (0, 3000, 4000, 10000, 20000, 29999, 30000, 30001):
                 got = decide_for_player("路人", rank, weekly, cfg)
                 want = decide_actions(rank, weekly, cfg["thresholds"])
-                self.assertEqual(got, want,
-                                 f"rank={rank} weekly={weekly} 的判定被名单逻辑改动了")
+                self.assertEqual(got, want, f"rank={rank} weekly={weekly} 的判定被名单逻辑改动了")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ pending.py —— 待办持久化与断点续做
 字符串拼进 `/guild kick {player}`(命令参数注入),也可能让报告文件名穿越。
 非法项**丢弃并告警**,不让一条坏数据毁掉整个续做流程。
 """
+
 import json
 import os
 
@@ -50,8 +51,9 @@ def load_pending(path):
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         items = data.get("items", []) if isinstance(data, dict) else []
-        raw = [it for it in items
-               if isinstance(it, dict) and it.get("player") and it.get("actions")]
+        raw = [
+            it for it in items if isinstance(it, dict) and it.get("player") and it.get("actions")
+        ]
     except (OSError, json.JSONDecodeError):
         return []
 
@@ -72,12 +74,10 @@ def save_pending(path, guild_name, items):
     """写入待办文件(已完成项已从 items 中移除,未完成的保留)。"""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"guild_name": guild_name or "", "items": items}, f,
-                  ensure_ascii=False, indent=2)
+        json.dump({"guild_name": guild_name or "", "items": items}, f, ensure_ascii=False, indent=2)
 
 
-def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None,
-                input_fn=None):
+def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, input_fn=None):
     """断点续做:读取上次未完成(或失败)的操作,询问后执行,并更新待办文件。
 
     返回 (continue_stat, remaining):是否继续新的统计 + 仍未完成的项。
@@ -93,8 +93,10 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None,
     sw = cfg["switches"]
     console_fn(f"\n=== 发现上次未完成操作 {len(items)} 条(不进行新的统计查询)===")
     for it in items:
-        console_fn(f"  {it['player']}: {'/'.join(it['actions'])} | 等级 {it.get('rank','?')} | "
-                   f"周贡献 {it.get('weekly','?')} | 状态 {it.get('status','pending')}")
+        console_fn(
+            f"  {it['player']}: {'/'.join(it['actions'])} | 等级 {it.get('rank', '?')} | "
+            f"周贡献 {it.get('weekly', '?')} | 状态 {it.get('status', 'pending')}"
+        )
     do_exec = False
     if sw["execution_enabled"]:
         try:
@@ -102,7 +104,7 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None,
             ans = (ans or "").strip().lower()
         except EOFError:
             ans = "n"
-        do_exec = (ans != "n")
+        do_exec = ans != "n"
     else:
         console_fn("(dry-run:不执行,保留待下次)")
 
@@ -111,6 +113,7 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None,
         # 延迟 import:暂停门住在 pause.py,而 pause.py 经 runtime 间接依赖,
         # 模块级 import 会成环
         from guild_auto.application.pause import reset_window_state_after_pause, wait_if_paused
+
         for it in items:
             wait_if_paused()
             # 暂停恢复后重置窗口状态(与主执行循环一致)

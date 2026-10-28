@@ -16,6 +16,7 @@ Mock 铁律在本模块的落地(见 TestNoDeviceTouch / TestMockPolicy):
 
 每个测试都有实质性断言,且能被变异验证打红(见交付 evidence)。
 """
+
 import gzip
 import logging
 import os
@@ -38,8 +39,9 @@ PROJECT_LOGS = os.path.join(PROJECT_ROOT, "logs")
 _GLOBALS = ("_logger", "_log_dir", "_current_level", "_enabled", "_initialized")
 
 ALL_TRACE_CALLS = (
-    lambda: logger.trace_call("f", args=(1,), kwargs={"k": "v"}, result={"r": 2},
-                              exc=ValueError("x")),
+    lambda: logger.trace_call(
+        "f", args=(1,), kwargs={"k": "v"}, result={"r": 2}, exc=ValueError("x")
+    ),
     lambda: logger.trace_return("f", [1]),
     lambda: logger.trace_exception("f", ValueError("x")),
     lambda: logger.trace_file_read("a.txt", 10, 2),
@@ -107,8 +109,9 @@ class LoggerTempCase(unittest.TestCase):
 
     def assertProjectLogsUntouched(self):
         """日志必须只落在临时目录 —— 项目 logs/ 一个字节都不能变。"""
-        self.assertEqual(self._project_logs_state(), self._project_logs_before,
-                         "测试污染了项目 logs/ 目录")
+        self.assertEqual(
+            self._project_logs_state(), self._project_logs_before, "测试污染了项目 logs/ 目录"
+        )
 
     def init_logger(self, level=6, enabled=True, fresh=True, log_dir=None):
         if fresh:
@@ -141,10 +144,17 @@ class TestMockPolicy(LoggerTempCase):
         # 用模块自身 __file__ 定位源码:src-layout 下它不在仓库根,
         # 硬拼 PROJECT_ROOT 会在迁移后指向不存在的路径(静默失去这条守卫)。
         src = open(logger.__file__, encoding="utf-8").read()
-        for banned in ("pyautogui", "winsdk", "winrt", "pyperclip", "OcrEngine",
-                       "clipboard", "time.sleep", "subprocess"):
-            self.assertNotIn(banned, src,
-                             f"logger.py 出现 {banned}:logger 不允许真实设备/进程调用")
+        for banned in (
+            "pyautogui",
+            "winsdk",
+            "winrt",
+            "pyperclip",
+            "OcrEngine",
+            "clipboard",
+            "time.sleep",
+            "subprocess",
+        ):
+            self.assertNotIn(banned, src, f"logger.py 出现 {banned}:logger 不允许真实设备/进程调用")
 
     def test_every_test_writes_only_to_temp_dir(self):
         self.init_logger(level=6)
@@ -176,16 +186,16 @@ class TestLevelGate(LoggerTempCase):
                 self.init_logger(level=lv)
                 for call in ALL_TRACE_CALLS:
                     call()
-                self.assertEqual(fake_log_trace.call_count, 0,
-                                 f"level={lv} 时 trace_* 不得下沉到 log_trace")
+                self.assertEqual(
+                    fake_log_trace.call_count, 0, f"level={lv} 时 trace_* 不得下沉到 log_trace"
+                )
 
     def test_no_snapshot_below_level6(self):
         """闸门是真 return,不是「构造完再丢弃」。"""
         self.init_logger(level=5)
         wire = _Tripwire()
         with mock.patch.object(logger, "log_trace"):
-            logger.trace_call("f", args=(wire,), kwargs={"k": wire},
-                              result=wire, exc=wire)
+            logger.trace_call("f", args=(wire,), kwargs={"k": wire}, result=wire, exc=wire)
             logger.trace_return("f", wire)
             logger.trace_exception("f", wire)
             logger.trace_file_read("p", 1, 1)
@@ -193,15 +203,16 @@ class TestLevelGate(LoggerTempCase):
             logger.trace_thread("e", role=wire)
             logger.trace_queue("put", name="q", depth=wire)
             logger.trace_verify_stage("submit", task_id=wire)
-        self.assertEqual(wire.calls, 0,
-                         "level<6 时不得对参数做任何 str/repr(字符串被提前拼了)")
+        self.assertEqual(wire.calls, 0, "level<6 时不得对参数做任何 str/repr(字符串被提前拼了)")
 
     def test_no_output_when_disabled_even_at_level6(self):
         self.init_logger(level=6, enabled=False)
         for call in ALL_TRACE_CALLS:
             call()
-        self.assertFalse(os.path.exists(os.path.join(self.d, "latest.log")),
-                         "enabled=False 时不得创建 latest.log")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.d, "latest.log")),
+            "enabled=False 时不得创建 latest.log",
+        )
         self.assertProjectLogsUntouched()
 
     def test_no_snapshot_when_disabled(self):
@@ -214,8 +225,7 @@ class TestLevelGate(LoggerTempCase):
         self.init_logger(level=6, enabled=False)
         wire = _Tripwire()
         with mock.patch.object(logger, "log_trace") as fake_log_trace:
-            logger.trace_call("f", args=(wire,), kwargs={"k": wire},
-                              result=wire, exc=wire)
+            logger.trace_call("f", args=(wire,), kwargs={"k": wire}, result=wire, exc=wire)
             logger.trace_return("f", wire)
             logger.trace_exception("f", wire)
             logger.trace_file_read("p", 1, 1)
@@ -223,10 +233,10 @@ class TestLevelGate(LoggerTempCase):
             logger.trace_thread("e", role=wire)
             logger.trace_queue("put", name="q", depth=wire)
             logger.trace_verify_stage("submit", task_id=wire)
-        self.assertEqual(wire.calls, 0,
-                         "enabled=False 时不得对参数做任何 str/repr")
-        self.assertEqual(fake_log_trace.call_count, 0,
-                         "enabled=False 时 trace_* 不得下沉到 log_trace")
+        self.assertEqual(wire.calls, 0, "enabled=False 时不得对参数做任何 str/repr")
+        self.assertEqual(
+            fake_log_trace.call_count, 0, "enabled=False 时 trace_* 不得下沉到 log_trace"
+        )
 
     def test_disabled_writes_no_file_for_any_level(self):
         self.init_logger(level=1, enabled=False)
@@ -237,8 +247,7 @@ class TestLevelGate(LoggerTempCase):
         logger.log_debug("调试")
         logger.log_trace("追踪")
         logger.log_exception("异常", ValueError("x"))
-        self.assertEqual(os.listdir(self.d), [],
-                         "enabled=False 必须零文件写入")
+        self.assertEqual(os.listdir(self.d), [], "enabled=False 必须零文件写入")
         self.assertFalse(logger.is_enabled())
 
 
@@ -251,8 +260,12 @@ class TestLevelFiltering(LoggerTempCase):
     def test_each_level_records_exactly_1_to_n(self):
         marks = {n: f"LV{n}标记" for n in range(1, 7)}
         writers = {
-            1: logger.log_critical, 2: logger.log_error, 3: logger.log_warning,
-            4: logger.log_info, 5: logger.log_debug, 6: logger.log_trace,
+            1: logger.log_critical,
+            2: logger.log_error,
+            3: logger.log_warning,
+            4: logger.log_info,
+            5: logger.log_debug,
+            6: logger.log_trace,
         }
         for lv in range(1, 7):
             d = tempfile.mkdtemp(prefix="logger_lv_")
@@ -264,13 +277,20 @@ class TestLevelFiltering(LoggerTempCase):
             with open(os.path.join(d, "latest.log"), encoding="utf-8") as f:
                 content = f.read()
             recorded = [n for n in range(1, 7) if marks[n] in content]
-            self.assertEqual(recorded, list(range(1, lv + 1)),
-                             f"level {lv} 应记录 1..{lv},实际 {recorded}")
+            self.assertEqual(
+                recorded, list(range(1, lv + 1)), f"level {lv} 应记录 1..{lv},实际 {recorded}"
+            )
 
     def test_level_name_is_english_per_level(self):
         self.init_logger(level=6)
-        for w in (logger.log_critical, logger.log_error, logger.log_warning,
-                  logger.log_info, logger.log_debug, logger.log_trace):
+        for w in (
+            logger.log_critical,
+            logger.log_error,
+            logger.log_warning,
+            logger.log_info,
+            logger.log_debug,
+            logger.log_trace,
+        ):
             w("x")
         content = self.read_log()
         for name in ("[Critical]", "[Error]", "[Warning]", "[Info]", "[Debug]", "[Trace]"):
@@ -281,8 +301,7 @@ class TestLevelFiltering(LoggerTempCase):
         with mock.patch.object(logging.Logger, "log") as fake_log:
             logger.log_critical("无人接收")
             logger.log_trace("无人接收")
-        self.assertEqual(fake_log.call_count, 0,
-                         "_logger is None 时 _log 必须直接 return")
+        self.assertEqual(fake_log.call_count, 0, "_logger is None 时 _log 必须直接 return")
 
     def test_level_clamped_to_1_6(self):
         self.init_logger(level=99)
@@ -410,16 +429,22 @@ class TestTraceCallChain(LoggerTempCase):
         self.assertEqual(self.messages(), ["TRACE_CALL mod.f | ENTER"])
 
     def test_trace_call_all_dimensions(self):
-        logger.trace_call("mod.f", args=("P1",), kwargs={"weekly": True},
-                          result={"actions": ["加入公会"]})
-        self.assertEqual(self.messages(),
-                         ["TRACE_CALL mod.f | ENTER | args=('P1',) | "
-                          "kwargs={'weekly': True} | → {'actions': ['加入公会']}"])
+        logger.trace_call(
+            "mod.f", args=("P1",), kwargs={"weekly": True}, result={"actions": ["加入公会"]}
+        )
+        self.assertEqual(
+            self.messages(),
+            [
+                "TRACE_CALL mod.f | ENTER | args=('P1',) | "
+                "kwargs={'weekly': True} | → {'actions': ['加入公会']}"
+            ],
+        )
 
     def test_trace_call_with_exception(self):
         logger.trace_call("mod.f", exc=ValueError("boom"))
-        self.assertEqual(self.messages(),
-                         ["TRACE_CALL mod.f | ENTER | EXCEPTION ValueError('boom')"])
+        self.assertEqual(
+            self.messages(), ["TRACE_CALL mod.f | ENTER | EXCEPTION ValueError('boom')"]
+        )
 
     def test_trace_call_falsy_args_omitted(self):
         """空 args / 空 kwargs / None result 不产生空片段。"""
@@ -429,14 +454,14 @@ class TestTraceCallChain(LoggerTempCase):
     def test_trace_return_with_and_without_result(self):
         logger.trace_return("mod.r", {"ok": True})
         logger.trace_return("mod.r")
-        self.assertEqual(self.messages(),
-                         ["TRACE_CALL mod.r | RETURN | → {'ok': True}",
-                          "TRACE_CALL mod.r | RETURN"])
+        self.assertEqual(
+            self.messages(),
+            ["TRACE_CALL mod.r | RETURN | → {'ok': True}", "TRACE_CALL mod.r | RETURN"],
+        )
 
     def test_trace_exception_body(self):
         logger.trace_exception("mod.bad", KeyError("k"))
-        self.assertEqual(self.messages(),
-                         ["TRACE_CALL mod.bad | EXCEPTION | KeyError('k')"])
+        self.assertEqual(self.messages(), ["TRACE_CALL mod.bad | EXCEPTION | KeyError('k')"])
 
 
 # ---------------------------------------------------------------------------
@@ -449,8 +474,7 @@ class TestTraceFile(LoggerTempCase):
 
     def test_file_read_all_dimensions(self):
         logger.trace_file_read("config.json", 12631, 412)
-        self.assertEqual(self.messages(),
-                         ["TRACE_FILE_READ config.json (12631 bytes, 412 lines)"])
+        self.assertEqual(self.messages(), ["TRACE_FILE_READ config.json (12631 bytes, 412 lines)"])
 
     def test_file_read_bytes_only(self):
         logger.trace_file_read("a.txt", 123)
@@ -463,13 +487,11 @@ class TestTraceFile(LoggerTempCase):
     def test_file_read_zero_size_is_kept(self):
         """0 是有效字节数,不能被当成缺省丢掉。"""
         logger.trace_file_read("empty.txt", 0, 0)
-        self.assertEqual(self.messages(),
-                         ["TRACE_FILE_READ empty.txt (0 bytes, 0 lines)"])
+        self.assertEqual(self.messages(), ["TRACE_FILE_READ empty.txt (0 bytes, 0 lines)"])
 
     def test_file_write_all_dimensions(self):
         logger.trace_file_write("reports/r.json", 88, 3)
-        self.assertEqual(self.messages(),
-                         ["TRACE_FILE_WRITE reports/r.json (88 bytes, 3 lines)"])
+        self.assertEqual(self.messages(), ["TRACE_FILE_WRITE reports/r.json (88 bytes, 3 lines)"])
 
     def test_file_write_bytes_only(self):
         logger.trace_file_write("reports/r.json", 88)
@@ -502,14 +524,13 @@ class TestTraceCodeLocation(LoggerTempCase):
 
     def test_detail_plus_fields(self):
         logger.trace_code_location("main.execute", "player=P1", attempt=1, retry=False)
-        self.assertEqual(self.messages(),
-                         ["TRACE_LOCATION main.execute | player=P1 | "
-                          "attempt=1 | retry=False"])
+        self.assertEqual(
+            self.messages(), ["TRACE_LOCATION main.execute | player=P1 | attempt=1 | retry=False"]
+        )
 
     def test_fields_only(self):
         logger.trace_code_location("main.execute", attempt=2)
-        self.assertEqual(self.messages(),
-                         ["TRACE_LOCATION main.execute | attempt=2"])
+        self.assertEqual(self.messages(), ["TRACE_LOCATION main.execute | attempt=2"])
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +555,8 @@ class TestTraceThread(LoggerTempCase):
         logger.trace_thread("start", thread=t)
         self.assertEqual(
             self.messages(),
-            ["TRACE_THREAD start | thread=verify-1 | ident=4242 | "
-             "alive=True | daemon=True"])
+            ["TRACE_THREAD start | thread=verify-1 | ident=4242 | alive=True | daemon=True"],
+        )
 
     def test_dead_thread_reported_not_alive(self):
         t = _FakeThread("verify-2", 7, alive=False, daemon=False)
@@ -547,8 +568,11 @@ class TestTraceThread(LoggerTempCase):
         logger.trace_thread("submit", thread=t, queue_depth=3, task="T1")
         self.assertEqual(
             self.messages(),
-            ["TRACE_THREAD submit | thread=w | ident=1 | alive=True | "
-             "daemon=False | queue_depth=3 | task=T1"])
+            [
+                "TRACE_THREAD submit | thread=w | ident=1 | alive=True | "
+                "daemon=False | queue_depth=3 | task=T1"
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -600,8 +624,7 @@ class TestTraceQueue(LoggerTempCase):
 
     def test_fields_appended(self):
         logger.trace_queue("task_done", name="tasks", depth=0, task="T1")
-        self.assertEqual(self.messages(),
-                         ["TRACE_QUEUE tasks.task_done | depth=0 | task=T1"])
+        self.assertEqual(self.messages(), ["TRACE_QUEUE tasks.task_done | depth=0 | task=T1"])
 
     def test_queue_operations_are_log_only(self):
         """埋点只记日志,绝不真的动队列。"""
@@ -626,10 +649,13 @@ class TestTraceVerifyStage(LoggerTempCase):
         """提交→发送→读日志→判定→重试→完成 六阶段连续可读。"""
         for s in logger.VERIFY_STAGES:
             logger.trace_verify_stage(s, task_id="T1", player="P1")
-        self.assertEqual(self.messages(),
-                         [f"TRACE_VERIFY {s} | task_id=T1 | player=P1"
-                          for s in ("submit", "send", "read_log", "judge",
-                                    "retry", "done")])
+        self.assertEqual(
+            self.messages(),
+            [
+                f"TRACE_VERIFY {s} | task_id=T1 | player=P1"
+                for s in ("submit", "send", "read_log", "judge", "retry", "done")
+            ],
+        )
 
     def test_stage_only(self):
         logger.trace_verify_stage("submit")
@@ -646,8 +672,8 @@ class TestTraceVerifyStage(LoggerTempCase):
     def test_fields_carry_verdict_details(self):
         logger.trace_verify_stage("judge", task_id="T1", ok=True, reason="匹配成功")
         self.assertEqual(
-            self.messages(),
-            ["TRACE_VERIFY judge | task_id=T1 | ok=True | reason=匹配成功"])
+            self.messages(), ["TRACE_VERIFY judge | task_id=T1 | ok=True | reason=匹配成功"]
+        )
 
     def test_optional_ids_omitted_when_none(self):
         logger.trace_verify_stage("done", task_id=None, player=None)
@@ -685,14 +711,13 @@ class TestArchiveNaming(LoggerTempCase):
     def test_end_to_end_third_archive_of_day(self):
         """业务场景 2(端到端):当天第 3 份归档落到 app-D-3.gz,三份内容各自独立。"""
         for i in (1, 2, 3):
-            logger._initialized = False               # 每次都算「新进程」
+            logger._initialized = False  # 每次都算「新进程」
             logger.init_logger(log_dir=self.d, level=4)
             logger.log_info(f"第{i}次运行")
-            logger._initialized = False               # 收尾:让下一次循环归档本轮
+            logger._initialized = False  # 收尾:让下一次循环归档本轮
         logger._initialized = False
-        logger.init_logger(log_dir=self.d, level=4)   # 触发第 3 次归档
-        for suffix, body in (("", "第1次运行"), ("-2", "第2次运行"),
-                             ("-3", "第3次运行")):
+        logger.init_logger(log_dir=self.d, level=4)  # 触发第 3 次归档
+        for suffix, body in (("", "第1次运行"), ("-2", "第2次运行"), ("-3", "第3次运行")):
             gz = os.path.join(self.d, f"app-{TODAY}{suffix}.gz")
             self.assertTrue(os.path.exists(gz), f"缺少 {gz}，目录={os.listdir(self.d)}")
             with gzip.open(gz, "rt", encoding="utf-8") as f:
@@ -711,8 +736,7 @@ class TestArchiveNaming(LoggerTempCase):
             f.write("本轮真实内容")
         logger._initialized = False
         logger.init_logger(log_dir=self.d, level=4)
-        with gzip.open(os.path.join(self.d, f"app-{TODAY}.gz"), "rt",
-                       encoding="utf-8") as f:
+        with gzip.open(os.path.join(self.d, f"app-{TODAY}.gz"), "rt", encoding="utf-8") as f:
             content = f.read()
         self.assertIn("本轮真实内容", content)
         self.assertNotIn("垃圾ZZZ", content)
@@ -723,12 +747,10 @@ class TestArchiveNaming(LoggerTempCase):
         self._seed_gz(f"app-{TODAY}-2.gz", "既有归档内容QQQ")
         with open(os.path.join(self.d, "latest.log"), "w", encoding="utf-8") as f:
             f.write("新运行内容")
-        with mock.patch.object(logger, "_next_archive_name",
-                               return_value=f"app-{TODAY}-2"):
+        with mock.patch.object(logger, "_next_archive_name", return_value=f"app-{TODAY}-2"):
             logger._initialized = False
             logger.init_logger(log_dir=self.d, level=4)
-        with gzip.open(os.path.join(self.d, f"app-{TODAY}-2.gz"), "rt",
-                       encoding="utf-8") as f:
+        with gzip.open(os.path.join(self.d, f"app-{TODAY}-2.gz"), "rt", encoding="utf-8") as f:
             self.assertEqual(f.read(), "既有归档内容QQQ", "既有归档被覆盖了")
         fallback = os.path.join(self.d, f"app-{TODAY}-2-x.gz")
         self.assertTrue(os.path.exists(fallback), os.listdir(self.d))
@@ -745,8 +767,9 @@ class TestArchiveNaming(LoggerTempCase):
         self.assertEqual(name, f"app-{TODAY}.gz")
         with gzip.open(os.path.join(self.d, name), "rt", encoding="utf-8") as f:
             self.assertIn("压缩内容ABC", f.read())
-        self.assertFalse(os.path.exists(os.path.join(self.d, f"app-{TODAY}.log")),
-                         "中间 .log 未删除")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.d, f"app-{TODAY}.log")), "中间 .log 未删除"
+        )
 
     def test_already_cleaned_intermediate_is_not_deleted_twice(self):
         """中间 .log 已被外部清掉时,finally 里的 os.remove 不能炸。
@@ -768,8 +791,10 @@ class TestArchiveNaming(LoggerTempCase):
             f_out.write(f_in.read())
             state["vanished"] = True  # 模拟外部把中间 .log 删了
 
-        with mock.patch.object(logger.shutil, "copyfileobj", _copy_then_vanish), \
-                mock.patch.object(logger.os.path, "exists", _exists):
+        with (
+            mock.patch.object(logger.shutil, "copyfileobj", _copy_then_vanish),
+            mock.patch.object(logger.os.path, "exists", _exists),
+        ):
             name = logger._archive_old_latest(self.d)
         self.assertEqual(name, f"app-{TODAY}.gz")
         self.assertTrue(state["vanished"], "本用例的前提没生效,分支没走到")
@@ -783,8 +808,7 @@ class TestArchiveFailure(LoggerTempCase):
     def test_move_failure_propagates_and_leaves_no_raw(self):
         with open(os.path.join(self.d, "latest.log"), "w", encoding="utf-8") as f:
             f.write("待归档")
-        with mock.patch.object(logger.shutil, "move",
-                               side_effect=PermissionError("文件被占用")):
+        with mock.patch.object(logger.shutil, "move", side_effect=PermissionError("文件被占用")):
             with self.assertRaises(PermissionError):
                 logger._archive_old_latest(self.d)
         self.assertFalse(os.path.exists(os.path.join(self.d, f"app-{TODAY}.log")))
@@ -793,18 +817,18 @@ class TestArchiveFailure(LoggerTempCase):
     def test_gzip_failure_removes_intermediate_log(self):
         with open(os.path.join(self.d, "latest.log"), "w", encoding="utf-8") as f:
             f.write("待压缩")
-        with mock.patch.object(logger.gzip, "GzipFile",
-                               side_effect=OSError("磁盘满")):
+        with mock.patch.object(logger.gzip, "GzipFile", side_effect=OSError("磁盘满")):
             with self.assertRaises(OSError):
                 logger._archive_old_latest(self.d)
-        self.assertFalse(os.path.exists(os.path.join(self.d, f"app-{TODAY}.log")),
-                         "压缩失败后必须删掉中间 .log,不留残骸")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.d, f"app-{TODAY}.log")),
+            "压缩失败后必须删掉中间 .log,不留残骸",
+        )
 
     def test_makedirs_failure_propagates(self):
         bad = os.path.join(self.d, "logs")
         logger._initialized = False  # 明确起点,不依赖别的测试文件留下的全局状态
-        with mock.patch.object(logger.os, "makedirs",
-                               side_effect=PermissionError("无权限")):
+        with mock.patch.object(logger.os, "makedirs", side_effect=PermissionError("无权限")):
             with self.assertRaises(PermissionError):
                 logger.init_logger(log_dir=bad, level=4)
         self.assertFalse(os.path.exists(bad))
@@ -823,12 +847,15 @@ class TestArchiveFailure(LoggerTempCase):
 class TestInitLifecycle(LoggerTempCase):
     def test_repeat_init_does_not_archive_current_run(self):
         """业务场景 3:连续两次 init_logger 只归档一次(第二次不误伤本轮)。"""
-        logger.init_logger(log_dir=self.d, level=4)   # 已初始化标志由基类 setUp 复位
+        logger.init_logger(log_dir=self.d, level=4)  # 已初始化标志由基类 setUp 复位
         logger.log_info("第一次写的内容")
-        logger.init_logger(log_dir=self.d, level=4)   # 不复位 _initialized
+        logger.init_logger(log_dir=self.d, level=4)  # 不复位 _initialized
         logger.log_info("第二次写的内容")
-        self.assertEqual([n for n in os.listdir(self.d) if n.endswith(".gz")], [],
-                         "同一轮内重复 init 不得产生归档")
+        self.assertEqual(
+            [n for n in os.listdir(self.d) if n.endswith(".gz")],
+            [],
+            "同一轮内重复 init 不得产生归档",
+        )
         content = self.read_log()
         self.assertIn("第一次写的内容", content, "重复 init 后日志被截断了")
         self.assertIn("第二次写的内容", content)
@@ -836,7 +863,7 @@ class TestInitLifecycle(LoggerTempCase):
     def test_fresh_init_archives_previous_run(self):
         logger.init_logger(log_dir=self.d, level=4)
         logger.log_info("上一轮")
-        logger._initialized = False               # 模拟新进程
+        logger._initialized = False  # 模拟新进程
         logger.init_logger(log_dir=self.d, level=4)
         gz = os.path.join(self.d, f"app-{TODAY}.gz")
         self.assertTrue(os.path.exists(gz))
@@ -861,20 +888,25 @@ class TestInitLifecycle(LoggerTempCase):
         for lv in (4, 5, 6):
             logger._initialized = False
             logger.init_logger(log_dir=self.d, level=lv)
-        self.assertEqual(len(logger._logger.handlers), 1,
-                         "重复 init 叠加了 handler,同一行会被写多遍")
+        self.assertEqual(
+            len(logger._logger.handlers), 1, "重复 init 叠加了 handler,同一行会被写多遍"
+        )
         logger.log_info("只写一次")
         self.assertEqual(self.read_log().count("只写一次"), 1)
 
     def test_threshold_follows_level(self):
-        for lv, expect in ((1, logging.CRITICAL), (2, logging.ERROR),
-                           (3, logging.WARNING), (4, logging.INFO),
-                           (5, logging.DEBUG), (6, logger.TRACE_LEVEL)):
+        for lv, expect in (
+            (1, logging.CRITICAL),
+            (2, logging.ERROR),
+            (3, logging.WARNING),
+            (4, logging.INFO),
+            (5, logging.DEBUG),
+            (6, logger.TRACE_LEVEL),
+        ):
             logger._initialized = False
             lg = logger.init_logger(log_dir=self.d, level=lv)
             self.assertEqual(lg.level, expect, f"level {lv} 阈值映射错误")
-            self.assertEqual(lg.handlers[0].level, expect,
-                             f"level {lv} 的 handler 阈值未同步")
+            self.assertEqual(lg.handlers[0].level, expect, f"level {lv} 的 handler 阈值未同步")
 
     def test_concurrent_init_archives_once(self):
         """多线程同时 init 只允许一个进入归档分支。"""
@@ -895,8 +927,11 @@ class TestInitLifecycle(LoggerTempCase):
         for t in threads:
             t.join()
         self.assertEqual(errors, [])
-        self.assertEqual([n for n in os.listdir(self.d) if n.endswith(".gz")],
-                         [f"app-{TODAY}.gz"], "并发 init 产生了重复归档")
+        self.assertEqual(
+            [n for n in os.listdir(self.d) if n.endswith(".gz")],
+            [f"app-{TODAY}.gz"],
+            "并发 init 产生了重复归档",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -904,8 +939,7 @@ class TestInitLifecycle(LoggerTempCase):
 # ---------------------------------------------------------------------------
 class TestTimeOffset(LoggerTempCase):
     def test_relative_offset_format(self):
-        with mock.patch.object(logger._time, "monotonic",
-                               return_value=logger._START_TIME + 1.5):
+        with mock.patch.object(logger._time, "monotonic", return_value=logger._START_TIME + 1.5):
             self.init_logger(level=4)
             logger.log_info("带偏移的行")
         line = self.lines_of()[0]
@@ -913,8 +947,7 @@ class TestTimeOffset(LoggerTempCase):
         self.assertNotIn("(+0.000s)", line)
 
     def test_offset_zero_at_startup(self):
-        with mock.patch.object(logger._time, "monotonic",
-                               return_value=logger._START_TIME):
+        with mock.patch.object(logger._time, "monotonic", return_value=logger._START_TIME):
             self.init_logger(level=4)
             logger.log_info("启动瞬间")
         self.assertIn("(+0.000s)", self.lines_of()[0])
@@ -922,8 +955,7 @@ class TestTimeOffset(LoggerTempCase):
     def test_offset_tracks_monotonic_not_wallclock(self):
         """偏移取自 monotonic,不随系统时间跳变。"""
         self.init_logger(level=4)
-        with mock.patch.object(logger._time, "monotonic",
-                               return_value=logger._START_TIME + 61.25):
+        with mock.patch.object(logger._time, "monotonic", return_value=logger._START_TIME + 61.25):
             logger.log_info("一分钟后")
         self.assertIn("(+61.250s)", self.lines_of()[0])
 
@@ -932,16 +964,17 @@ class TestTimeOffset(LoggerTempCase):
         logger.log_info("正文内容")
         line = self.lines_of()[0]
         self.assertRegex(
-            line, r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} "
-                  r"\[Info\] 正文内容 \(\+\d+\.\d{3}s\)$")
+            line,
+            r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} "
+            r"\[Info\] 正文内容 \(\+\d+\.\d{3}s\)$",
+        )
 
     def test_unknown_level_keeps_original_name(self):
         """LEVEL_EN 没有的级别保留 logging 原名(Level 25),不吞掉。"""
         fmt = logger._Formatter("%(levelname)s %(message)s")
         rec = logging.LogRecord("guild_auto", 25, __file__, 1, "自定义级别", (), None)
         self.assertEqual(rec.levelname, "Level 25")
-        with mock.patch.object(logger._time, "monotonic",
-                               return_value=logger._START_TIME + 0.5):
+        with mock.patch.object(logger._time, "monotonic", return_value=logger._START_TIME + 0.5):
             out = fmt.format(rec)
         self.assertEqual(out, "Level 25 自定义级别 (+0.500s)")
         self.assertEqual(rec.levelname, "Level 25")
@@ -949,11 +982,9 @@ class TestTimeOffset(LoggerTempCase):
     def test_known_level_rewrites_name_in_place(self):
         """命中 LEVEL_EN 的级别名被就地改写成英文显示名。"""
         fmt = logger._Formatter("%(levelname)s %(message)s")
-        rec = logging.LogRecord("guild_auto", logger.TRACE_LEVEL, __file__, 1,
-                                "追踪正文", (), None)
+        rec = logging.LogRecord("guild_auto", logger.TRACE_LEVEL, __file__, 1, "追踪正文", (), None)
         self.assertEqual(rec.levelname, "Level 5")
-        with mock.patch.object(logger._time, "monotonic",
-                               return_value=logger._START_TIME + 2.25):
+        with mock.patch.object(logger._time, "monotonic", return_value=logger._START_TIME + 2.25):
             out = fmt.format(rec)
         self.assertEqual(out, "Trace 追踪正文 (+2.250s)")
         self.assertEqual(rec.levelname, "Trace")
@@ -963,24 +994,37 @@ class TestLevelConstants(unittest.TestCase):
     """6 级语义是业务规格,常量必须锁死。"""
 
     def test_level_map(self):
-        self.assertEqual(logger.LEVEL_MAP, {
-            1: logging.CRITICAL, 2: logging.ERROR, 3: logging.WARNING,
-            4: logging.INFO, 5: logging.DEBUG, 6: 5,
-        })
+        self.assertEqual(
+            logger.LEVEL_MAP,
+            {
+                1: logging.CRITICAL,
+                2: logging.ERROR,
+                3: logging.WARNING,
+                4: logging.INFO,
+                5: logging.DEBUG,
+                6: 5,
+            },
+        )
         self.assertEqual(logger.TRACE_LEVEL, 5)
-        self.assertLess(logger.TRACE_LEVEL, logging.DEBUG,
-                        "TRACE 必须比 DEBUG 更详细")
+        self.assertLess(logger.TRACE_LEVEL, logging.DEBUG, "TRACE 必须比 DEBUG 更详细")
 
     def test_level_names(self):
-        self.assertEqual(logger.LEVEL_EN, {
-            logging.CRITICAL: "Critical", logging.ERROR: "Error",
-            logging.WARNING: "Warning", logging.INFO: "Info",
-            logging.DEBUG: "Debug", 5: "Trace",
-        })
+        self.assertEqual(
+            logger.LEVEL_EN,
+            {
+                logging.CRITICAL: "Critical",
+                logging.ERROR: "Error",
+                logging.WARNING: "Warning",
+                logging.INFO: "Info",
+                logging.DEBUG: "Debug",
+                5: "Trace",
+            },
+        )
 
     def test_verify_stage_order(self):
-        self.assertEqual(logger.VERIFY_STAGES,
-                         ("submit", "send", "read_log", "judge", "retry", "done"))
+        self.assertEqual(
+            logger.VERIFY_STAGES, ("submit", "send", "read_log", "judge", "retry", "done")
+        )
 
     def test_snap_max(self):
         self.assertEqual(logger._SNAP_MAX, 200)

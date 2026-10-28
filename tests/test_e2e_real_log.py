@@ -15,6 +15,7 @@ test_e2e_real_log.py —— 用真实游戏日志驱动的端到端集成测试
 未设置或文件不存在时,本模块的真实日志用例自动 skip —— CI 上恒 skip,
 本地真机验收时设置该变量即可运行。
 """
+
 import os
 import sys
 import time
@@ -37,10 +38,21 @@ REAL_LOG = os.environ.get("GUILD_TEST_GAME_LOG", "")
 def _setup_fake_logger():
     """注入最小 logger,避免依赖 logger.init_logger(后者要写文件)。"""
     if not hasattr(logger, "log_debug"):
-        def _noop(*_a, **_kw): pass
-        for n in ("log_debug", "log_info", "log_warning", "log_error",
-                  "log_exception", "log_critical", "trace_code_location",
-                  "trace_return", "trace_file_read"):
+
+        def _noop(*_a, **_kw):
+            pass
+
+        for n in (
+            "log_debug",
+            "log_info",
+            "log_warning",
+            "log_error",
+            "log_exception",
+            "log_critical",
+            "trace_code_location",
+            "trace_return",
+            "trace_file_read",
+        ):
             setattr(logger, n, _noop)
 
 
@@ -64,13 +76,13 @@ class TestE2EOnRealLog(unittest.TestCase):
     def test_real_log_has_at_least_one_guild_list_block(self):
         """/guild list 块起始(--------------------公会---------------------)
         至少出现 1 次。网易版:[CHAT] 之后整条消息是单行物理行,内含分隔线 + 面板内容。"""
-        count = sum(1 for ln in self.lines
-                    if "[CHAT]" in ln and "公会" in ln and "----" in ln)
+        count = sum(1 for ln in self.lines if "[CHAT]" in ln and "公会" in ln and "----" in ln)
         self.assertGreaterEqual(count, 1, "未在 latest.log 中发现公会面板起始线")
 
     def test_real_log_has_at_least_one_guild_member_block(self):
         """/guild member 块以日期明细模式(YYYY-MM-DD)开头。"""
         import re
+
         date_re = re.compile(r"\d{4}-\d{2}-\d{2}")
         weekly_hits = 0
         for ln in self.lines:
@@ -120,9 +132,11 @@ class TestExtractChatBlockOnRealBlock(unittest.TestCase):
                 if len(stripped) >= 20 and set(stripped) == {"-"}:
                     list_end_idx = j
                     break
-        cls.list_block_lines = (lines[list_start_idx:list_end_idx + 1]
-                                if list_start_idx is not None and list_end_idx is not None
-                                else [])
+        cls.list_block_lines = (
+            lines[list_start_idx : list_end_idx + 1]
+            if list_start_idx is not None and list_end_idx is not None
+            else []
+        )
         # 2) /guild member 块:找同时含 "----" 和 "成员贡献"等关键字的物理行
         member_block_lines = []
         for i, ln in enumerate(lines):
@@ -147,8 +161,7 @@ class TestExtractChatBlockOnRealBlock(unittest.TestCase):
         self.assertGreater(len(block), 0)
         joined = "\n".join(block)
         self.assertTrue(
-            "成员" in joined or "会长" in joined,
-            f"切出的块不像公会面板:前 200 字={joined[:200]!r}"
+            "成员" in joined or "会长" in joined, f"切出的块不像公会面板:前 200 字={joined[:200]!r}"
         )
 
     def test_member_block_extracted_nonempty(self):
@@ -188,6 +201,7 @@ class TestFirstCommandGuard(unittest.TestCase):
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_min_wait_blocks_residual(self):
@@ -197,6 +211,7 @@ class TestFirstCommandGuard(unittest.TestCase):
         所以本测试必须保持"文件里没有可被 extract 的新内容"才能验证守卫真起作用。
         """
         from guild_auto.infrastructure.log_watcher import LogWatcher
+
         # 写一个文件:只有"非面板"内容,没有 ---- 块;discard_buffer 跳完后
         # wait 永远拿不到完整块 → 必须依赖 timeout 退出
         nonblock_path = os.path.join(self.tmpdir, "nonblock.log")
@@ -204,7 +219,7 @@ class TestFirstCommandGuard(unittest.TestCase):
             f.write("[01月2026 10:00:00.000] [main/INFO] [ChatComponent/]: [CHAT] 普通聊天消息\n")
             f.write("[01月2026 10:00:01.000] [main/INFO] [ChatComponent/]: [CHAT] 又一条聊天\n")
         w = LogWatcher(nonblock_path, encoding="utf-8", poll_interval_ms=50)
-        w.open()        # 默认 seek 到末尾,文件全读
+        w.open()  # 默认 seek 到末尾,文件全读
         # 现在追加一个完整块(模拟 first_command 启动后 0s 时游戏就已写好的块)
         with open(nonblock_path, "a", encoding="utf-8") as f:
             f.write(
@@ -226,6 +241,7 @@ class TestFirstCommandGuard(unittest.TestCase):
         """min_wait_after_start + timeout < min_wait + 文件无新内容 → 必须返回 None。
         验证:守卫拦的是"起步 N 秒内不返回",文件无新内容情况下,wait 走满 timeout 就退出。"""
         from guild_auto.infrastructure.log_watcher import LogWatcher
+
         # 文件只有普通聊天,无 ---- 块 → extract 永远拿不到块
         nb_path = os.path.join(self.tmpdir, "no_block.log")
         with open(nb_path, "w", encoding="utf-8") as f:
@@ -265,10 +281,14 @@ class TestPauseEvent(unittest.TestCase):
         """
         from guild_auto import main
         from guild_auto.application import runtime
+
         self.assertTrue(hasattr(main, "_pause_event"))
         self.assertIsInstance(main._pause_event, threading.Event)
-        self.assertIs(main._pause_event, runtime._pause_event,
-                      "main._pause_event 必须与 runtime 的同为一个对象")
+        self.assertIs(
+            main._pause_event,
+            runtime._pause_event,
+            "main._pause_event 必须与 runtime 的同为一个对象",
+        )
         self.assertIs(main._pause_lock, runtime._pause_lock)
 
     def test_toggle_pause_flips_event(self):
@@ -279,24 +299,27 @@ class TestPauseEvent(unittest.TestCase):
         """
         from guild_auto.application import runtime
         from guild_auto.application.pause import _toggle_pause
+
         runtime.set_paused(False)
         runtime._pause_event.clear()
-        runtime.consume_reset_flag()          # 清掉可能残留的重置标志
+        runtime.consume_reset_flag()  # 清掉可能残留的重置标志
         # 暂停 → set 事件
         _toggle_pause()
         self.assertTrue(runtime.is_paused(), "_toggle_pause 未把状态置为暂停")
-        self.assertTrue(runtime._pause_event.is_set(),
-                        "暂停必须置位 _pause_event,否则阻塞中的调用收不到通知")
-        self.assertFalse(runtime.consume_reset_flag(),
-                         "暂停动作本身不该置 _reset_needed(那是恢复时才需要的)")
+        self.assertTrue(
+            runtime._pause_event.is_set(), "暂停必须置位 _pause_event,否则阻塞中的调用收不到通知"
+        )
+        self.assertFalse(
+            runtime.consume_reset_flag(), "暂停动作本身不该置 _reset_needed(那是恢复时才需要的)"
+        )
 
         # 恢复 → clear 事件 + 置重置标志
         _toggle_pause()
         self.assertFalse(runtime.is_paused(), "_toggle_pause 未恢复暂停状态")
-        self.assertFalse(runtime._pause_event.is_set(),
-                         "恢复必须清掉 _pause_event")
-        self.assertTrue(runtime.consume_reset_flag(),
-                        "恢复后必须置 _reset_needed(恢复后要重置界面)")
+        self.assertFalse(runtime._pause_event.is_set(), "恢复必须清掉 _pause_event")
+        self.assertTrue(
+            runtime.consume_reset_flag(), "恢复后必须置 _reset_needed(恢复后要重置界面)"
+        )
 
 
 class TestCtrlCMenuModuleImports(unittest.TestCase):
@@ -309,6 +332,7 @@ class TestCtrlCMenuModuleImports(unittest.TestCase):
         """_ctrlc_pause_menu 在源码中应包含 msvcrt 路径(Windows 走非阻塞轮询)。"""
         from guild_auto import main
         import inspect
+
         src = inspect.getsource(main._ctrlc_pause_menu)
         self.assertIn("msvcrt", src, "_ctrlc_pause_menu 未走 msvcrt 路径")
         self.assertIn("kbhit", src, "未使用 kbhit 非阻塞轮询")
@@ -317,8 +341,10 @@ class TestCtrlCMenuModuleImports(unittest.TestCase):
     def test_fallback_function_exists(self):
         """非 Windows 平台应回退到 _ctrlc_pause_menu_fallback。"""
         from guild_auto import main
+
         self.assertTrue(hasattr(main, "_ctrlc_pause_menu_fallback"))
         import inspect
+
         src = inspect.getsource(main._ctrlc_pause_menu_fallback)
         self.assertIn("BaseException", src, "fallback 必须捕获 BaseException 否则 queue 永久空")
 
@@ -332,6 +358,7 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
     def setUp(self):
         _setup_fake_logger()
         from guild_auto.application import runtime
+
         runtime.set_force_stop(False)
         runtime.set_paused(False)
         runtime._pause_event.clear()
@@ -342,10 +369,10 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
         from pynput.keyboard import Key
         from guild_auto import main
         from guild_auto.application import runtime
-        runtime.set_force_stop(False)         # 先确保初始态
+
+        runtime.set_force_stop(False)  # 先确保初始态
         main._on_press(Key.ctrl_l)
-        self.assertFalse(runtime.is_force_stop(),
-                         "Key.ctrl_l 单独按下不应触发 _force_stop")
+        self.assertFalse(runtime.is_force_stop(), "Key.ctrl_l 单独按下不应触发 _force_stop")
 
     def test_ctrl_v_paste_does_NOT_trigger_force_stop(self):
         """Ctrl+V(脚本粘贴聊天命令)→ on_press 收到 '\x16' → _on_press 必须不动 _force_stop。
@@ -353,11 +380,11 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
         from pynput.keyboard import KeyCode
         from guild_auto import main
         from guild_auto.application import runtime
+
         runtime.set_force_stop(False)
         # pynput 报 Ctrl+V 是 KeyCode(v_char='\x16')
-        main._on_press(KeyCode.from_char('\x16'))
-        self.assertFalse(runtime.is_force_stop(),
-                         "Ctrl+V(paste) 不应触发 _force_stop")
+        main._on_press(KeyCode.from_char("\x16"))
+        self.assertFalse(runtime.is_force_stop(), "Ctrl+V(paste) 不应触发 _force_stop")
 
     def test_real_ctrl_c_does_trigger_force_stop(self):
         """真实 Ctrl+C → on_press 收到 '\x03' → on_press 必须主动发 CTRL_C_EVENT
@@ -369,21 +396,30 @@ class TestOnPressCtrlCDetection(unittest.TestCase):
         from unittest.mock import patch
         from guild_auto import main
         from guild_auto.application import runtime
+
         runtime.set_force_stop(False)
         # 验证 on_press 源码含 os.kill + CTRL_C_EVENT 路径
         import inspect
+
         src = inspect.getsource(main._on_press)
         self.assertIn("os.kill", src, "on_press 必须用 os.kill 主动发信号,不能仅设标志位")
-        self.assertIn("CTRL_C_EVENT", src, "on_press 必须用 CTRL_C_EVENT 转 SIGINT,不能静默吞 KeyboardInterrupt")
+        self.assertIn(
+            "CTRL_C_EVENT",
+            src,
+            "on_press 必须用 CTRL_C_EVENT 转 SIGINT,不能静默吞 KeyboardInterrupt",
+        )
         # 模拟实际调用(mock os.kill 不真的发信号)
         with patch("os.kill") as mock_kill:
-            main._on_press(KeyCode.from_char('\x03'))
-            self.assertGreaterEqual(mock_kill.call_count, 1,
-                                    f"on_press 应该调 os.kill,实际 {mock_kill.call_count} 次")
+            main._on_press(KeyCode.from_char("\x03"))
+            self.assertGreaterEqual(
+                mock_kill.call_count, 1, f"on_press 应该调 os.kill,实际 {mock_kill.call_count} 次"
+            )
             args, _ = mock_kill.call_args
             import signal as _sig
-            self.assertEqual(args[1], _sig.CTRL_C_EVENT,
-                             f"应该发 CTRL_C_EVENT 触发 SIGINT,实际发了 {args[1]!r}")
+
+            self.assertEqual(
+                args[1], _sig.CTRL_C_EVENT, f"应该发 CTRL_C_EVENT 触发 SIGINT,实际发了 {args[1]!r}"
+            )
         # 复位
         runtime.set_force_stop(False)
         runtime.set_paused(False)
@@ -405,9 +441,11 @@ class TestPasteAndEnterReturnsTrue(unittest.TestCase):
         用 inspect.getsource 检查比 mock pyautogui 简单可靠。"""
         from guild_auto.infrastructure.window_input import HumanInput
         import inspect
+
         src = inspect.getsource(HumanInput.paste_and_enter)
-        self.assertIn("return True", src,
-                      f"HumanInput.paste_and_enter 源码必须含 return True,实际:\n{src}")
+        self.assertIn(
+            "return True", src, f"HumanInput.paste_and_enter 源码必须含 return True,实际:\n{src}"
+        )
 
 
 class TestWaitIfPausedForceStop(unittest.TestCase):
@@ -419,16 +457,18 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
     def setUp(self):
         _setup_fake_logger()
         from guild_auto.application import runtime
-        runtime.reset_state()      # 未暂停 / 无 Ctrl+C / 无待重置标志
+
+        runtime.reset_state()  # 未暂停 / 无 Ctrl+C / 无待重置标志
 
     def test_wait_if_paused_raises_on_force_stop(self):
         """_force_stop=True 时 wait_if_paused 必须立即 raise KeyboardInterrupt。"""
         from guild_auto import main
         from guild_auto.application import runtime
+
         runtime.set_force_stop(True)
         with self.assertRaises(KeyboardInterrupt):
             main.wait_if_paused()
-        runtime.set_force_stop(False)     # 复位
+        runtime.set_force_stop(False)  # 复位
 
     def test_wait_if_paused_blocks_when_paused_only(self):
         """仅 _paused=True(用户按 u,非 Ctrl+C)→ wait_if_paused 阻塞等待 _paused=False。
@@ -436,6 +476,7 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
         from guild_auto import main
         from guild_auto.application import runtime
         import threading
+
         runtime.set_paused(True)
         runtime._pause_event.set()
 
@@ -443,6 +484,7 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
             time.sleep(0.2)
             runtime.set_paused(False)
             runtime._pause_event.clear()
+
         t = threading.Thread(target=_resume, daemon=True)
         t.start()
         start = time.time()
@@ -455,6 +497,7 @@ class TestWaitIfPausedForceStop(unittest.TestCase):
         """_paused=False 且 _force_stop=False → 立即返回。"""
         from guild_auto import main
         from guild_auto.application import runtime
+
         runtime.reset_state()
         start = time.time()
         main.wait_if_paused()

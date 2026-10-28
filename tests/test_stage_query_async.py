@@ -30,8 +30,15 @@ from guild_auto.infrastructure.log_watcher import extract_chat_block, split_mess
 from guild_auto.application.stages import stage_query_async  # noqa: E402
 from guild_auto.application.runtime import Runtime  # noqa: E402
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -51,9 +58,12 @@ def _member_panel(player, weekly_today=100):
         f"    今天           : {weekly_today} 公会经验",
         "    2026-08-12: 0 公会经验",
     ]
-    return ("[148月2026 21:55:41.046] [Render thread/INFO] "
-            "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
-            + "\\n".join([PANEL_START, *body, PANEL_END]) + " [C]")
+    return (
+        "[148月2026 21:55:41.046] [Render thread/INFO] "
+        "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
+        + "\\n".join([PANEL_START, *body, PANEL_END])
+        + " [C]"
+    )
 
 
 class _FakeWatcher:
@@ -64,7 +74,7 @@ class _FakeWatcher:
     """
 
     def __init__(self):
-        self._pending = {}      # player -> [panel, ...] 队列
+        self._pending = {}  # player -> [panel, ...] 队列
         self.wait_calls = []
 
     def feed(self, player, panel):
@@ -93,9 +103,10 @@ class _FakeWatcher:
 def _cfg():
     from guild_auto.config import DEFAULT_CONFIG
     import json
+
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     cfg["log"] = {"enabled": False, "level": 4, "dir": "logs"}
-    cfg["switches"]["verbose_log"] = False     # 测试里不刷屏
+    cfg["switches"]["verbose_log"] = False  # 测试里不刷屏
     return cfg
 
 
@@ -156,9 +167,9 @@ class TestStageQueryAsyncFailures(unittest.TestCase):
     """异常路径:玩家无响应 → 记失败,不进 records(不可用于判定)。"""
 
     def test_no_response_goes_to_failures(self):
-        w = _FakeWatcher()                    # 不 feed → 永远超时
+        w = _FakeWatcher()  # 不 feed → 永远超时
         cfg = _cfg()
-        cfg["timeouts"]["max_retries"] = 2    # 少试几次,测试快
+        cfg["timeouts"]["max_retries"] = 2  # 少试几次,测试快
         cfg["timeouts"]["response_wait"] = 0.2
         rt = _make_rt(cfg, w)
         records, failures = stage_query_async(rt, [("entry", "甲")], cfg)
@@ -195,11 +206,9 @@ class TestStageQueryAsyncFailures(unittest.TestCase):
         records, failures = stage_query_async(rt, [("entry", "*" * 8)], cfg)
 
         self.assertEqual(records, [])
-        self.assertTrue(all("*" * 8 not in c for c in sent),
-                        f"屏蔽词玩家仍被发送了指令: {sent}")
+        self.assertTrue(all("*" * 8 not in c for c in sent), f"屏蔽词玩家仍被发送了指令: {sent}")
         self.assertEqual(len(failures), 1)
-        self.assertTrue(failures[0].get("blocked"),
-                        f"屏蔽词玩家应标 blocked: {failures[0]}")
+        self.assertTrue(failures[0].get("blocked"), f"屏蔽词玩家应标 blocked: {failures[0]}")
         self.assertIn("屏蔽", failures[0]["reason"])
 
     def test_masked_player_gets_readable_reason(self):
@@ -211,8 +220,9 @@ class TestStageQueryAsyncFailures(unittest.TestCase):
         rt = _make_rt(cfg, w)
         _, failures = stage_query_async(rt, [("entry", "*" * 8)], cfg)
         self.assertEqual(len(failures), 1)
-        self.assertIn("屏蔽", failures[0]["reason"],
-                      f"屏蔽词玩家的失败原因不可读: {failures[0]['reason']}")
+        self.assertIn(
+            "屏蔽", failures[0]["reason"], f"屏蔽词玩家的失败原因不可读: {failures[0]['reason']}"
+        )
 
 
 class TestStageQueryAsyncCoreSemantics(unittest.TestCase):
@@ -229,8 +239,7 @@ class TestStageQueryAsyncCoreSemantics(unittest.TestCase):
         cfg = _cfg()
         rt = _make_rt(cfg, w)
         stage_query_async(rt, [("entry", "甲")], cfg)
-        self.assertGreater(len(w.wait_calls), 0,
-                           "没有任何读日志验证发生 —— 违反验收第 7 条")
+        self.assertGreater(len(w.wait_calls), 0, "没有任何读日志验证发生 —— 违反验收第 7 条")
 
     def test_sender_only_sends(self):
         """主线程侧发送器只发指令。证据:send_chat_text 收到含玩家名的命令原文。"""
@@ -240,8 +249,7 @@ class TestStageQueryAsyncCoreSemantics(unittest.TestCase):
         cfg = _cfg()
         rt = _make_rt(cfg, w, send_log=sent)
         stage_query_async(rt, [("entry", "甲")], cfg)
-        self.assertTrue(any("甲" in c for c in sent),
-                        f"未发送含玩家名的查询指令: {sent}")
+        self.assertTrue(any("甲" in c for c in sent), f"未发送含玩家名的查询指令: {sent}")
 
     def test_no_deadlock_when_background_hangs(self):
         """防死锁:后台验证一直拿不到响应时,流程必须有限收敛。
@@ -249,7 +257,7 @@ class TestStageQueryAsyncCoreSemantics(unittest.TestCase):
         若主线程无限等后台,这里会挂起。用短 max_retries + 短 response_wait
         让闭环自行收敛成失败。
         """
-        w = _FakeWatcher()                    # 永远不 feed
+        w = _FakeWatcher()  # 永远不 feed
         cfg = _cfg()
         cfg["timeouts"]["max_retries"] = 2
         cfg["timeouts"]["response_wait"] = 0.2

@@ -9,6 +9,7 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 
 首次运行自动生成 config.json;所有业务参数均在配置中,请阅读 docs/《配置说明.md》。
 """
+
 import argparse
 import os
 import re
@@ -85,14 +86,14 @@ from guild_auto.application.pending import (  # noqa: E402
 _pause_event = runtime_mod._pause_event
 _pause_lock = runtime_mod._pause_lock
 _reset_lock = runtime_mod._reset_lock
-_paused = runtime_mod._paused          # 只读快照;写请用 _set_paused_for_test
+_paused = runtime_mod._paused  # 只读快照;写请用 _set_paused_for_test
 _reset_needed = runtime_mod._reset_needed
 _force_stop = runtime_mod._force_stop
 _pause_key = runtime_mod._pause_key
 _pause_key_name = runtime_mod._pause_key_name
 
 
-def _set_paused_for_test(value):     # noqa: F811
+def _set_paused_for_test(value):  # noqa: F811
     """测试/兼容用:写唯一所有者。真代码请直接用 runtime.set_paused。"""
     runtime_mod.set_paused(value)
     globals()["_paused"] = bool(value)
@@ -119,7 +120,9 @@ def auto_detect_admin(cfg):
         return cfg["admin"]
     path = cfg.get("game_log", "")
     try:
-        with open(path, encoding=detect_encoding(path, cfg.get("log_encoding", "auto")),errors="replace") as f:
+        with open(
+            path, encoding=detect_encoding(path, cfg.get("log_encoding", "auto")), errors="replace"
+        ) as f:
             for line in f:
                 m = re.search(r"--username\s*[,，]?\s*([^\s,，]+)", line)
                 if m:
@@ -137,6 +140,7 @@ def _join_with_progress(executor, label, expected_n=None, poll_interval=0.6):
     修复"主线程似乎仍在等待验证"——用户看到主线程在做事(虽然实际是轮询)。
     退出条件:executor 内部 queue 已空 + 所有 player 事件已置位。"""
     import time as _t
+
     last_done = -1
     last_print_ts = 0.0
     # 直接轮询 _player_events + queue:当所有 player 事件已置位且 queue 空时退出
@@ -181,9 +185,21 @@ def _pause_until_resume(cfg=None):
     wait_if_paused()
 
 
-def send_and_capture(watcher, human, hwnd, cmd, timeout, verbose=True, detector=None, try_wait=3.0, try_times=3, first_command=False, stop_check=None):
+def send_and_capture(
+    watcher,
+    human,
+    hwnd,
+    cmd,
+    timeout,
+    verbose=True,
+    detector=None,
+    try_wait=3.0,
+    try_times=3,
+    first_command=False,
+    stop_check=None,
+):
     """发送命令并等待日志响应块(消息级切分)。
-    
+
     返回 (block, interrupted)：
         block: 响应块列表或 None
         interrupted: 是否因暂停而中断（若中断，调用方应重置重试计数）
@@ -237,8 +253,9 @@ def send_and_capture(watcher, human, hwnd, cmd, timeout, verbose=True, detector=
         if ok is not False:
             # min_wait_after_start=0.5:让游戏在 500ms 内至少"确认收到"了 /guild 指令
             # ——防止 discard_buffer 之后又有少量"启动期"日志延迟写入被错认为响应
-            block = watcher.wait_for_chat_block(timeout=min(timeout, try_wait), stop_check=stop_check,
-                                                 min_wait_after_start=0.5)
+            block = watcher.wait_for_chat_block(
+                timeout=min(timeout, try_wait), stop_check=stop_check, min_wait_after_start=0.5
+            )
             if block is not None:
                 return block, False
         if verbose:
@@ -268,8 +285,9 @@ def send_and_capture(watcher, human, hwnd, cmd, timeout, verbose=True, detector=
         # attempt==1 时设置 min_wait_after_start=0.3:让游戏在 300ms 内"确认收到"
         # ——防止 discard_buffer 之后又有少量"启动期"日志延迟写入被错认为响应
         min_wait = 0.3 if attempt == 1 else 0.0
-        block = watcher.wait_for_chat_block(timeout=wait, stop_check=stop_check,
-                                             min_wait_after_start=min_wait)
+        block = watcher.wait_for_chat_block(
+            timeout=wait, stop_check=stop_check, min_wait_after_start=min_wait
+        )
         if block is not None:
             return block, False
 
@@ -295,7 +313,7 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
     try_times = int(cfg["timeouts"].get("try_times", 3))
     last_err = None
     attempt = 1
-    used_first_paste = False   # 首条"直接粘贴试探"仅用一次;暂停恢复后不再走试探分支
+    used_first_paste = False  # 首条"直接粘贴试探"仅用一次;暂停恢复后不再走试探分支
     while attempt <= retries:
         wait_if_paused()
         # 修复"first_command 过早获取日志":attempt==1 启动前丢弃前次命令残留
@@ -303,10 +321,16 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
             watcher.discard_buffer()
         console(f"[{attempt}/{retries}] 发送 {cmd} ...")
         block, interrupted = send_and_capture(
-            watcher, human, hwnd, cmd, timeout,
-            detector=detector, try_wait=try_wait, try_times=try_times,
+            watcher,
+            human,
+            hwnd,
+            cmd,
+            timeout,
+            detector=detector,
+            try_wait=try_wait,
+            try_times=try_times,
             first_command=(attempt == 1 and not used_first_paste),  # 仅首次启动直接粘贴试探;
-            stop_check=stop_check                                   # 暂停恢复后改走开栏发送逻辑
+            stop_check=stop_check,  # 暂停恢复后改走开栏发送逻辑
         )
         if interrupted:
             console("  暂停中断，重试...")
@@ -319,8 +343,10 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
             continue
         try:
             info = parse_guild_list(block, cfg["rank_names"])
-            logger.log_debug(f"解析 /guild list 成功: 公会={info['guild_name']} "
-                             f"总数={info['total']} 分组={ {k: len(v) for k, v in info['groups'].items()} }")
+            logger.log_debug(
+                f"解析 /guild list 成功: 公会={info['guild_name']} "
+                f"总数={info['total']} 分组={ {k: len(v) for k, v in info['groups'].items()} }"
+            )
             # 公会名来源校验:配置了 guild_name 则强校验;
             # 未配置则告警(日志可被任意玩家伪造面板,强烈建议配置)
             if cfg.get("guild_name"):
@@ -329,15 +355,19 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
                     attempt += 1
                     continue
             else:
-                logger.log_warning("config.guild_name 为空:无法校验 /guild list 来源,"
-                                   "存在伪造面板风险(建议在 config.json 填写公会名)")
+                logger.log_warning(
+                    "config.guild_name 为空:无法校验 /guild list 来源,"
+                    "存在伪造面板风险(建议在 config.json 填写公会名)"
+                )
             # 一致性自检:解析出的成员总数应接近面板声明的 total(差值≤跳过职位数)。
             # 伪造面板很难同时凑齐总数一致,可拦截大部分假花名册
             if info.get("total") is not None:
                 parsed_sum = sum(len(v) for v in info["groups"].values())
                 if abs(info["total"] - parsed_sum) > len(cfg.get("skip_ranks", [])):
-                    last_err = (f"面板成员数不一致: 声明总数 {info['total']},"
-                                f"实际解析 {parsed_sum}(疑似伪造输出)")
+                    last_err = (
+                        f"面板成员数不一致: 声明总数 {info['total']},"
+                        f"实际解析 {parsed_sum}(疑似伪造输出)"
+                    )
                     attempt += 1
                     continue
             return info
@@ -368,10 +398,17 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
     while attempt <= retries:
         wait_if_paused()
         block, interrupted = send_and_capture(
-            watcher, human, hwnd, cmd, timeout, verbose=verbose,
-            detector=detector, try_wait=try_wait, try_times=try_times,
+            watcher,
+            human,
+            hwnd,
+            cmd,
+            timeout,
+            verbose=verbose,
+            detector=detector,
+            try_wait=try_wait,
+            try_times=try_times,
             first_command=False,  # 从不使用直接粘贴
-            stop_check=stop_check
+            stop_check=stop_check,
         )
         if interrupted:
             console(f"    [{pid}] 暂停中断，重试...")
@@ -391,14 +428,15 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
             continue
         try:
             info = parse_guild_member(block, expected_id=pid)
-            logger.log_debug(f"解析 [{pid}] 成功: 周贡献={info['weekly_total']} "
-                             f"daily={len(info.get('daily') or [])} 条")
+            logger.log_debug(
+                f"解析 [{pid}] 成功: 周贡献={info['weekly_total']} "
+                f"daily={len(info.get('daily') or [])} 条"
+            )
             return info
         except ParseError as e:
             console(f"    [{pid}] 第{attempt}次解析失败: {e}")
             attempt += 1
     return None
-
 
 
 def build_targets(guild_groups, scope="all", skip_ranks=()):
@@ -435,7 +473,9 @@ def build_targets(guild_groups, scope="all", skip_ranks=()):
 # ---------------------------------------------------------------------------
 def parse_args():
     ap = argparse.ArgumentParser(description="布吉岛公会管理脚本(全自动版)")
-    ap.add_argument("--config", default=DEFAULT_CONFIG_FILE, help="配置文件路径(默认 ./config.json)")
+    ap.add_argument(
+        "--config", default=DEFAULT_CONFIG_FILE, help="配置文件路径(默认 ./config.json)"
+    )
     ap.add_argument("--admin", default=None, help="管理员名(覆盖配置)")
     ap.add_argument("--log", default=None, help="游戏日志路径(覆盖配置)")
     ap.add_argument("--options", default=None, help="游戏 options.txt 路径(覆盖配置)")
@@ -487,8 +527,9 @@ def prepare_config(args, console_fn=None, exit_fn=None):
         level=int(log_cfg.get("level", 4)),
         enabled=bool(log_cfg.get("enabled", True)),
     )
-    logger.log_info(f"脚本启动 (日志级别 {logger.current_level()}, "
-                    f"{'启用' if logger.is_enabled() else '禁用'})")
+    logger.log_info(
+        f"脚本启动 (日志级别 {logger.current_level()}, {'启用' if logger.is_enabled() else '禁用'})"
+    )
 
     # 合并 debug 配置(命令行覆盖)
     debug_cfg = cfg.get("debug", {})
@@ -514,8 +555,10 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     issues = config_mod.validate_config(cfg)
     errors = [m for lvl, m in issues if lvl == "error"]
     for lvl, m in issues:
-        console_fn(f"  [{'错误' if lvl == 'error' else '警告'}] {m}",
-                   level="error" if lvl == "error" else "warning")
+        console_fn(
+            f"  [{'错误' if lvl == 'error' else '警告'}] {m}",
+            level="error" if lvl == "error" else "warning",
+        )
     if errors:
         console_fn("配置校验失败,请修正后重试(参考 docs/《配置说明.md》)", level="error")
         exit_fn(1)
@@ -525,9 +568,11 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     console_fn("布吉岛公会管理脚本(全自动版)")
     console_fn(f"  管理员: {cfg.get('admin') or '(未设置,建议 --admin 或配置)'}")
     console_fn(f"  公会群: {cfg.get('guild_qq')}")
-    console_fn(f"  开关: 升职{'✓' if sw['promote_enabled'] else '✗'} 降职{'✓' if sw['demote_enabled'] else '✗'} "
-               f"踢出{'✓' if sw['kick_enabled'] else '✗'} 执行{'✓' if sw['execution_enabled'] else '✗(dry-run)'} "
-               f"通知{'✓' if sw['notify_enabled'] else '✗'}")
+    console_fn(
+        f"  开关: 升职{'✓' if sw['promote_enabled'] else '✗'} 降职{'✓' if sw['demote_enabled'] else '✗'} "
+        f"踢出{'✓' if sw['kick_enabled'] else '✗'} 执行{'✓' if sw['execution_enabled'] else '✗(dry-run)'} "
+        f"通知{'✓' if sw['notify_enabled'] else '✗'}"
+    )
     console_fn("=" * 56)
     return cfg
 
@@ -535,6 +580,8 @@ def prepare_config(args, console_fn=None, exit_fn=None):
 # count_actions / build_summary_message 已迁至 actions.py(文案生成的唯一家),
 # 此处保留 re-export 以不破坏历史调用点。
 from guild_auto.domain.decisions import build_summary_message, count_actions  # noqa: E402,F401
+
+
 def main():
     # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
     # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。
@@ -552,9 +599,9 @@ def main():
 
     # 2. 初始化(异常时释放已打开的资源)
     listener = None
-    watcher = None   # build_runtime 失败时 except 分支要用到,必须先占位
-    gname = ""     # 公会名(第二 try 块赋值;finally 写待办时兜底引用)
-    records = []   # 查询记录(第二 try 块赋值;finally 中断兜底补扫引用,提前退出时为空)
+    watcher = None  # build_runtime 失败时 except 分支要用到,必须先占位
+    gname = ""  # 公会名(第二 try 块赋值;finally 写待办时兜底引用)
+    records = []  # 查询记录(第二 try 块赋值;finally 中断兜底补扫引用,提前退出时为空)
     failures = []
     try:
         # 真实硬件构造收口在 runtime.build_runtime():watcher / human / executor /
@@ -573,7 +620,11 @@ def main():
         else:
             console("⚠ 未找到游戏窗口(请确认游戏已启动、窗口标题包含关键词)")
             try:
-                ans = input("按回车仍继续发送命令(可能误操作其他程序),输入 q 回车退出: ").strip().lower()
+                ans = (
+                    input("按回车仍继续发送命令(可能误操作其他程序),输入 q 回车退出: ")
+                    .strip()
+                    .lower()
+                )
             except EOFError:
                 ans = "q"
             if ans == "q":
@@ -607,9 +658,10 @@ def main():
         #    流程规格:启动前等用户回车确认;按流程规格,此时必须已提示
         #    "请保证游戏正在运行且在主大厅(防止 AFK)"与"按下回车后不要操作键鼠"
         if not rt.confirm(
-                "请保证游戏正在运行且在主大厅(防止 AFK)。\n"
-                "按回车键运行;按下回车后请不要操作键盘和鼠标,脚本会自动前置游戏窗口",
-                default=True):
+            "请保证游戏正在运行且在主大厅(防止 AFK)。\n"
+            "按回车键运行;按下回车后请不要操作键盘和鼠标,脚本会自动前置游戏窗口",
+            default=True,
+        ):
             console("已取消,未开始运行")
             return
         console("3 秒后开始运行(请将鼠标移开,不要操作键盘)...")
@@ -652,7 +704,9 @@ def main():
             guild = _generate_debug_guild(cfg)
             console(f"Debug: 使用模拟公会数据 {guild['guild_name']}")
         else:
-            guild = query_guild_list(cfg, watcher, human, hwnd, detector=detector, stop_check=is_paused)
+            guild = query_guild_list(
+                cfg, watcher, human, hwnd, detector=detector, stop_check=is_paused
+            )
         gname = guild["guild_name"]
         console(f"公会: {gname} | 成员总数 {guild['total']} | 在线 {guild['online']}")
         for rk, ids in guild["groups"].items():
@@ -661,26 +715,32 @@ def main():
         # 4. 查询范围过滤 + 跨等级去重(见 build_targets docstring)
         scope = cfg.get("query_scope", "all")
         skip = set(cfg.get("skip_ranks", []))
-        targets, dup_dropped = build_targets(guild["groups"], scope=scope,
-                                            skip_ranks=skip)
+        targets, dup_dropped = build_targets(guild["groups"], scope=scope, skip_ranks=skip)
         if dup_dropped:
             logger.log_warning(
                 f"阶段2: 丢弃 {dup_dropped} 个跨等级重复玩家(同一名字出现在多个等级段,"
-                f"只保留首次出现的等级,避免重复执行升/降/踢)")
+                f"只保留首次出现的等级,避免重复执行升/降/踢)"
+            )
             console(f"⚠ 有 {dup_dropped} 个玩家名字重复出现在多个等级,已按首次出现处理")
-        logger.log_info(f"阶段2 起点: 逐人查询 targets={len(targets)} 范围={scope} 跳过={sorted(skip)}")
+        logger.log_info(
+            f"阶段2 起点: 逐人查询 targets={len(targets)} 范围={scope} 跳过={sorted(skip)}"
+        )
         console(f"[2/5] 逐人查询: 共 {len(targets)} 名玩家(范围 {scope},跳过 {sorted(skip)})")
 
         # 5. 逐人查询
-        failures = []   # 提前初始化，确保所有路径可用
+        failures = []  # 提前初始化，确保所有路径可用
         if debug.get("enabled") and "member" in debug.get("skip_stages", []):
             # 仍发送每个玩家的查询指令，但忽略结果
             for idx, (rk, pid) in enumerate(targets, 1):
                 try:
-                    query_member(cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused)
+                    query_member(
+                        cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
+                    )
                 except Exception as e:
                     pass  # 忽略错误
-            records = _generate_debug_records(cfg, guild, targets, decide_skipped=("decide" in debug.get("skip_stages", [])))
+            records = _generate_debug_records(
+                cfg, guild, targets, decide_skipped=("decide" in debug.get("skip_stages", []))
+            )
         else:
             records = []
             if rt.async_enabled:
@@ -694,20 +754,28 @@ def main():
                 for idx, (rk, pid) in enumerate(targets, 1):
                     wait_if_paused()
                     console(f"[{idx}/{len(targets)}] 查询 {pid} ({cfg['rank_names'].get(rk, rk)})")
-                    info = query_member(cfg, watcher, human, hwnd, pid,
-                                        detector=detector, stop_check=is_paused)
+                    info = query_member(
+                        cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
+                    )
                     if info is None:
                         # 屏蔽词玩家:身份不可读,报真实原因而非"查询重试耗尽"
                         # 否则报告里看不出是网易过滤还是网络抖动
-                        reason = ("查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
-                                  if parsers.is_masked_name(pid) else "查询重试耗尽")
+                        reason = (
+                            "查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
+                            if parsers.is_masked_name(pid)
+                            else "查询重试耗尽"
+                        )
                         failures.append({"player": pid, "rank": rk, "reason": reason})
-                        logger.log_error(f"查询失败({reason}): {pid} ({cfg['rank_names'].get(rk, rk)})")
+                        logger.log_error(
+                            f"查询失败({reason}): {pid} ({cfg['rank_names'].get(rk, rk)})"
+                        )
                         continue
                     info["rank"] = rk
                     records.append(info)
                     if sw.get("verbose_log", True):
-                        console(f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} | 上次在线: {info['last_online']}")
+                        console(
+                            f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} | 上次在线: {info['last_online']}"
+                        )
 
         # 6. 判定(继承规则)
         logger.log_info(f"阶段3 起点: 判定 records={len(records)}")
@@ -718,14 +786,17 @@ def main():
                 # 名单短路优先于阈值判定(阶段 5):
                 # blacklist/whitelist 命中即不处理,保护名单剥夺降职/踢出。
                 # 阈值矩阵本身零改动,仍由 decide_actions 决定。
-                actions, trigger = decide_for_player(
-                    r["player"], r["rank"], r["weekly_total"], cfg)
-                logger.log_debug(f"判定输入: player={r['player']} rank={r['rank']} "
-                                 f"weekly={r['weekly_total']} → 输出 actions={actions} trigger={trigger}")
+                actions, trigger = decide_for_player(r["player"], r["rank"], r["weekly_total"], cfg)
+                logger.log_debug(
+                    f"判定输入: player={r['player']} rank={r['rank']} "
+                    f"weekly={r['weekly_total']} → 输出 actions={actions} trigger={trigger}"
+                )
                 r["actions"] = actions
                 r["trigger"] = trigger
                 if actions:
-                    console(f"  {r['player']}: 周贡献 {r['weekly_total']} → {'/'.join(actions)} (阈值 {trigger})")
+                    console(
+                        f"  {r['player']}: 周贡献 {r['weekly_total']} → {'/'.join(actions)} (阈值 {trigger})"
+                    )
         else:
             console("Debug: 跳过判定，使用模拟动作")
             # 确保所有记录都有 actions（已在 generate 中设置）
@@ -736,8 +807,9 @@ def main():
         # 通知阶段照常走流程但不真发广播(与 list/member/execute 的跳过语义一致)。
         # ⚠ 这里此前是个未定义变量名,进通知阶段必抛 NameError —— 全流程第一次
         # 真正跑通前它一直被 15% 的 main.py 覆盖率掩盖着。
-        _debug_notify_skipped = bool(debug.get("enabled")
-                                     and "notify" in debug.get("skip_stages", []))
+        _debug_notify_skipped = bool(
+            debug.get("enabled") and "notify" in debug.get("skip_stages", [])
+        )
         if _debug_notify_skipped:
             console("Debug: 跳过通知发送(仅走流程,不实际广播)")
         notify_failures = stage_notify(rt, records, cfg, _debug_notify_skipped)
@@ -812,16 +884,19 @@ def main():
                         continue
                     console(f"  执行 {r['player']}: {r['actions']}")
                     logger.trace_code_location(
-                        "execute_phase.player",
-                        f"player={r['player']} actions={r['actions']}")
+                        "execute_phase.player", f"player={r['player']} actions={r['actions']}"
+                    )
                     results = executor.execute_actions(r["player"], r["actions"])
                     failed = next(((a, e) for a, ok, e in results if not ok), None)
                     r["executed"] = True
                     r["error"] = f"执行失败({failed[0]}): {failed[1]}" if failed else None
                     # 部分失败:按成功条数算实际新等级(promote×2 第一条成功则升 1 级)
                     ok_count = sum(1 for _, ok, _ in results if ok)
-                    r["new_rank"] = (new_rank_after(r["rank"], r["actions"][:ok_count])
-                                     if ok_count else r["rank"])
+                    r["new_rank"] = (
+                        new_rank_after(r["rank"], r["actions"][:ok_count])
+                        if ok_count
+                        else r["rank"]
+                    )
                     if failed:
                         console(f"    ⚠ {r['player']} 执行失败: {failed[1]}")
                         logger.log_error(f"执行失败 {r['player']} ({failed[0]}): {failed[1]}")
@@ -836,18 +911,20 @@ def main():
                     r["error"] = "未执行(dry-run)"
                     r["new_rank"] = new_rank_after(r["rank"], r["actions"])
                 executed.append(r)
-            executed.extend(dict(f, new_rank=f.get("rank"), actions=[],
-                            error=f.get("reason") or "查询失败") for f in failures)
+            executed.extend(
+                dict(f, new_rank=f.get("rank"), actions=[], error=f.get("reason") or "查询失败")
+                for f in failures
+            )
 
         logger.log_info("阶段5 完成: 执行操作完成")
         logger.log_info("阶段9 起点: 输出报告")
         console("\n输出报告 ...")
         p1 = write_contribution_report(cfg["report_dir"], gname, records, cfg.get("admin", ""))
         action_records = executed + [
-            dict(f, new_rank=f.get("rank"), actions=[],error=f.get("reason") or "查询失败")
+            dict(f, new_rank=f.get("rank"), actions=[], error=f.get("reason") or "查询失败")
             for f in failures
             if not any(f["player"] == e.get("player") for e in executed)
-            ]
+        ]
         p2 = write_action_report(cfg["report_dir"], gname, action_records, cfg)
         console(f"  贡献报告: {os.path.abspath(p1)}")
         console(f"  公告文件: {os.path.abspath(p2)}")
@@ -856,28 +933,38 @@ def main():
         incomplete = []
         for r in records:
             if r.get("actions") and r.get("error"):
-                incomplete.append({
-                    "player": r["player"], "rank": r["rank"],
-                    "actions": r["actions"], "trigger": r.get("trigger"),
-                    "weekly": r.get("weekly_total"), "status": "failed",
-                    "error": r.get("error"),
-                })
+                incomplete.append(
+                    {
+                        "player": r["player"],
+                        "rank": r["rank"],
+                        "actions": r["actions"],
+                        "trigger": r.get("trigger"),
+                        "weekly": r.get("weekly_total"),
+                        "status": "failed",
+                        "error": r.get("error"),
+                    }
+                )
         if incomplete:
             merged = load_pending(pending_path) + incomplete
             save_pending(pending_path, gname, merged)
-            console(f"⚠ {len(incomplete)} 条操作未完成(跳过/失败),已写入待办文件({pending_path}),下次启动可续做")
+            console(
+                f"⚠ {len(incomplete)} 条操作未完成(跳过/失败),已写入待办文件({pending_path}),下次启动可续做"
+            )
 
         # 总结
         console("\n" + "=" * 56)
-        console(f"完成!查询 {len(records)} 人,失败 {len(failures)} 人,"
-                f"升职 {sum(1 for r in executed if r.get('actions') and r['actions'][0]=='promote' and r.get('executed') and not r.get('error'))} 人,"
-                f"降职 {sum(1 for r in executed if r.get('actions') and r['actions'][0]=='demote' and r.get('executed') and not r.get('error'))} 人,"
-                f"踢出 {sum(1 for r in executed if r.get('actions') and r['actions'][0]=='kick' and r.get('executed') and not r.get('error'))} 人")
+        console(
+            f"完成!查询 {len(records)} 人,失败 {len(failures)} 人,"
+            f"升职 {sum(1 for r in executed if r.get('actions') and r['actions'][0] == 'promote' and r.get('executed') and not r.get('error'))} 人,"
+            f"降职 {sum(1 for r in executed if r.get('actions') and r['actions'][0] == 'demote' and r.get('executed') and not r.get('error'))} 人,"
+            f"踢出 {sum(1 for r in executed if r.get('actions') and r['actions'][0] == 'kick' and r.get('executed') and not r.get('error'))} 人"
+        )
         console("=" * 56)
         logger.log_info(f"运行结束: 查询 {len(records)} 人, 失败 {len(failures)} 人")
         # 给主线程一个机会查看结果:最多等 5s,超时/回车/非交互式都立即进 finally 收尾
         try:
             import select
+
             if sys.stdin.isatty():
                 ready, _, _ = select.select([sys.stdin], [], [], 5.0)
                 if ready:
@@ -893,21 +980,34 @@ def main():
                 retry_tasks = rt.async_system.get_retry_queue()
                 failed_players = {t["player"] for t in retry_tasks}
                 # ① 重试耗尽的补做任务 → 待办格式
-                incomplete_async = [{
-                    "player": t["player"], "rank": "?",
-                    "actions": [a for a in (t.get("command") or "").split(",") if a],
-                    "trigger": None, "weekly": None, "status": "failed",
-                    "error": f"(异步)验证失败: {t.get('error')}",
-                } for t in retry_tasks]
+                incomplete_async = [
+                    {
+                        "player": t["player"],
+                        "rank": "?",
+                        "actions": [a for a in (t.get("command") or "").split(",") if a],
+                        "trigger": None,
+                        "weekly": None,
+                        "status": "failed",
+                        "error": f"(异步)验证失败: {t.get('error')}",
+                    }
+                    for t in retry_tasks
+                ]
                 # ② Ctrl+C/异常中断兜底:补扫仍在途的任务(get_stranded)
                 # 在途任务绝不能被归档抹掉,否则主线程再也拿不到结果(静默丢指令)
                 stranded = rt.async_system.get_stranded()
-                incomplete_interrupted = [{
-                    "player": s["player"], "rank": "?",
-                    "actions": [a for a in (s.get("command") or "").split(",") if a],
-                    "trigger": None, "weekly": None, "status": "failed",
-                    "error": "(异步)脚本中断,任务未完成,已转待办",
-                } for s in stranded if s["player"] not in failed_players]
+                incomplete_interrupted = [
+                    {
+                        "player": s["player"],
+                        "rank": "?",
+                        "actions": [a for a in (s.get("command") or "").split(",") if a],
+                        "trigger": None,
+                        "weekly": None,
+                        "status": "failed",
+                        "error": "(异步)脚本中断,任务未完成,已转待办",
+                    }
+                    for s in stranded
+                    if s["player"] not in failed_players
+                ]
                 to_save = incomplete_async + incomplete_interrupted
                 if to_save:
                     merged = load_pending(pending_path) + to_save
@@ -916,10 +1016,14 @@ def main():
                         dedup[it["player"]] = it
                     merged = list(dedup.values())
                     save_pending(pending_path, gname, merged)
-                    console(f"⚠ {len(to_save)} 条异步失败/中断任务已写入待办"
-                            f"({pending_path}),下次启动可续做")
-                    logger.log_warning(f"{len(to_save)} 条异步失败/中断任务转入待办: "
-                                       f"{[it['player'] for it in to_save]}")
+                    console(
+                        f"⚠ {len(to_save)} 条异步失败/中断任务已写入待办"
+                        f"({pending_path}),下次启动可续做"
+                    )
+                    logger.log_warning(
+                        f"{len(to_save)} 条异步失败/中断任务转入待办: "
+                        f"{[it['player'] for it in to_save]}"
+                    )
                 rt.async_system.stop(timeout=5)
             except Exception as e:
                 logger.log_error(f"停止异步系统异常: {e}")
@@ -956,7 +1060,7 @@ if __name__ == "__main__":
     while True:
         try:
             main()
-            break   # 正常走完 main() → 退出
+            break  # 正常走完 main() → 退出
         except KeyboardInterrupt:
             # Ctrl+C:不直接退出,等待用户选择
             logger.log_warning("用户按 Ctrl+C 中断,进入中断菜单(回车退出/c 继续)")
@@ -967,10 +1071,11 @@ if __name__ == "__main__":
                 # `from runtime import _paused` 拿到的是值副本,写它改不到 runtime
                 # 那一份,而 runtime.is_paused() 读的是自己那份 → 复位静默失效。
                 runtime_mod.reset_state()
-                logger.log_info("用户选择继续运行,全局状态已复位,重新初始化启动"
-                                "(已完成操作经待办续做防重复)")
-                continue   # 重新完整启动:配置/窗口/异步执行器全部重建,
-                           # 上次已完成的操作由 pending_actions.json 断点续做机制保证不重复
+                logger.log_info(
+                    "用户选择继续运行,全局状态已复位,重新初始化启动(已完成操作经待办续做防重复)"
+                )
+                continue  # 重新完整启动:配置/窗口/异步执行器全部重建,
+                # 上次已完成的操作由 pending_actions.json 断点续做机制保证不重复
             console("\n再见")
             logger.log_info("用户手动中断(Ctrl+C),确认退出")
             break

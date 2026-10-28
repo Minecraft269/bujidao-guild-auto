@@ -16,6 +16,7 @@ runtime.py 是 main() 能被测试的前提,它自己此前只有 48% 覆盖。
 零真实硬件:LogWatcher / HumanInput / GameStateDetector / find_game_window /
 ActionExecutor 全部替换。
 """
+
 import json
 import unittest
 from unittest import mock
@@ -33,8 +34,9 @@ def _cfg(**overrides):
 
 class TestConfirmAndAsk(unittest.TestCase):
     def _rt(self, confirm_impl):
-        return rt_mod.Runtime(cfg=_cfg(), ask_confirm=confirm_impl,
-                              sleep=lambda s: None, stop_check=lambda: False)
+        return rt_mod.Runtime(
+            cfg=_cfg(), ask_confirm=confirm_impl, sleep=lambda s: None, stop_check=lambda: False
+        )
 
     def test_confirm_true(self):
         self.assertTrue(self._rt(lambda p, d=False: True).confirm("?"))
@@ -45,14 +47,17 @@ class TestConfirmAndAsk(unittest.TestCase):
 
     def test_eof_means_reject(self):
         """终端被关闭 → 一律拒绝。绝不能默认同意后继续发命令。"""
+
         def boom(p, d=False):
             raise EOFError
+
         self.assertFalse(self._rt(boom).confirm("?", default=True))
         self.assertFalse(self._rt(boom).ask("?", default=True))
 
     def test_keyboard_interrupt_means_reject(self):
         def boom(p, d=False):
             raise KeyboardInterrupt
+
         self.assertFalse(self._rt(boom).confirm("?", default=True))
         self.assertFalse(self._rt(boom).ask("?", default=True))
 
@@ -63,8 +68,7 @@ class TestConfirmAndAsk(unittest.TestCase):
 
 class TestPauseGate(unittest.TestCase):
     def test_not_paused_just_resets(self):
-        r = rt_mod.Runtime(cfg=_cfg(), sleep=lambda s: None,
-                           stop_check=lambda: False)
+        r = rt_mod.Runtime(cfg=_cfg(), sleep=lambda s: None, stop_check=lambda: False)
         with mock.patch.object(r, "reset_window_state_after_pause") as m_reset:
             r.pause_gate()
         m_reset.assert_called_once()
@@ -75,7 +79,7 @@ class TestPauseGate(unittest.TestCase):
 
         def paused():
             state["n"] += 1
-            return state["n"] <= 3        # 前 3 次为暂停,之后恢复
+            return state["n"] <= 3  # 前 3 次为暂停,之后恢复
 
         sleeps = []
         r = rt_mod.Runtime(cfg=_cfg(), sleep=sleeps.append, stop_check=paused)
@@ -86,18 +90,18 @@ class TestPauseGate(unittest.TestCase):
         self.assertGreater(state["n"], 3)
 
     def test_reset_delegates_to_main_impl(self):
-        r = rt_mod.Runtime(cfg=_cfg(), hwnd=42, detector="DET",
-                           sleep=lambda s: None, stop_check=lambda: False)
-        with mock.patch("guild_auto.main.reset_window_state_after_pause",
-                        return_value=True) as m:
+        r = rt_mod.Runtime(
+            cfg=_cfg(), hwnd=42, detector="DET", sleep=lambda s: None, stop_check=lambda: False
+        )
+        with mock.patch("guild_auto.main.reset_window_state_after_pause", return_value=True) as m:
             self.assertTrue(r.reset_window_state_after_pause())
         m.assert_called_once_with(42, "DET")
 
     def test_reset_accepts_overrides(self):
-        r = rt_mod.Runtime(cfg=_cfg(), hwnd=42, detector="DET",
-                           sleep=lambda s: None, stop_check=lambda: False)
-        with mock.patch("guild_auto.main.reset_window_state_after_pause",
-                        return_value=False) as m:
+        r = rt_mod.Runtime(
+            cfg=_cfg(), hwnd=42, detector="DET", sleep=lambda s: None, stop_check=lambda: False
+        )
+        with mock.patch("guild_auto.main.reset_window_state_after_pause", return_value=False) as m:
             # detector=None 表示"用 self.detector",不是"传 None"
             r.reset_window_state_after_pause(hwnd=7, detector=None)
         m.assert_called_once_with(7, "DET")
@@ -107,8 +111,14 @@ class TestAsyncPieces(unittest.TestCase):
     def _rt(self, **kw):
         human = mock.Mock()
         watcher = mock.Mock()
-        r = rt_mod.Runtime(cfg=_cfg(), human=human, watcher=watcher,
-                           sleep=lambda s: None, stop_check=lambda: False, **kw)
+        r = rt_mod.Runtime(
+            cfg=_cfg(),
+            human=human,
+            watcher=watcher,
+            sleep=lambda s: None,
+            stop_check=lambda: False,
+            **kw,
+        )
         return r, human, watcher
 
     def test_send_fn_only_sends(self):
@@ -131,16 +141,14 @@ class TestAsyncPieces(unittest.TestCase):
         r, _, watcher = self._rt()
         # 块里必须真的包含广播文案,才算"有回显"
         watcher.wait_for_chat_block.return_value = ["[CHAT] /gc 公告正文"]
-        ok, err, _ = r._async_verify_fn("/gc 公告正文", "summary",
-                                        {"msg": "/gc 公告正文"})
+        ok, err, _ = r._async_verify_fn("/gc 公告正文", "summary", {"msg": "/gc 公告正文"})
         self.assertTrue(ok)
         self.assertIsNone(err)
 
     def test_verify_fn_gc_missing_echo_fails(self):
         r, _, watcher = self._rt()
         watcher.wait_for_chat_block.return_value = ["别的内容"]
-        ok, err, _ = r._async_verify_fn("/gc 公告正文", "summary",
-                                        {"msg": "/gc 公告正文"})
+        ok, err, _ = r._async_verify_fn("/gc 公告正文", "summary", {"msg": "/gc 公告正文"})
         self.assertFalse(ok)
         self.assertIn("未回显", err)
 
@@ -154,8 +162,9 @@ class TestAsyncPieces(unittest.TestCase):
         r, _, _ = self._rt()
         fake_sys = mock.Mock()
         fake_sys.submit.return_value = "task-1"
-        with mock.patch("guild_auto.concurrency.async_system.AsyncVerifySystem",
-                        return_value=fake_sys) as cls:
+        with mock.patch(
+            "guild_auto.concurrency.async_system.AsyncVerifySystem", return_value=fake_sys
+        ) as cls:
             self.assertEqual(r.async_verify_submit("/c", "甲"), "task-1")
             r.async_verify_submit("/c", "乙")
         cls.assert_called_once()
@@ -166,7 +175,7 @@ class TestAsyncPieces(unittest.TestCase):
         r, _, watcher = self._rt()
         watcher.close.side_effect = RuntimeError("boom")
         r.close()
-        r.close()          # 第二次不能抛
+        r.close()  # 第二次不能抛
         self.assertGreaterEqual(watcher.close.call_count, 2)
 
     def test_close_stops_async_system_and_listener(self):
@@ -202,17 +211,18 @@ class TestDefaultConfirm(unittest.TestCase):
 class TestBuildRuntime(unittest.TestCase):
     """真实构造路径(全 mock 硬件)。"""
 
-    def _build(self, cfg=None, chat_key="t", detector_available=True,
-               hwnd=123, state_enabled=True):
+    def _build(self, cfg=None, chat_key="t", detector_available=True, hwnd=123, state_enabled=True):
         cfg = cfg or _cfg()
         cfg["chat_key"] = chat_key
         cfg["state_check"]["enabled"] = state_enabled
         msgs = []
-        with mock.patch.object(rt_mod, "LogWatcher") as m_w, \
-                mock.patch.object(rt_mod, "HumanInput") as m_h, \
-                mock.patch.object(rt_mod, "GameStateDetector") as m_d, \
-                mock.patch.object(rt_mod, "find_game_window", return_value=hwnd), \
-                mock.patch.object(rt_mod, "ActionExecutor") as m_e:
+        with (
+            mock.patch.object(rt_mod, "LogWatcher") as m_w,
+            mock.patch.object(rt_mod, "HumanInput") as m_h,
+            mock.patch.object(rt_mod, "GameStateDetector") as m_d,
+            mock.patch.object(rt_mod, "find_game_window", return_value=hwnd),
+            mock.patch.object(rt_mod, "ActionExecutor") as m_e,
+        ):
             m_w.return_value.encoding = "utf-8"
             m_h.return_value.chat_key = chat_key
             m_d.return_value.available = detector_available

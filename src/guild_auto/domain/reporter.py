@@ -10,6 +10,7 @@ reporter.py —— 报告输出
       格式:被升职（N人）/ 被踢出（N人）/ 被降职（N人)+ ID 空格分隔 + 联系人
 输出目录:配置 report_dir(相对脚本运行目录,自动创建)。
 """
+
 import os
 import re
 from datetime import date
@@ -37,6 +38,7 @@ def _safe_guild_name(guild_name):
     if len(cleaned) > _MAX_GUILD_NAME_LEN:
         cleaned = cleaned[:_MAX_GUILD_NAME_LEN].rstrip() + "…"
     return cleaned or "unknown"
+
 
 # 贡献报告的分组标题(与原脚本输出一致:高/中/低不带"成员",入门带)
 _RANK_SECTION = {
@@ -83,8 +85,11 @@ def write_contribution_report(report_dir, guild_name, records, admin=""):
     for r in records:
         grouped.setdefault(r.get("rank"), []).append(r)
 
-    lines = [f"=== {guild_name}公会 所有玩家详细贡献(统计日 {today_str()}) ===",
-             f"执行人: {admin or '(未填写)'}", ""]
+    lines = [
+        f"=== {guild_name}公会 所有玩家详细贡献(统计日 {today_str()}) ===",
+        f"执行人: {admin or '(未填写)'}",
+        "",
+    ]
     total_weekly = sum(r.get("weekly_total", 0) for r in records)
     lines.append(f"统计玩家数: {len(records)}   周贡献合计: {total_weekly}")
     lines.append("")
@@ -94,8 +99,10 @@ def write_contribution_report(report_dir, guild_name, records, admin=""):
             continue
         lines.append(f"---{_RANK_SECTION[rk]}---")
         for r in items:
-            lines.append(f"玩家:{r.get('player','')} 周贡献为:{r.get('weekly_total',0)} "
-                         f"执行操作:{action_display(r.get('actions'))}")
+            lines.append(
+                f"玩家:{r.get('player', '')} 周贡献为:{r.get('weekly_total', 0)} "
+                f"执行操作:{action_display(r.get('actions'))}"
+            )
         lines.append("")
 
     with open(fpath, "w", encoding="utf-8") as f:

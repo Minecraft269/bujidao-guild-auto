@@ -38,8 +38,15 @@ from guild_auto.domain.parsers import (  # noqa: E402
     validate_player_name,
 )
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -54,8 +61,7 @@ RANK_NAMES = {
 }
 
 
-def _member_block(last_online_line=None, joined="2026-08-15 10:26:58",
-                  player="合成玩家甲"):
+def _member_block(last_online_line=None, joined="2026-08-15 10:26:58", player="合成玩家甲"):
     """构造一个 /guild member 面板块。
 
     last_online_line 为 None 时省略该行（测"字段缺失"）；
@@ -93,17 +99,16 @@ class TestLastOnlineLoadingState(unittest.TestCase):
         """'加载中' 原样保留(不伪装成时间) —— 下游才能识别并区别对待。"""
         r = parse_guild_member(_member_block("加载中"), expected_id="合成玩家甲")
         self.assertIsNotNone(r["last_online"])
-        self.assertIn("加载中", r["last_online"],
-                      "'加载中' 被吞掉了 —— 下游会误以为没有这个字段")
+        self.assertIn("加载中", r["last_online"], "'加载中' 被吞掉了 —— 下游会误以为没有这个字段")
 
     def test_loading_state_does_not_affect_numbers(self):
         """关键:'加载中' 与正常时间算出的周贡献/明细必须一致。"""
         loading = parse_guild_member(_member_block("加载中"), expected_id="合成玩家甲")
-        normal = parse_guild_member(_member_block("2026-10-07 13:55:16"),
-                                    expected_id="合成玩家甲")
+        normal = parse_guild_member(_member_block("2026-10-07 13:55:16"), expected_id="合成玩家甲")
         self.assertEqual(loading["weekly_total"], normal["weekly_total"])
-        self.assertEqual(loading["daily"], normal["daily"],
-                         "last_online 的形态差异影响了日贡献明细")
+        self.assertEqual(
+            loading["daily"], normal["daily"], "last_online 的形态差异影响了日贡献明细"
+        )
 
     def test_loading_state_with_paren_suffix(self):
         """真实形态里 '加载中' 也可能带括号后缀。"""
@@ -116,15 +121,14 @@ class TestLastOnlineLoadingState(unittest.TestCase):
         for placeholder in ("???公告", "未知", "加载中...", "ERROR"):
             with self.subTest(placeholder=placeholder):
                 r = parse_guild_member(_member_block(placeholder), expected_id="合成玩家甲")
-                self.assertEqual(r["weekly_total"], 16,
-                                 f"占位文案 {placeholder!r} 影响了周贡献")
+                self.assertEqual(r["weekly_total"], 16, f"占位文案 {placeholder!r} 影响了周贡献")
 
     def test_joined_at_placeholder_state(self):
         """真实运行里 '加入时间' 始终正常,但如果它也变成占位值,
         周贡献计算同样不能受影响(加入时间不参与判定)。"""
-        r = parse_guild_member(_member_block(last_online_line="加载中",
-                                             joined="加载中"),
-                               expected_id="合成玩家甲")
+        r = parse_guild_member(
+            _member_block(last_online_line="加载中", joined="加载中"), expected_id="合成玩家甲"
+        )
         self.assertEqual(r["weekly_total"], 16)
 
 
@@ -205,12 +209,10 @@ class TestMixedGuildList(unittest.TestCase):
         exotic_names = ["装饰乄玩家", "灰________灰", "抖音梦幻awa_Mc", "123463278"]
         for name in exotic_names:
             with self.subTest(player=name):
-                validate_player_name(name)      # 先过名单校验
-                r = parse_guild_member(_member_block("加载中", player=name),
-                                       expected_id=name)
+                validate_player_name(name)  # 先过名单校验
+                r = parse_guild_member(_member_block("加载中", player=name), expected_id=name)
                 self.assertEqual(r["player"], name)
-                self.assertEqual(r["weekly_total"], 16,
-                                 f"{name} 的周贡献没算出来 → 该玩家会被放弃")
+                self.assertEqual(r["weekly_total"], 16, f"{name} 的周贡献没算出来 → 该玩家会被放弃")
 
 
 if __name__ == "__main__":

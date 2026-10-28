@@ -7,6 +7,7 @@ window_input.py —— 窗口操作与模拟输入
   * 聊天键解析:auto(读 options.txt key_key.chat)/ 中文别名 / 直接键名
   * 模拟人工输入:聊天键 → 剪贴板粘贴 → 回车,带随机延时
 """
+
 import ctypes
 import os
 import random
@@ -95,8 +96,9 @@ def find_game_window(keywords):
         title = win[1].lower()
         for kw in lowered:
             if kw in title:
-                logger.trace_return("window_input.find_game_window",
-                                    {"hwnd": win[0], "title": win[1]})
+                logger.trace_return(
+                    "window_input.find_game_window", {"hwnd": win[0], "title": win[1]}
+                )
                 return win[0]
     logger.trace_return("window_input.find_game_window", None)
     return None
@@ -269,9 +271,13 @@ class HumanInput:
         detector:可选 GameStateDetector,若聊天栏已开则跳过 _open_chat 避免 toggle 误关
         """
         t0 = time.monotonic()
-        logger.log_debug(f"[send_chat_text] 准备发送 text_len={len(text)} text={text[:60]!r}{'…' if len(text) > 60 else ''}")
+        logger.log_debug(
+            f"[send_chat_text] 准备发送 text_len={len(text)} text={text[:60]!r}{'…' if len(text) > 60 else ''}"
+        )
         logger.trace_code_location("HumanInput.send_chat_text", f"text_len={len(text)}")
-        logger.trace_code_location("HumanInput.send_chat_text.1_open_chat", "press chat key (若已开则跳过)")
+        logger.trace_code_location(
+            "HumanInput.send_chat_text.1_open_chat", "press chat key (若已开则跳过)"
+        )
         if stop_check and stop_check():
             return False
         self._open_chat(detector=detector)
@@ -294,7 +300,9 @@ class HumanInput:
             return False
         pyautogui.press("enter")
         t3 = time.monotonic()
-        logger.log_debug(f"[send_chat_text] 完成: 开栏={int((t1-t0)*1000)}ms 复制={int((t2-t1)*1000)}ms 粘贴回车={int((t3-t2)*1000)}ms 总={int((t3-t0)*1000)}ms")
+        logger.log_debug(
+            f"[send_chat_text] 完成: 开栏={int((t1 - t0) * 1000)}ms 复制={int((t2 - t1) * 1000)}ms 粘贴回车={int((t3 - t2) * 1000)}ms 总={int((t3 - t0) * 1000)}ms"
+        )
 
     def paste_and_enter(self, text, stop_check=None):
         """试探式发送:直接粘贴 + 回车(不按 chat_key)。

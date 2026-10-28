@@ -33,13 +33,21 @@ from guild_auto.infrastructure import logger  # noqa: E402
 from guild_auto.infrastructure.log_watcher import extract_chat_block, split_messages  # noqa: E402
 from guild_auto.domain.parsers import parse_guild_list  # noqa: E402
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
-SAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "tests", "samples")
+SAMPLES = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "samples"
+)
 
 RANK_NAMES = {
     "leader": "会长",
@@ -70,8 +78,7 @@ class TestRealShapedPanelExtraction(unittest.TestCase):
         """
         lines = _read_real_shaped_list()
         msgs = split_messages(lines)
-        self.assertEqual(len(msgs), 1,
-                         f"真实形态应只有 1 条消息,实际 {len(msgs)} 条")
+        self.assertEqual(len(msgs), 1, f"真实形态应只有 1 条消息,实际 {len(msgs)} 条")
         self.assertTrue(any("[CHAT]" in l for l in msgs[0]))
 
     def test_extract_chat_block_strips_separators_and_copy_marker(self):
@@ -116,18 +123,26 @@ class TestRealShapedPanelParsing(unittest.TestCase):
 
     def test_admin_group_parsed_before_vice_group(self):
         """真实组顺序:管理员在副会长**之前**(与直觉相反,别弄反)。"""
-        idx_admin = next(i for i, l in enumerate(self.block)
-                         if "管理员" in l and l.strip().startswith("--"))
-        idx_vice = next(i for i, l in enumerate(self.block)
-                        if "副会长" in l and l.strip().startswith("--"))
-        self.assertLess(idx_admin, idx_vice,
-                        "fixture 的组顺序变了?真实形态是管理员在副会长之前")
+        idx_admin = next(
+            i for i, l in enumerate(self.block) if "管理员" in l and l.strip().startswith("--")
+        )
+        idx_vice = next(
+            i for i, l in enumerate(self.block) if "副会长" in l and l.strip().startswith("--")
+        )
+        self.assertLess(idx_admin, idx_vice, "fixture 的组顺序变了?真实形态是管理员在副会长之前")
 
     def test_exotic_names_survive(self):
         """真实名库里的奇形名字不能被丢,也不能把别的名字吞掉。"""
         low = self.result["groups"]["low"]
-        for name in ("123463278", "灰________灰", "抖音梦幻awa_Mc",
-                     "花缘灬遗忘", "演示乄浅听雨", "静轩彡", "风尘彡叹流年罒"):
+        for name in (
+            "123463278",
+            "灰________灰",
+            "抖音梦幻awa_Mc",
+            "花缘灬遗忘",
+            "演示乄浅听雨",
+            "静轩彡",
+            "风尘彡叹流年罒",
+        ):
             with self.subTest(name=name):
                 self.assertIn(name, low, f"{name} 未出现在解析结果里")
 
@@ -148,15 +163,17 @@ class TestRealShapedPanelParsing(unittest.TestCase):
         """
         expected = "\n".join(self.block).count("●")
         total = sum(len(v) for v in self.result["groups"].values())
-        self.assertEqual(total, expected,
-                         f"解析出 {total} 个玩家,fixture 里有 {expected} 个 ● 分隔符"
-                         f"(差 {expected - total} 个,可能吞人或拆错)")
+        self.assertEqual(
+            total,
+            expected,
+            f"解析出 {total} 个玩家,fixture 里有 {expected} 个 ● 分隔符"
+            f"(差 {expected - total} 个,可能吞人或拆错)",
+        )
 
     def test_dedup_preserves_order(self):
         """去重要保序。"""
         for rank, ids in self.result["groups"].items():
-            self.assertEqual(len(ids), len(set(ids)),
-                             f"{rank} 组有重复名未去重")
+            self.assertEqual(len(ids), len(set(ids)), f"{rank} 组有重复名未去重")
 
 
 if __name__ == "__main__":

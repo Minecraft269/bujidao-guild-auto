@@ -27,6 +27,7 @@ TRACE(6 级)埋点 —— 每类一个辅助函数,调用方一行打出结构�
 低开销:当前级别 <6(或未启用)时所有 trace_* 立即 return,不构造任何字符串。
 线程安全:全部埋点走同一个 logging.Logger,由 logging 的 handler 锁保证单条记录不撕裂。
 """
+
 import gzip
 import logging
 import os
@@ -64,14 +65,14 @@ VERIFY_STAGES = ("submit", "send", "read_log", "judge", "retry", "done")
 # trace 快照截断长度:防止单个返回值/参数把日志撑爆
 _SNAP_MAX = 200
 
-_logger = None       # 实际 logging.Logger
-_log_dir = "logs"    # 日志目录(相对脚本运行目录)
-_current_level = 4   # 当前用户级别(默认 4=信息)
+_logger = None  # 实际 logging.Logger
+_log_dir = "logs"  # 日志目录(相对脚本运行目录)
+_current_level = 4  # 当前用户级别(默认 4=信息)
 _enabled = True
 _initialized = False  # 防止重复 init 时误归档当前运行的日志
 
-_START_TIME = _time.monotonic()   # 进程启动时间戳(用于相对偏移)
-_INIT_LOCK = threading.Lock()      # 防止多线程同时 init 导致重复归档
+_START_TIME = _time.monotonic()  # 进程启动时间戳(用于相对偏移)
+_INIT_LOCK = threading.Lock()  # 防止多线程同时 init 导致重复归档
 
 
 class _Formatter(logging.Formatter):
@@ -107,8 +108,9 @@ def _next_archive_name(log_dir, today):
       已有 app-D-2.gz      → app-D-3
       已有 app-D.gz 与 -2  → app-D-3
     """
-    existing = [f for f in os.listdir(log_dir)
-                if f.startswith(f"app-{today}") and f.endswith(".gz")]
+    existing = [
+        f for f in os.listdir(log_dir) if f.startswith(f"app-{today}") and f.endswith(".gz")
+    ]
     if not existing:
         return f"app-{today}"
     max_seq = 0
@@ -132,13 +134,13 @@ def _archive_old_latest(log_dir):
 
     today = datetime.now().strftime("%Y-%m-%d")
     base = _next_archive_name(log_dir, today)
-    log_name = base + ".log"      # 重命名后的 .log 文件
+    log_name = base + ".log"  # 重命名后的 .log 文件
     gz_path = os.path.join(log_dir, base + ".gz")
 
     raw = os.path.join(log_dir, log_name)
     if os.path.exists(raw):
         os.remove(raw)
-    if os.path.exists(gz_path):   # 极端兜底:目标已存在则再递增,绝不覆盖
+    if os.path.exists(gz_path):  # 极端兜底:目标已存在则再递增,绝不覆盖
         base = f"{base}-x"
         log_name = base + ".log"
         gz_path = os.path.join(log_dir, base + ".gz")
@@ -149,8 +151,11 @@ def _archive_old_latest(log_dir):
     shutil.move(latest_path, raw)
     # gzip 压缩:压缩包内文件名记为 .log(用 GzipFile filename 内嵌)
     try:
-        with open(raw, "rb") as f_in, open(gz_path, "wb") as f_gz, \
-                gzip.GzipFile(filename=log_name, mode="wb", fileobj=f_gz) as f_out:
+        with (
+            open(raw, "rb") as f_in,
+            open(gz_path, "wb") as f_gz,
+            gzip.GzipFile(filename=log_name, mode="wb", fileobj=f_gz) as f_out,
+        ):
             shutil.copyfileobj(f_in, f_out)
     finally:
         if os.path.exists(raw):
@@ -192,8 +197,11 @@ def init_logger(log_dir="logs", level=4, enabled=True):
 
         handler = logging.FileHandler(os.path.join(log_dir, "latest.log"), encoding="utf-8")
         handler.setLevel(threshold)
-        handler.setFormatter(_Formatter("%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s",
-                                        datefmt="%Y-%m-%d %H:%M:%S"))
+        handler.setFormatter(
+            _Formatter(
+                "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+            )
+        )
         logger.addHandler(handler)
         _logger = logger
         _initialized = True
@@ -218,12 +226,28 @@ def _log(level, msg):
 # ---------------------------------------------------------------------------
 # 普通级别输出
 # ---------------------------------------------------------------------------
-def log_critical(msg): _log(logging.CRITICAL, msg)
-def log_error(msg):    _log(logging.ERROR, msg)
-def log_warning(msg):  _log(logging.WARNING, msg)
-def log_info(msg):     _log(logging.INFO, msg)
-def log_debug(msg):    _log(logging.DEBUG, msg)
-def log_trace(msg):    _log(TRACE_LEVEL, msg)
+def log_critical(msg):
+    _log(logging.CRITICAL, msg)
+
+
+def log_error(msg):
+    _log(logging.ERROR, msg)
+
+
+def log_warning(msg):
+    _log(logging.WARNING, msg)
+
+
+def log_info(msg):
+    _log(logging.INFO, msg)
+
+
+def log_debug(msg):
+    _log(logging.DEBUG, msg)
+
+
+def log_trace(msg):
+    _log(TRACE_LEVEL, msg)
 
 
 def log_exception(msg, exc=None):
@@ -316,8 +340,10 @@ def trace_thread(event, thread=None, **fields):
     if _current_level < 6 or not _enabled:
         return
     t = thread or threading.current_thread()
-    msg = (f"TRACE_THREAD {event} | thread={t.name} | ident={t.ident} "
-           f"| alive={t.is_alive()} | daemon={t.daemon}")
+    msg = (
+        f"TRACE_THREAD {event} | thread={t.name} | ident={t.ident} "
+        f"| alive={t.is_alive()} | daemon={t.daemon}"
+    )
     if fields:
         msg += _kv(fields)
     log_trace(msg)
@@ -373,6 +399,7 @@ def is_enabled():
 if __name__ == "__main__":  # 自检:一轮跑完 6 级 + 全部埋点
     import shutil
     import tempfile
+
     d = tempfile.mkdtemp()
     init_logger(log_dir=d, level=6)
     log_info("[自检] 开始")

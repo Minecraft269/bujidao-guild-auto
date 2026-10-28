@@ -10,6 +10,7 @@ game_state.py —— 游戏界面状态检测
 依赖:winsdk(Windows OCR,Win10+ 系统自带引擎;中文识别需系统装有中文 OCR 语言包)。
 winsdk 不可用时自动降级(检测结果视为"非菜单、聊天栏未打开",不影响原有发送流程)。
 """
+
 import asyncio
 import io
 import time
@@ -28,6 +29,7 @@ try:
     from winsdk.windows.globalization import Language
     from winsdk.windows.media.ocr import OcrEngine
     from winsdk.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
+
     _WINSDK_OK = True
 except Exception:  # winsdk 未安装/不可用 → 降级
     _WINSDK_OK = False
@@ -36,8 +38,9 @@ except Exception:  # winsdk 未安装/不可用 → 降级
 class GameStateDetector:
     """游戏界面状态检测器(截图 + OCR,带结果缓存)。"""
 
-    def __init__(self, menu_keywords=None, chat_keywords=None, cache_seconds=3.0,
-                 chat_bar_state="auto"):
+    def __init__(
+        self, menu_keywords=None, chat_keywords=None, cache_seconds=3.0, chat_bar_state="auto"
+    ):
         self.menu_keywords = menu_keywords or MENU_KEYWORDS
         self.chat_keywords = chat_keywords or CHAT_BAR_KEYWORDS
         self.cache_seconds = cache_seconds
@@ -93,8 +96,16 @@ class GameStateDetector:
             compact = text.replace(" ", "").replace("　", "").replace("\n", "")
             in_menu = any(k and k in compact for k in self.menu_keywords)
             chat_open = any(k and k in compact for k in self.chat_keywords)
-            logger.trace_return("game_state.detect", {"in_menu": in_menu, "chat_open": chat_open,
-                                                      "cached": not (force or self._cache is None or now - self._cache[0] > self.cache_seconds)})
+            logger.trace_return(
+                "game_state.detect",
+                {
+                    "in_menu": in_menu,
+                    "chat_open": chat_open,
+                    "cached": not (
+                        force or self._cache is None or now - self._cache[0] > self.cache_seconds
+                    ),
+                },
+            )
             return in_menu, chat_open
         except Exception as e:
             logger.trace_exception("game_state.detect", e)
@@ -103,8 +114,8 @@ class GameStateDetector:
 
 def prepare_chat_state(detector, console_func=print):
     """发送指令前的菜单处理(聊天栏状态由'试错式发送'自动处理):
-      * OCR 检测到菜单界面 → 按 Esc 关闭(仍存在则按 Enter 回到游戏)
-      返回 True 表示处理过菜单;detector 不可用时返回 False(走原流程)。"""
+    * OCR 检测到菜单界面 → 按 Esc 关闭(仍存在则按 Enter 回到游戏)
+    返回 True 表示处理过菜单;detector 不可用时返回 False(走原流程)。"""
     if detector is None or not getattr(detector, "available", False):
         return False
     try:

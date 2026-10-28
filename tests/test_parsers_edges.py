@@ -13,6 +13,7 @@ test_parsers_edges.py —— 解析器边界分支补齐
   5. 玩家名校验的注入防护(路径分隔符/控制字符/超长)
   6. 解析失败必须抛 ParseError 并给出中文原因
 """
+
 import os
 import sys
 import unittest
@@ -27,8 +28,15 @@ from guild_auto.domain.parsers import (  # noqa: E402
     validate_player_name,
 )
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -58,8 +66,7 @@ class TestCopyMarkerVariants(unittest.TestCase):
 
     def test_marker_with_space_value_parsed(self):
         """带空格 "[C]" 且有真实数值:数值必须解析出来(不是被标记吃掉)。"""
-        total, daily = parse_weekly_exp(
-            ["公会经验周贡献:", "    2026-08-12: 1,322 公会经验 [C]"])
+        total, daily = parse_weekly_exp(["公会经验周贡献:", "    2026-08-12: 1,322 公会经验 [C]"])
         self.assertEqual(total, 1322)
         self.assertEqual(daily, [("2026-08-12", 1322)])
 
@@ -69,74 +76,88 @@ class TestWeeklySectionBoundary(unittest.TestCase):
 
     def test_section_stops_at_dash_line(self):
         """遇到分隔线终止:分隔线后的数值不计入。"""
-        total, _ = parse_weekly_exp([
-            "公会经验周贡献:",
-            "    今天: 10 公会经验",
-            "-------------------------------------------- [C]",
-            "    2026-01-01: 99999 公会经验",   # 段外,不得计入
-        ])
+        total, _ = parse_weekly_exp(
+            [
+                "公会经验周贡献:",
+                "    今天: 10 公会经验",
+                "-------------------------------------------- [C]",
+                "    2026-01-01: 99999 公会经验",  # 段外,不得计入
+            ]
+        )
         self.assertEqual(total, 10, "分隔线后的数据被错误计入周贡献")
 
     def test_section_stops_at_joined_at(self):
         """遇到"加入时间"终止(段外字段不得计入)。"""
-        total, _ = parse_weekly_exp([
-            "公会经验周贡献:",
-            "    今天: 5 公会经验",
-            "加入时间: 2026-08-07 19:34:16",
-            "    2026-01-01: 88888 公会经验",
-        ])
+        total, _ = parse_weekly_exp(
+            [
+                "公会经验周贡献:",
+                "    今天: 5 公会经验",
+                "加入时间: 2026-08-07 19:34:16",
+                "    2026-01-01: 88888 公会经验",
+            ]
+        )
         self.assertEqual(total, 5)
 
     def test_section_stops_at_last_online(self):
         """遇到"上次在线"终止。"""
-        total, _ = parse_weekly_exp([
-            "公会经验周贡献:",
-            "    今天: 7 公会经验",
-            "上次在线: 2026-08-12 18:40:19(2.14天前)",
-            "    2026-01-01: 77777 公会经验",
-        ])
+        total, _ = parse_weekly_exp(
+            [
+                "公会经验周贡献:",
+                "    今天: 7 公会经验",
+                "上次在线: 2026-08-12 18:40:19(2.14天前)",
+                "    2026-01-01: 77777 公会经验",
+            ]
+        )
         self.assertEqual(total, 7)
 
     def test_lines_before_header_ignored(self):
         """周贡献标题**之前**的数值行不得计入。"""
-        total, _ = parse_weekly_exp([
-            "公会名",
-            "    2026-01-01: 12345 公会经验",   # 标题之前,不得计入
-            "公会经验周贡献:",
-            "    今天: 3 公会经验",
-        ])
+        total, _ = parse_weekly_exp(
+            [
+                "公会名",
+                "    2026-01-01: 12345 公会经验",  # 标题之前,不得计入
+                "公会经验周贡献:",
+                "    今天: 3 公会经验",
+            ]
+        )
         self.assertEqual(total, 3, "标题段之前的数据被错误计入")
 
     def test_other_numeric_line_in_section_counted(self):
         """段内其它含数值的行(如面板新增字段)也计入(补 line 105-107 缺口)。
 
         业务规则 §4:该段内**所有** "数值 公会经验" 行求和。"""
-        total, _ = parse_weekly_exp([
-            "公会经验周贡献:",
-            "    今天: 10 公会经验",
-            "    累计: 20 公会经验",       # 非日期、非今天的行
-        ])
+        total, _ = parse_weekly_exp(
+            [
+                "公会经验周贡献:",
+                "    今天: 10 公会经验",
+                "    累计: 20 公会经验",  # 非日期、非今天的行
+            ]
+        )
         self.assertEqual(total, 30, "段内其它数值行未被计入(业务规则 §4 要求全部计入)")
 
     def test_thousands_separator_removed(self):
         """千分位逗号必须去除后累加(1,322 → 1322)。"""
-        total, _ = parse_weekly_exp([
-            "公会经验周贡献:",
-            "    今天: 1,000 公会经验",
-            "    2026-08-12: 1,322 公会经验",
-            "    2026-08-11: 2,500 公会经验",
-        ])
+        total, _ = parse_weekly_exp(
+            [
+                "公会经验周贡献:",
+                "    今天: 1,000 公会经验",
+                "    2026-08-12: 1,322 公会经验",
+                "    2026-08-11: 2,500 公会经验",
+            ]
+        )
         self.assertEqual(total, 4822)
 
     def test_empty_lines_skipped(self):
         """段内空行应跳过,不影响求和。"""
-        total, _ = parse_weekly_exp([
-            "公会经验周贡献:",
-            "",
-            "    今天: 4 公会经验",
-            "   ",
-            "    2026-08-12: 6 公会经验",
-        ])
+        total, _ = parse_weekly_exp(
+            [
+                "公会经验周贡献:",
+                "",
+                "    今天: 4 公会经验",
+                "   ",
+                "    2026-08-12: 6 公会经验",
+            ]
+        )
         self.assertEqual(total, 10)
 
 
@@ -159,9 +180,11 @@ class TestPlayerNameTruncationJoin(unittest.TestCase):
             "在线成员数: 1",
         ]
         r = parse_guild_list(lines, RANK_NAMES)
-        self.assertIn("一个超长的演示玩家名字被游戏截断成两行 接上后半段",
-                      r["groups"]["entry"],
-                      "跨行截断的玩家名未被拼接")
+        self.assertIn(
+            "一个超长的演示玩家名字被游戏截断成两行 接上后半段",
+            r["groups"]["entry"],
+            "跨行截断的玩家名未被拼接",
+        )
 
     def test_join_stops_at_group_title(self):
         """拼接必须在遇到下一个分组标题时停止(不得把标题吞进名字)。"""
@@ -271,15 +294,18 @@ class TestParseErrors(unittest.TestCase):
 
     def test_member_missing_weekly_section_raises(self):
         """缺"公会经验周贡献"段 → ParseError。"""
-        block = ["演示公会", "演示成员", "加入时间: 2026-08-07 19:34:16",
-                 "上次在线: 2026-08-12 18:40:19"]
+        block = [
+            "演示公会",
+            "演示成员",
+            "加入时间: 2026-08-07 19:34:16",
+            "上次在线: 2026-08-12 18:40:19",
+        ]
         with self.assertRaises(ParseError):
             parse_guild_member(block, expected_id="演示成员")
 
     def test_member_expected_id_not_in_text_raises(self):
         """响应块中找不到目标玩家 → ParseError(可能是抓到了别人的面板)。"""
-        block = ["演示公会", "别的玩家", "公会经验周贡献:",
-                 "    今天: 0 公会经验"]
+        block = ["演示公会", "别的玩家", "公会经验周贡献:", "    今天: 0 公会经验"]
         with self.assertRaises(ParseError):
             parse_guild_member(block, expected_id="目标玩家")
 
@@ -343,8 +369,14 @@ class TestParseGuildListStats(unittest.TestCase):
     """公会列表的统计行解析。"""
 
     def test_total_and_online_parsed(self):
-        lines = ["演示公会", "-- 入门成员 --", "玩家甲 ●", "玩家乙 ●",
-                 "成员总数: 200", "在线成员数: 43"]
+        lines = [
+            "演示公会",
+            "-- 入门成员 --",
+            "玩家甲 ●",
+            "玩家乙 ●",
+            "成员总数: 200",
+            "在线成员数: 43",
+        ]
         r = parse_guild_list(lines, RANK_NAMES)
         self.assertEqual(r["total"], 200)
         self.assertEqual(r["online"], 43)
@@ -363,8 +395,7 @@ class TestParseGuildListStats(unittest.TestCase):
 
     def test_colon_variant_stats(self):
         """全角冒号也应能解析统计行。"""
-        lines = ["演示公会", "-- 入门成员 --", "玩家甲 ●",
-                 "成员总数：200", "在线成员数：43"]
+        lines = ["演示公会", "-- 入门成员 --", "玩家甲 ●", "成员总数：200", "在线成员数：43"]
         r = parse_guild_list(lines, RANK_NAMES)
         self.assertEqual(r["total"], 200)
         self.assertEqual(r["online"], 43)

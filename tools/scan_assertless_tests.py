@@ -4,6 +4,7 @@
 判据：方法体内没有任何 self.assert* / self.fail / self.skipTest / subTest 调用。
 用途：审查反馈有空测试，用工具全量核实，而不是只查被点名的那两个文件。
 """
+
 import ast
 import os
 import sys
@@ -11,21 +12,52 @@ import sys
 TESTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests")
 
 ASSERT_ATTRS = set()
-for _s in ("Equal", "NotEqual", "True", "False", "Is", "IsNot", "IsNone",
-           "IsNotNone", "In", "NotIn", "IsInstance", "IsNotInstance",
-           "Raises", "RaisesRegex", "Warns", "Logs", "AlmostEqual",
-           "Greater", "GreaterEqual", "Less", "LessEqual", "Regex",
-           "CountEqual", "SequenceEqual", "ListEqual", "DictEqual",
-           "MultiLineEqual", "TupleEqual", "SetEqual"):
+for _s in (
+    "Equal",
+    "NotEqual",
+    "True",
+    "False",
+    "Is",
+    "IsNot",
+    "IsNone",
+    "IsNotNone",
+    "In",
+    "NotIn",
+    "IsInstance",
+    "IsNotInstance",
+    "Raises",
+    "RaisesRegex",
+    "Warns",
+    "Logs",
+    "AlmostEqual",
+    "Greater",
+    "GreaterEqual",
+    "Less",
+    "LessEqual",
+    "Regex",
+    "CountEqual",
+    "SequenceEqual",
+    "ListEqual",
+    "DictEqual",
+    "MultiLineEqual",
+    "TupleEqual",
+    "SetEqual",
+):
     ASSERT_ATTRS.add("assert" + _s)
 ASSERT_ATTRS.update(("fail", "skipTest", "subTest"))
 # unittest.mock.Mock 的断言方法同样是断言(assert_called_once_with 等)。
 # 少了这些会把大量优质 mock 测试误报成"无断言"，扫描结果就没人信了。
-ASSERT_ATTRS.update((
-    "assert_called", "assert_called_once", "assert_called_with",
-    "assert_called_once_with", "assert_any_call", "assert_has_calls",
-    "assert_not_called",
-))
+ASSERT_ATTRS.update(
+    (
+        "assert_called",
+        "assert_called_once",
+        "assert_called_with",
+        "assert_called_once_with",
+        "assert_any_call",
+        "assert_has_calls",
+        "assert_not_called",
+    )
+)
 
 
 def _has_assertion(fn):
@@ -56,8 +88,9 @@ def main():
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read(), path)
         for cls in [n for n in tree.body if isinstance(n, ast.ClassDef)]:
-            for fn in [n for n in cls.body
-                       if isinstance(n, ast.FunctionDef) and n.name.startswith("test")]:
+            for fn in [
+                n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test")
+            ]:
                 total += 1
                 if not _has_assertion(fn):
                     bad.append(f"{fname}:{fn.lineno}  {cls.name}::{fn.name}")

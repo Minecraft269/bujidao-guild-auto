@@ -12,6 +12,7 @@ test_pending.py —— 待办持久化与断点续做
   3. 全部完成的项目必须从待办移除(不能下次再执行一次)
   4. 用户选择跳过时原样保留
 """
+
 import json
 import os
 import shutil
@@ -23,8 +24,17 @@ from guild_auto.application import pending as pending_mod
 
 
 def _items(*players):
-    return [{"player": p, "rank": "entry", "actions": ["kick"],
-             "trigger": None, "weekly": 100, "status": "pending"} for p in players]
+    return [
+        {
+            "player": p,
+            "rank": "entry",
+            "actions": ["kick"],
+            "trigger": None,
+            "weekly": 100,
+            "status": "pending",
+        }
+        for p in players
+    ]
 
 
 class _Base(unittest.TestCase):
@@ -40,12 +50,15 @@ class _Base(unittest.TestCase):
 
 class TestPendingPath(unittest.TestCase):
     def test_uses_report_dir(self):
-        self.assertEqual(pending_mod.pending_path_of({"report_dir": "/r"}),
-                         os.path.join("/r", "pending_actions.json"))
+        self.assertEqual(
+            pending_mod.pending_path_of({"report_dir": "/r"}),
+            os.path.join("/r", "pending_actions.json"),
+        )
 
     def test_defaults_to_reports(self):
-        self.assertEqual(pending_mod.pending_path_of({}),
-                         os.path.join("reports", "pending_actions.json"))
+        self.assertEqual(
+            pending_mod.pending_path_of({}), os.path.join("reports", "pending_actions.json")
+        )
 
 
 class TestLoadPending(_Base):
@@ -68,13 +81,15 @@ class TestLoadPending(_Base):
         self.assertEqual([i["player"] for i in got], ["甲", "乙"])
 
     def test_items_without_player_or_actions_are_dropped(self):
-        self._write([
-            {"player": "甲", "actions": ["kick"]},
-            {"player": "", "actions": ["kick"]},
-            {"player": "乙", "actions": []},
-            {"actions": ["kick"]},
-            "不是字典",
-        ])
+        self._write(
+            [
+                {"player": "甲", "actions": ["kick"]},
+                {"player": "", "actions": ["kick"]},
+                {"player": "乙", "actions": []},
+                {"actions": ["kick"]},
+                "不是字典",
+            ]
+        )
         got = pending_mod.load_pending(self.path)
         self.assertEqual([i["player"] for i in got], ["甲"])
 
@@ -83,10 +98,13 @@ class TestLoadPending(_Base):
 
         用超长名字触发 validate_player_name 的上限(命令参数注入/文件名穿越)。
         """
-        self._write([{"player": "A" * 5000, "actions": ["kick"]},
-                     {"player": "甲", "actions": ["kick"]}])
-        with mock.patch.object(pending_mod.logger, "log_warning") as m_warn, \
-                mock.patch.object(pending_mod, "console") as m_console:
+        self._write(
+            [{"player": "A" * 5000, "actions": ["kick"]}, {"player": "甲", "actions": ["kick"]}]
+        )
+        with (
+            mock.patch.object(pending_mod.logger, "log_warning") as m_warn,
+            mock.patch.object(pending_mod, "console") as m_console,
+        ):
             got = pending_mod.load_pending(self.path)
         self.assertEqual([i["player"] for i in got], ["甲"])
         m_warn.assert_called()
@@ -108,19 +126,24 @@ class TestSavePending(_Base):
 
 class TestRunPending(_Base):
     def _run(self, answers, executor=None, sw=None):
-        cfg = {"switches": sw or {"execution_enabled": True},
-               "guild_name": "演示公会"}
+        cfg = {"switches": sw or {"execution_enabled": True}, "guild_name": "演示公会"}
         if executor is None:
             ex = mock.Mock()
             ex.execute_actions.return_value = []
         else:
-            ex = executor      # 调用方已配置好返回值，不得覆盖
+            ex = executor  # 调用方已配置好返回值，不得覆盖
         answers = list(answers)
         console = mock.Mock()
         cont, rem = pending_mod.run_pending(
-            cfg, mock.Mock(), mock.Mock(), None, ex, self.path,
+            cfg,
+            mock.Mock(),
+            mock.Mock(),
+            None,
+            ex,
+            self.path,
             console_fn=console,
-            input_fn=lambda *a, **k: answers.pop(0) if answers else "")
+            input_fn=lambda *a, **k: answers.pop(0) if answers else "",
+        )
         return cont, rem, ex, console
 
     def test_empty_returns_continue(self):
@@ -142,20 +165,24 @@ class TestRunPending(_Base):
         cont, rem, _, _ = self._run(["y", ""], executor=ex)
         self.assertFalse(cont, "第二问回车=直接退出,应为 False")
         self.assertEqual(rem, [])
-        self.assertEqual(pending_mod.load_pending(self.path), [],
-                         "全部完成却仍留在待办 → 下次会重复执行不可逆操作")
+        self.assertEqual(
+            pending_mod.load_pending(self.path),
+            [],
+            "全部完成却仍留在待办 → 下次会重复执行不可逆操作",
+        )
 
     def test_partial_failure_keeps_remaining_suffix(self):
         """部分成功:只保留未完成的后缀,已完成的那条不能再出现。"""
-        self._write([{"player": "甲", "rank": "entry",
-                      "actions": ["promote", "kick"], "status": "pending"}])
+        self._write(
+            [{"player": "甲", "rank": "entry", "actions": ["promote", "kick"], "status": "pending"}]
+        )
         ex = mock.Mock()
-        ex.execute_actions.return_value = [("promote", True, None),
-                                           ("kick", False, "超时")]
+        ex.execute_actions.return_value = [("promote", True, None), ("kick", False, "超时")]
         cont, rem, _, _ = self._run(["y", ""], executor=ex)
         self.assertFalse(cont)
-        self.assertEqual(rem[0]["actions"], ["kick"],
-                         f"已完成的 promote 被保留了: {rem[0]['actions']}")
+        self.assertEqual(
+            rem[0]["actions"], ["kick"], f"已完成的 promote 被保留了: {rem[0]['actions']}"
+        )
         self.assertEqual(rem[0]["status"], "failed")
         self.assertIn("kick", rem[0]["error"])
 
@@ -181,9 +208,16 @@ class TestRunPending(_Base):
         def _raise(*a, **k):
             raise EOFError
 
-        cont, rem = pending_mod.run_pending(cfg, mock.Mock(), mock.Mock(), None,
-                                            ex, self.path,
-                                            console_fn=mock.Mock(), input_fn=_raise)
+        cont, rem = pending_mod.run_pending(
+            cfg,
+            mock.Mock(),
+            mock.Mock(),
+            None,
+            ex,
+            self.path,
+            console_fn=mock.Mock(),
+            input_fn=_raise,
+        )
         ex.execute_actions.assert_not_called()
         self.assertEqual(len(rem), 1)
         self.assertFalse(cont)

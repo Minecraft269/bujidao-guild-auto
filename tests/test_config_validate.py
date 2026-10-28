@@ -16,6 +16,7 @@ test_config_validate.py —— 配置加载/校验/生成 边界补齐
   阈值写成字符串 → 判定崩溃;min>max → 随机延时异常;game_log 指向脚本自身
   logs/latest.log → 脚本读自己的日志,自读自写死循环;日志级别越界 → 日志失效。
 """
+
 import copy
 import json
 import os
@@ -38,8 +39,15 @@ from guild_auto.config import (  # noqa: E402
     validate_config,
 )
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -84,8 +92,11 @@ class TestLoadConfigFallback(unittest.TestCase):
             os.remove(missing)
         cfg = load_config(missing)
         cfg["thresholds"]["high_demote"] = 999999
-        self.assertEqual(DEFAULT_CONFIG["thresholds"]["high_demote"], 30000,
-                         "返回值污染了 DEFAULT_CONFIG —— 会跨次运行泄漏配置")
+        self.assertEqual(
+            DEFAULT_CONFIG["thresholds"]["high_demote"],
+            30000,
+            "返回值污染了 DEFAULT_CONFIG —— 会跨次运行泄漏配置",
+        )
 
 
 class TestJsoncAndDeepMerge(unittest.TestCase):
@@ -101,8 +112,7 @@ class TestJsoncAndDeepMerge(unittest.TestCase):
         """带 // 注释的配置文件必须能解析(用户手改注释是常态)。"""
         p = os.path.join(self.tmp, "c.json")
         with open(p, "w", encoding="utf-8") as f:
-            f.write('{\n  // 这是注释\n  "admin": "某管理员",\n'
-                    '  "log_level": 5\n}\n')
+            f.write('{\n  // 这是注释\n  "admin": "某管理员",\n  "log_level": 5\n}\n')
         cfg = load_config(p)
         self.assertEqual(cfg["admin"], "某管理员")
 
@@ -113,8 +123,9 @@ class TestJsoncAndDeepMerge(unittest.TestCase):
             json.dump({"admin": "只写了这一个键"}, f, ensure_ascii=False)
         cfg = load_config(p)
         self.assertEqual(cfg["admin"], "只写了这一个键")
-        self.assertEqual(cfg["thresholds"]["high_demote"], 30000,
-                         "缺失的 thresholds 未由默认值补齐")
+        self.assertEqual(
+            cfg["thresholds"]["high_demote"], 30000, "缺失的 thresholds 未由默认值补齐"
+        )
 
     def test_nested_override_keeps_siblings(self):
         """嵌套覆盖只改指定键,同级兄弟键保留默认。"""
@@ -123,8 +134,7 @@ class TestJsoncAndDeepMerge(unittest.TestCase):
             json.dump({"thresholds": {"high_demote": 12345}}, f, ensure_ascii=False)
         cfg = load_config(p)
         self.assertEqual(cfg["thresholds"]["high_demote"], 12345)
-        self.assertEqual(cfg["thresholds"]["entry_kick"], 3500,
-                         "覆盖一个阈值时把兄弟阈值冲掉了")
+        self.assertEqual(cfg["thresholds"]["entry_kick"], 3500, "覆盖一个阈值时把兄弟阈值冲掉了")
 
 
 class TestSaveConfigRoundTrip(unittest.TestCase):
@@ -200,8 +210,7 @@ class TestValidateDefaultsPass(unittest.TestCase):
 
     def test_default_config_has_no_errors(self):
         issues = validate_config(_cfg())
-        self.assertEqual(_errors(issues), [],
-                         f"默认配置存在校验错误: {_errors(issues)}")
+        self.assertEqual(_errors(issues), [], f"默认配置存在校验错误: {_errors(issues)}")
 
 
 class TestValidateNumericFields(unittest.TestCase):
@@ -209,16 +218,19 @@ class TestValidateNumericFields(unittest.TestCase):
 
     def test_threshold_string_rejected(self):
         """阈值写成字符串必须报错(否则判定时崩溃)。"""
-        c = _cfg(); c["thresholds"]["high_demote"] = "30000"
+        c = _cfg()
+        c["thresholds"]["high_demote"] = "30000"
         self.assertTrue(any("thresholds.high_demote" in m for m in _errors(validate_config(c))))
 
     def test_threshold_negative_rejected(self):
-        c = _cfg(); c["thresholds"]["entry_kick"] = -1
+        c = _cfg()
+        c["thresholds"]["entry_kick"] = -1
         self.assertTrue(any("thresholds.entry_kick" in m for m in _errors(validate_config(c))))
 
     def test_threshold_bool_rejected(self):
         """bool 是 int 子类,True 不应通过数值校验(补 line 474 缺口)。"""
-        c = _cfg(); c["thresholds"]["high_demote"] = True
+        c = _cfg()
+        c["thresholds"]["high_demote"] = True
         self.assertTrue(any("thresholds.high_demote" in m for m in _errors(validate_config(c))))
 
     def test_all_thresholds_checked(self):
@@ -228,7 +240,8 @@ class TestValidateNumericFields(unittest.TestCase):
             c["thresholds"][key] = "不是数字"
             self.assertTrue(
                 any(f"thresholds.{key}" in m for m in _errors(validate_config(c))),
-                f"阈值 {key} 未被校验")
+                f"阈值 {key} 未被校验",
+            )
 
     def test_delay_min_greater_than_max_rejected(self):
         """min>max 必须报错(延时区间颠倒会让随机延时异常)。"""
@@ -239,15 +252,18 @@ class TestValidateNumericFields(unittest.TestCase):
 
     def test_delay_non_numeric_rejected(self):
         for key in ("min_send_interval", "max_send_interval"):
-            c = _cfg(); c["delays"][key] = "快"
+            c = _cfg()
+            c["delays"][key] = "快"
             self.assertTrue(any(f"delays.{key}" in m for m in _errors(validate_config(c))))
 
     def test_max_retries_negative_rejected(self):
-        c = _cfg(); c["timeouts"]["max_retries"] = -1
+        c = _cfg()
+        c["timeouts"]["max_retries"] = -1
         self.assertTrue(any("max_retries" in m for m in _errors(validate_config(c))))
 
     def test_response_wait_non_numeric_rejected(self):
-        c = _cfg(); c["timeouts"]["response_wait"] = None
+        c = _cfg()
+        c["timeouts"]["response_wait"] = None
         self.assertTrue(any("response_wait" in m for m in _errors(validate_config(c))))
 
 
@@ -255,23 +271,29 @@ class TestValidateScopeAndRanks(unittest.TestCase):
     """查询范围与跳过等级校验。"""
 
     def test_invalid_scope_rejected(self):
-        c = _cfg(); c["query_scope"] = "全部"
+        c = _cfg()
+        c["query_scope"] = "全部"
         self.assertTrue(any("query_scope" in m for m in _errors(validate_config(c))))
 
     def test_all_valid_scopes_accepted(self):
         """全部合法范围都必须通过(补 VALID_SCOPES 覆盖)。"""
         for scope in VALID_SCOPES:
-            c = _cfg(); c["query_scope"] = scope
-            self.assertFalse(any("query_scope" in m for m in _errors(validate_config(c))),
-                             f"合法范围 {scope} 被误拒")
+            c = _cfg()
+            c["query_scope"] = scope
+            self.assertFalse(
+                any("query_scope" in m for m in _errors(validate_config(c))),
+                f"合法范围 {scope} 被误拒",
+            )
 
     def test_unknown_skip_rank_is_warning_not_error(self):
         """未知等级应是 warning(不阻塞运行),不是 error。"""
-        c = _cfg(); c["skip_ranks"] = ["不存在的等级"]
+        c = _cfg()
+        c["skip_ranks"] = ["不存在的等级"]
         issues = validate_config(c)
         self.assertTrue(any("skip_ranks" in m for m in _warnings(issues)))
-        self.assertFalse(any("skip_ranks" in m for m in _errors(issues)),
-                         "未知跳过等级不应阻塞运行")
+        self.assertFalse(
+            any("skip_ranks" in m for m in _errors(issues)), "未知跳过等级不应阻塞运行"
+        )
 
 
 class TestValidateTemplatesAndCommands(unittest.TestCase):
@@ -279,38 +301,46 @@ class TestValidateTemplatesAndCommands(unittest.TestCase):
 
     def test_empty_template_rejected(self):
         """空文案模板必须报错(否则发空消息)。"""
-        c = _cfg(); c["notify_templates"]["promote"] = ""
+        c = _cfg()
+        c["notify_templates"]["promote"] = ""
         self.assertTrue(any("notify_templates" in m for m in _errors(validate_config(c))))
 
     def test_whitespace_template_rejected(self):
         """纯空白模板也必须拒绝。"""
-        c = _cfg(); c["notify_templates"]["kick"] = "   "
+        c = _cfg()
+        c["notify_templates"]["kick"] = "   "
         self.assertTrue(any("notify_templates" in m for m in _errors(validate_config(c))))
 
     def test_non_string_template_rejected(self):
-        c = _cfg(); c["notify_templates"]["none"] = 123
+        c = _cfg()
+        c["notify_templates"]["none"] = 123
         self.assertTrue(any("notify_templates" in m for m in _errors(validate_config(c))))
 
     def test_empty_command_rejected(self):
         """空命令必须报错(否则会发出残缺指令)。"""
-        c = _cfg(); c["commands"]["guild_promote"] = ""
+        c = _cfg()
+        c["commands"]["guild_promote"] = ""
         self.assertTrue(any("commands" in m for m in _errors(validate_config(c))))
 
     def test_non_string_command_rejected(self):
-        c = _cfg(); c["commands"]["guild_member"] = ["不是字符串"]
+        c = _cfg()
+        c["commands"]["guild_member"] = ["不是字符串"]
         self.assertTrue(any("commands" in m for m in _errors(validate_config(c))))
 
     def test_chat_key_non_string_rejected(self):
         """非 auto 且非字符串的聊天键必须报错。"""
-        c = _cfg(); c["chat_key"] = 123
+        c = _cfg()
+        c["chat_key"] = 123
         self.assertTrue(any("chat_key" in m for m in _errors(validate_config(c))))
 
     def test_chat_key_auto_accepted(self):
-        c = _cfg(); c["chat_key"] = "auto"
+        c = _cfg()
+        c["chat_key"] = "auto"
         self.assertFalse(any("chat_key" in m for m in _errors(validate_config(c))))
 
     def test_chat_key_string_accepted(self):
-        c = _cfg(); c["chat_key"] = "回车"
+        c = _cfg()
+        c["chat_key"] = "回车"
         self.assertFalse(any("chat_key" in m for m in _errors(validate_config(c))))
 
 
@@ -318,20 +348,25 @@ class TestValidateDebugSection(unittest.TestCase):
     """Debug 模式配置校验(补 517/523-530/536 缺口)。"""
 
     def test_invalid_skip_stage_rejected(self):
-        c = _cfg(); c.setdefault("debug", {})["skip_stages"] = ["不存在的阶段"]
+        c = _cfg()
+        c.setdefault("debug", {})["skip_stages"] = ["不存在的阶段"]
         self.assertTrue(any("skip_stages" in m for m in _errors(validate_config(c))))
 
     def test_all_valid_stages_accepted(self):
         for stage in ("list", "member", "decide", "notify", "execute"):
-            c = _cfg(); c.setdefault("debug", {})["skip_stages"] = [stage]
-            self.assertFalse(any("skip_stages" in m for m in _errors(validate_config(c))),
-                             f"合法阶段 {stage} 被误拒")
+            c = _cfg()
+            c.setdefault("debug", {})["skip_stages"] = [stage]
+            self.assertFalse(
+                any("skip_stages" in m for m in _errors(validate_config(c))),
+                f"合法阶段 {stage} 被误拒",
+            )
 
     def test_players_per_rank_unknown_rank_warning(self):
         """模拟人数里未知等级应是 warning。"""
         c = _cfg()
         c.setdefault("debug", {}).setdefault("simulation", {})["players_per_rank"] = {
-            "不存在的等级": 3}
+            "不存在的等级": 3
+        }
         issues = validate_config(c)
         self.assertTrue(any("players_per_rank" in m for m in _warnings(issues)))
 
@@ -342,7 +377,9 @@ class TestValidateDebugSection(unittest.TestCase):
 
     def test_players_per_rank_non_integer_rejected(self):
         c = _cfg()
-        c.setdefault("debug", {}).setdefault("simulation", {})["players_per_rank"] = {"entry": "三人"}
+        c.setdefault("debug", {}).setdefault("simulation", {})["players_per_rank"] = {
+            "entry": "三人"
+        }
         self.assertTrue(any("players_per_rank" in m for m in _errors(validate_config(c))))
 
     def test_players_per_rank_int_accepted(self):
@@ -378,51 +415,63 @@ class TestValidateLogLevel(unittest.TestCase):
     """日志级别必须为 1~6 的整数。"""
 
     def test_level_zero_rejected(self):
-        c = _cfg(); c.setdefault("log", {})["level"] = 0
+        c = _cfg()
+        c.setdefault("log", {})["level"] = 0
         self.assertTrue(any("log.level" in m for m in _errors(validate_config(c))))
 
     def test_level_seven_rejected(self):
-        c = _cfg(); c.setdefault("log", {})["level"] = 7
+        c = _cfg()
+        c.setdefault("log", {})["level"] = 7
         self.assertTrue(any("log.level" in m for m in _errors(validate_config(c))))
 
     def test_level_bool_rejected(self):
         """bool 不应通过整数校验。"""
-        c = _cfg(); c.setdefault("log", {})["level"] = True
+        c = _cfg()
+        c.setdefault("log", {})["level"] = True
         self.assertTrue(any("log.level" in m for m in _errors(validate_config(c))))
 
     def test_level_float_rejected(self):
-        c = _cfg(); c.setdefault("log", {})["level"] = 4.5
+        c = _cfg()
+        c.setdefault("log", {})["level"] = 4.5
         self.assertTrue(any("log.level" in m for m in _errors(validate_config(c))))
 
     def test_all_valid_levels_accepted(self):
         for lv in range(1, 7):
-            c = _cfg(); c.setdefault("log", {})["level"] = lv
-            self.assertFalse(any("log.level" in m for m in _errors(validate_config(c))),
-                             f"合法日志级别 {lv} 被误拒")
+            c = _cfg()
+            c.setdefault("log", {})["level"] = lv
+            self.assertFalse(
+                any("log.level" in m for m in _errors(validate_config(c))),
+                f"合法日志级别 {lv} 被误拒",
+            )
 
 
 class TestValidateAsyncConfig(unittest.TestCase):
     """异步配置校验(补 546-551 缺口)。"""
 
     def test_enabled_non_bool_rejected(self):
-        c = _cfg(); c.setdefault("async", {})["enabled"] = "yes"
+        c = _cfg()
+        c.setdefault("async", {})["enabled"] = "yes"
         self.assertTrue(any("async.enabled" in m for m in _errors(validate_config(c))))
 
     def test_num_workers_zero_rejected(self):
         """工作线程数必须 >=1(0 个线程 = 永远不消费队列)。"""
-        c = _cfg(); c.setdefault("async", {})["num_workers"] = 0
+        c = _cfg()
+        c.setdefault("async", {})["num_workers"] = 0
         self.assertTrue(any("num_workers" in m for m in _errors(validate_config(c))))
 
     def test_num_workers_negative_rejected(self):
-        c = _cfg(); c.setdefault("async", {})["num_workers"] = -2
+        c = _cfg()
+        c.setdefault("async", {})["num_workers"] = -2
         self.assertTrue(any("num_workers" in m for m in _errors(validate_config(c))))
 
     def test_max_queue_size_zero_rejected(self):
-        c = _cfg(); c.setdefault("async", {})["max_queue_size"] = 0
+        c = _cfg()
+        c.setdefault("async", {})["max_queue_size"] = 0
         self.assertTrue(any("max_queue_size" in m for m in _errors(validate_config(c))))
 
     def test_valid_async_config_accepted(self):
-        c = _cfg(); c["async"] = {"enabled": True, "num_workers": 2, "max_queue_size": 100}
+        c = _cfg()
+        c["async"] = {"enabled": True, "num_workers": 2, "max_queue_size": 100}
         self.assertFalse(any("async." in m for m in _errors(validate_config(c))))
 
 
@@ -438,8 +487,10 @@ class TestValidateGameLogSafety(unittest.TestCase):
         c = _cfg()
         c["log"] = {"dir": "logs", "level": 4, "enabled": True}
         c["game_log"] = os.path.abspath(os.path.join("logs", "latest.log"))
-        self.assertTrue(any("game_log" in m for m in _errors(validate_config(c))),
-                        "指向自身日志目录未被拦截 —— 会造成自读自写死循环")
+        self.assertTrue(
+            any("game_log" in m for m in _errors(validate_config(c))),
+            "指向自身日志目录未被拦截 —— 会造成自读自写死循环",
+        )
 
     def test_game_log_exactly_log_dir_rejected(self):
         """正好等于日志目录本身也应报错。"""
@@ -457,11 +508,13 @@ class TestValidateGameLogSafety(unittest.TestCase):
 
     def test_empty_game_log_skips_check(self):
         """game_log 为空时跳过检查(允许用户稍后填写)。"""
-        c = _cfg(); c["game_log"] = ""
+        c = _cfg()
+        c["game_log"] = ""
         self.assertFalse(any("game_log" in m for m in _errors(validate_config(c))))
 
     def test_none_game_log_skips_check(self):
-        c = _cfg(); c["game_log"] = None
+        c = _cfg()
+        c["game_log"] = None
         self.assertFalse(any("game_log" in m for m in _errors(validate_config(c))))
 
 
@@ -501,14 +554,14 @@ class TestConsole(unittest.TestCase):
         for level in ("info", "warning", "error", "debug", "critical", "trace"):
             try:
                 console(f"测试消息 {level}", level)
-            except Exception as e:   # noqa: BLE001 —— 反向断言需要捕获
+            except Exception as e:  # noqa: BLE001 —— 反向断言需要捕获
                 self.fail(f"级别 {level} 抛了异常: {e!r}")
 
     def test_console_default_level(self):
         """不传级别时按默认(info)输出,不得抛异常。"""
         try:
             console("测试消息")
-        except Exception as e:   # noqa: BLE001 —— 反向断言需要捕获
+        except Exception as e:  # noqa: BLE001 —— 反向断言需要捕获
             self.fail(f"默认级别抛了异常: {e!r}")
 
     def test_console_unknown_level_falls_back(self):
@@ -519,7 +572,7 @@ class TestConsole(unittest.TestCase):
         """
         try:
             console("测试消息", "不存在的级别")
-        except Exception as e:   # noqa: BLE001 —— 反向断言需要捕获
+        except Exception as e:  # noqa: BLE001 —— 反向断言需要捕获
             self.fail(f"未知级别抛了异常: {e!r}")
 
 

@@ -9,6 +9,7 @@ test_logger.py —— 分级日志系统单元测试
     trace_file_read/trace_file_write/trace_code_location)
   * latest.log 写入、按天 gzip 归档(同天多份序号递增)、log_exception 致命生效
 """
+
 import gzip
 import os
 import sys
@@ -20,10 +21,22 @@ from datetime import datetime
 from guild_auto.infrastructure import logger  # noqa: E402
 
 # 每级标记与对应写入函数
-MARKS = {1: "L1致命标记", 2: "L2严重标记", 3: "L3警告标记",
-         4: "L4信息标记", 5: "L5调试标记", 6: "L6追踪标记"}
-WRITERS = {1: logger.log_critical, 2: logger.log_error, 3: logger.log_warning,
-           4: logger.log_info, 5: logger.log_debug, 6: logger.log_trace}
+MARKS = {
+    1: "L1致命标记",
+    2: "L2严重标记",
+    3: "L3警告标记",
+    4: "L4信息标记",
+    5: "L5调试标记",
+    6: "L6追踪标记",
+}
+WRITERS = {
+    1: logger.log_critical,
+    2: logger.log_error,
+    3: logger.log_warning,
+    4: logger.log_info,
+    5: logger.log_debug,
+    6: logger.log_trace,
+}
 
 
 class TestLevelInclusion(unittest.TestCase):
@@ -43,10 +56,12 @@ class TestLevelInclusion(unittest.TestCase):
                 WRITERS[k](MARKS[k])
             content = self._read_latest(d)
             recorded = [k for k in range(1, 7) if MARKS[k] in content]
-            self.assertEqual(recorded, list(range(1, lv + 1)),
-                             f"level {lv}: 应记录 1..{lv},实际 {recorded}")
-            self.assertGreater(len(recorded), prev_count,
-                               f"level {lv} 详细程度必须高于 level {lv-1}")
+            self.assertEqual(
+                recorded, list(range(1, lv + 1)), f"level {lv}: 应记录 1..{lv},实际 {recorded}"
+            )
+            self.assertGreater(
+                len(recorded), prev_count, f"level {lv} 详细程度必须高于 level {lv - 1}"
+            )
             prev_count = len(recorded)
 
     def test_default_level_is_4(self):
@@ -154,15 +169,17 @@ class TestArchive(unittest.TestCase):
         self.assertEqual(raws, [])
 
     def test_same_day_seq_increment(self):
-        self._reinit(); self._reinit()          # → app-today.gz
-        self._reinit()                           # → app-today-2.gz
-        self._reinit()                           # → app-today-3.gz
+        self._reinit()
+        self._reinit()  # → app-today.gz
+        self._reinit()  # → app-today-2.gz
+        self._reinit()  # → app-today-3.gz
         for name in (f"app-{self.today}.gz", f"app-{self.today}-2.gz", f"app-{self.today}-3.gz"):
-            self.assertTrue(os.path.exists(os.path.join(self.d, name)),
-                            f"缺少 {name},目录={os.listdir(self.d)}")
+            self.assertTrue(
+                os.path.exists(os.path.join(self.d, name)), f"缺少 {name},目录={os.listdir(self.d)}"
+            )
 
     def test_repeated_init_does_not_archive_current_run(self):
-        self._reinit()   # 首次 init 时无旧日志可归档
+        self._reinit()  # 首次 init 时无旧日志可归档
         gzs = [f for f in os.listdir(self.d) if f.endswith(".gz")]
         self.assertEqual(gzs, [], f"首次运行不应产生归档,但发现 {gzs}")
 

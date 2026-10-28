@@ -57,8 +57,15 @@ from guild_auto.domain.parsers import (  # noqa: E402
 )
 from guild_auto.domain.reporter import write_action_report  # noqa: E402
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -72,8 +79,7 @@ RANK_NAMES = {
     "entry": "入门成员",
 }
 
-THRESHOLDS = {"mid_promote": 30000, "mid_demote": 5000,
-              "entry_promote_1": 3500, "entry_kick": 3500}
+THRESHOLDS = {"mid_promote": 30000, "mid_demote": 5000, "entry_promote_1": 3500, "entry_kick": 3500}
 
 # 真实样本里的两种长度:整段名单被抹平 → 704;单个玩家被遮 → 8
 MASKED_704 = "*" * 704
@@ -108,11 +114,17 @@ def _physical_panel_line(guild_name, groups, total=4, online=3):
         body.append(f" {' ● '.join(members)} ●")
         body.append("")
     body += [f"成员总数: {total}", f"在线成员数: {online}"]
-    panel = "\n".join(["--------------------公会---------------------", *body,
-                       "-------------------------------------------- [C]"])
-    return ("[148月2026 21:55:41.046] [Render thread/INFO] "
-            "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] "
-            + panel)
+    panel = "\n".join(
+        [
+            "--------------------公会---------------------",
+            *body,
+            "-------------------------------------------- [C]",
+        ]
+    )
+    return (
+        "[148月2026 21:55:41.046] [Render thread/INFO] "
+        "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] " + panel
+    )
 
 
 def _panel_block(guild_name, groups, total=4, online=3):
@@ -213,8 +225,7 @@ class TestMaskedNameInGuildList(unittest.TestCase):
         ]
         r = parse_guild_list(lines, RANK_NAMES)
         self.assertEqual(r["groups"]["high"], ["演示高活跃甲", "演示高活跃乙"])
-        self.assertEqual(r["groups"]["mid"], [MASKED_704],
-                         "整段被遮的名单必须保留为一条星号条目")
+        self.assertEqual(r["groups"]["mid"], [MASKED_704], "整段被遮的名单必须保留为一条星号条目")
         self.assertEqual(r["groups"]["low"], ["演示低活跃甲"])
 
     def test_single_masked_player_among_real_names(self):
@@ -227,10 +238,8 @@ class TestMaskedNameInGuildList(unittest.TestCase):
             "在线成员数: 1",
         ]
         r = parse_guild_list(lines, RANK_NAMES)
-        self.assertEqual(r["groups"]["mid"],
-                         ["合成中等甲awa", MASKED_8, "合成中等乙_Mc"])
-        self.assertEqual(len(r["groups"]["mid"]), 3,
-                         "屏蔽条目把相邻的真名字吞掉了")
+        self.assertEqual(r["groups"]["mid"], ["合成中等甲awa", MASKED_8, "合成中等乙_Mc"])
+        self.assertEqual(len(r["groups"]["mid"]), 3, "屏蔽条目把相邻的真名字吞掉了")
 
     def test_masked_segment_does_not_swallow_group_title(self):
         """704 星行不得把下一个分组标题也吞进名字里。"""
@@ -281,8 +290,7 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
         不应因为面板被遮就拒绝(存在的星号串与真实名无关,存在性检查本就
         不会命中真实名,仍按"未找到目标玩家"失败)。"""
         with self.assertRaises(ParseError):
-            parse_guild_member(_member_block(player=MASKED_8),
-                               expected_id="合成玩家甲")
+            parse_guild_member(_member_block(player=MASKED_8), expected_id="合成玩家甲")
 
     def test_masked_player_cannot_reach_kick_decision(self):
         """端到端护栏:屏蔽名玩家永远拿不到可判定的记录。
@@ -296,9 +304,7 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
         # 若哪天解析层被改松了,这一行就让 kick 落在这个不可读的名字上
         # (阈值用真实默认值:entry < 3500 → 踢出)
         actions, _ = decide_actions("entry", 0, THRESHOLDS)
-        self.assertEqual(actions, ["kick"],
-                         "test 自身的阈值假设变了?这条只是把危险链显式化")
-
+        self.assertEqual(actions, ["kick"], "test 自身的阈值假设变了?这条只是把危险链显式化")
 
     def test_masked_name_has_length_cap(self):
         """屏蔽名放行,但**不是无上限**。
@@ -310,13 +316,16 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
         真实观测到的最长屏蔽名是 704 字符,所以上限远大于它,
         只拦"非真实面板产物"那种滥用(如从伪造日志喂进 200KB 星号)。
         """
-        for n, should_pass in ((8, True), (704, True),
-                               (MASKED_NAME_MAX_LEN, True),
-                               (MASKED_NAME_MAX_LEN + 1, False),
-                               (200_000, False)):
+        for n, should_pass in (
+            (8, True),
+            (704, True),
+            (MASKED_NAME_MAX_LEN, True),
+            (MASKED_NAME_MAX_LEN + 1, False),
+            (200_000, False),
+        ):
             with self.subTest(length=n):
                 if should_pass:
-                    validate_player_name("*" * n)   # 不抛即通过
+                    validate_player_name("*" * n)  # 不抛即通过
                 else:
                     with self.assertRaises(ParseError):
                         validate_player_name("*" * n)
@@ -337,13 +346,18 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
             "-- 低活跃成员 --",
             "低活玩家丙 ●",
         ]
-        RANK = {"leader": "会长", "vice_leader": "副会长", "admin": "管理员",
-                "high": "高活跃成员", "mid": "中等活跃成员",
-                "low": "低活跃成员", "entry": "入门成员"}
+        RANK = {
+            "leader": "会长",
+            "vice_leader": "副会长",
+            "admin": "管理员",
+            "high": "高活跃成员",
+            "mid": "中等活跃成员",
+            "low": "低活跃成员",
+            "entry": "入门成员",
+        }
         r = parse_guild_list(lines, RANK)
         self.assertEqual(r["groups"]["high"], ["正常玩家甲", "正常玩家乙"])
         self.assertEqual(r["groups"]["low"], ["低活玩家丙"])
-
 
     def test_blank_line_stops_name_merge(self):
         """空行必须终止折行拼接 —— 否则星号串会吞掉后面的真实玩家名。
@@ -357,9 +371,15 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
 
         两侧都测:既不能让星号吞掉真名,也不能让空行本身产出空条目。
         """
-        RANK = {"leader": "会长", "vice_leader": "副会长", "admin": "管理员",
-                "high": "高活跃成员", "mid": "中等活跃成员",
-                "low": "低活跃成员", "entry": "入门成员"}
+        RANK = {
+            "leader": "会长",
+            "vice_leader": "副会长",
+            "admin": "管理员",
+            "high": "高活跃成员",
+            "mid": "中等活跃成员",
+            "low": "低活跃成员",
+            "entry": "入门成员",
+        }
         for masked_len in (8, 704):
             with self.subTest(masked_len=masked_len):
                 lines = [
@@ -368,7 +388,7 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
                     "正常玩家甲 ●",
                     "-- 中等活跃成员 --",
                     "*" * masked_len,
-                    "",                       # ← 关键:空行必须在这里断开
+                    "",  # ← 关键:空行必须在这里断开
                     "真实玩家乙 ●",
                     "-- 低活跃成员 --",
                     "低活玩家丙 ●",
@@ -376,13 +396,11 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
                 r = parse_guild_list(lines, RANK)
                 mid = r["groups"]["mid"]
                 # 1) 真名必须作为**独立条目**存在(没被吞进星号串)
-                self.assertIn("真实玩家乙", mid,
-                              f"真实玩家名被星号串吞掉了: {mid}")
+                self.assertIn("真实玩家乙", mid, f"真实玩家名被星号串吞掉了: {mid}")
                 # 2) 不得出现"星号串 + 真名"的拼接产物
                 for name in mid:
                     if name != "真实玩家乙":
-                        self.assertNotIn("真实玩家乙", name,
-                                        f"拼接产物泄漏: {name[:40]}...")
+                        self.assertNotIn("真实玩家乙", name, f"拼接产物泄漏: {name[:40]}...")
                 # 3) 其余组的玩家不受影响
                 self.assertEqual(r["groups"]["high"], ["正常玩家甲"])
                 self.assertEqual(r["groups"]["low"], ["低活玩家丙"])
@@ -391,9 +409,9 @@ class TestMaskedNameNeverYieldsRecord(unittest.TestCase):
         """反向护栏:空行本身不得产出空玩家条目。"""
         RANK = {"high": "高活跃成员", "mid": "中等活跃成员"}
         r = parse_guild_list(
-            ["演示公会", "-- 高活跃成员 --", "", "玩家甲 ●", "",
-             "-- 中等活跃成员 --", "玩家乙 ●"],
-            RANK)
+            ["演示公会", "-- 高活跃成员 --", "", "玩家甲 ●", "", "-- 中等活跃成员 --", "玩家乙 ●"],
+            RANK,
+        )
         self.assertEqual(r["groups"]["high"], ["玩家甲"])
         self.assertEqual(r["groups"]["mid"], ["玩家乙"])
 
@@ -441,8 +459,9 @@ class TestMaskedShortAndPartialNames(unittest.TestCase):
         ]
         with self.assertRaises(ParseError) as ctx:
             parse_guild_list(lines, RANK_NAMES)
-        self.assertIn("非法字符", str(ctx.exception),
-                      f"失败原因必须指向黑名单校验,实际: {ctx.exception}")
+        self.assertIn(
+            "非法字符", str(ctx.exception), f"失败原因必须指向黑名单校验,实际: {ctx.exception}"
+        )
 
     def test_partial_mask_never_yields_record_even_with_good_panel(self):
         """部分屏蔽名即使面板回显完美,也拿不到记录 → 不可能被踢。
@@ -452,8 +471,7 @@ class TestMaskedShortAndPartialNames(unittest.TestCase):
         所以无论面板长什么样,记录都拿不到,判定根本不会被调用。
         """
         with self.assertRaises(ParseError):
-            parse_guild_member(_member_block("合成玩家甲"),
-                               expected_id="正常名***尾巴")
+            parse_guild_member(_member_block("合成玩家甲"), expected_id="正常名***尾巴")
 
     def test_partial_mask_not_early_exited_in_query_member(self):
         """部分屏蔽名**不**走 main 的 is_masked_name 早退(边界认知)。
@@ -468,15 +486,18 @@ class TestMaskedShortAndPartialNames(unittest.TestCase):
         def fake_send_and_capture(watcher, human, hwnd, cmd, timeout, **kw):
             sent.append(cmd)
             return None, False
+
         orig = main.send_and_capture
         main.send_and_capture = fake_send_and_capture
         self.addCleanup(lambda: setattr(main, "send_and_capture", orig))
 
-        info = main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
-                                 None, "正常名***尾巴")
+        info = main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(), None, "正常名***尾巴")
         self.assertIsNone(info)
-        self.assertEqual(len(sent), _MIN_CFG["timeouts"]["max_retries"],
-                         f"混串名应走满 3 次重试,实际 {len(sent)} 次")
+        self.assertEqual(
+            len(sent),
+            _MIN_CFG["timeouts"]["max_retries"],
+            f"混串名应走满 3 次重试,实际 {len(sent)} 次",
+        )
 
     def test_guild_name_itself_masked_does_not_crash_panel(self):
         """真实形态:公会名行被遮成 *** —— 面板仍要能解析出成员。"""
@@ -505,8 +526,7 @@ class TestMaskedShortAndPartialNames(unittest.TestCase):
         with self.assertRaises(ParseError):
             parse_guild_member(panel, expected_id=MASKED_8)
         actions, _ = decide_actions("mid", 0, THRESHOLDS)
-        self.assertEqual(actions, ["demote"],
-                         "test 自身的阈值假设变了?这条只是把危险链显式化")
+        self.assertEqual(actions, ["demote"], "test 自身的阈值假设变了?这条只是把危险链显式化")
 
 
 class TestMaskedNameInRealShapedPanel(unittest.TestCase):
@@ -520,15 +540,19 @@ class TestMaskedNameInRealShapedPanel(unittest.TestCase):
     def test_704_star_segment_survives_real_shaped_extraction(self):
         block = _panel_block(
             "演示公会",
-            [("高活跃成员", ["演示高活跃甲", "演示高活跃乙"]),
-             ("中等活跃成员", [MASKED_704]),
-             ("入门成员", ["演示入门甲"])],
-            total=4, online=3,
+            [
+                ("高活跃成员", ["演示高活跃甲", "演示高活跃乙"]),
+                ("中等活跃成员", [MASKED_704]),
+                ("入门成员", ["演示入门甲"]),
+            ],
+            total=4,
+            online=3,
         )
         r = parse_guild_list(block, RANK_NAMES)
         self.assertEqual(r["groups"]["high"], ["演示高活跃甲", "演示高活跃乙"])
-        self.assertEqual(r["groups"]["mid"], [MASKED_704],
-                         "真实形态下整段被遮的名单必须保留为一条星号条目")
+        self.assertEqual(
+            r["groups"]["mid"], [MASKED_704], "真实形态下整段被遮的名单必须保留为一条星号条目"
+        )
         self.assertEqual(r["groups"]["entry"], ["演示入门甲"])
         self.assertEqual(r["total"], 4)
         self.assertEqual(r["online"], 3)
@@ -538,35 +562,41 @@ class TestMaskedNameInRealShapedPanel(unittest.TestCase):
         # 部分替换的条目与 704 星条目同批出现:704 星那条能被 is_masked_name
         # 识别,部分替换那条撞黑名单 → 整张表抛错
         with self.assertRaises(ParseError):
-            parse_guild_list(_panel_block(
-                "演示公会",
-                [("高活跃成员", ["演示高活跃甲", "演示高活跃乙"]),
-                 ("中等活跃成员", ["正常名***尾巴", MASKED_704])],
-                total=3, online=2,
-            ), RANK_NAMES)
+            parse_guild_list(
+                _panel_block(
+                    "演示公会",
+                    [
+                        ("高活跃成员", ["演示高活跃甲", "演示高活跃乙"]),
+                        ("中等活跃成员", ["正常名***尾巴", MASKED_704]),
+                    ],
+                    total=3,
+                    online=2,
+                ),
+                RANK_NAMES,
+            )
 
     def test_normal_players_unaffected_by_masked_segment_in_real_panel(self):
         """混合面板:被屏蔽条目不能让同一批里的正常玩家消失。"""
         block = _panel_block(
             "演示公会",
-            [("中等活跃成员", ["演示中等甲", MASKED_8, "演示中等乙"]),
-             ("低活跃成员", ["演示低活跃甲", "演示低活跃乙"])],
-            total=5, online=2,
+            [
+                ("中等活跃成员", ["演示中等甲", MASKED_8, "演示中等乙"]),
+                ("低活跃成员", ["演示低活跃甲", "演示低活跃乙"]),
+            ],
+            total=5,
+            online=2,
         )
         r = parse_guild_list(block, RANK_NAMES)
-        self.assertEqual(r["groups"]["mid"],
-                         ["演示中等甲", MASKED_8, "演示中等乙"])
+        self.assertEqual(r["groups"]["mid"], ["演示中等甲", MASKED_8, "演示中等乙"])
         self.assertEqual(r["groups"]["low"], ["演示低活跃甲", "演示低活跃乙"])
         # 整张表仍有正常玩家可查(main 的阶段2 targets 非空)
-        normal = [p for g in r["groups"].values() for p in g
-                  if not is_masked_name(p)]
+        normal = [p for g in r["groups"].values() for p in g if not is_masked_name(p)]
         self.assertIn("演示中等甲", normal)
         self.assertIn("演示低活跃乙", normal)
 
     def test_block_start_and_end_lines_stripped(self):
         """守卫 fixture 本身:分隔线/复制标记必须已被剥掉,否则测的不是真实链。"""
-        block = _panel_block(
-            "演示公会", [("入门成员", [MASKED_3])], total=1, online=1)
+        block = _panel_block("演示公会", [("入门成员", [MASKED_3])], total=1, online=1)
         joined = "\n".join(block)
         self.assertNotIn("--------------------", joined)
         self.assertNotIn("[C]", joined)
@@ -577,8 +607,9 @@ def _import_main():
     """导入真实 main.py(不 import 会跳过本组测试 —— main 依赖 pynput/pyautogui)。"""
     try:
         from guild_auto import main
+
         return main
-    except Exception as e:      # pragma: no cover - 无 GUI 依赖时跳过
+    except Exception as e:  # pragma: no cover - 无 GUI 依赖时跳过
         raise unittest.SkipTest(f"无法导入 main.py(缺 GUI 依赖?): {e}")
 
 
@@ -597,10 +628,8 @@ class _StubWatcher:
 
 
 _MIN_CFG = {
-    "commands": {"guild_list": "/guild list",
-                 "guild_member": "/guild member {player}"},
-    "timeouts": {"max_retries": 3, "response_wait": 0.1,
-                 "try_wait": 0.1, "try_times": 1},
+    "commands": {"guild_list": "/guild list", "guild_member": "/guild member {player}"},
+    "timeouts": {"max_retries": 3, "response_wait": 0.1, "try_wait": 0.1, "try_times": 1},
     "switches": {"verbose_log": False},
     "rank_names": {"entry": "入门成员"},
     "guild_name": "",
@@ -622,7 +651,8 @@ class TestMainQueryMemberEarlyExit(unittest.TestCase):
 
         def fake_send_and_capture(watcher, human, hwnd, cmd, timeout, **kw):
             self.cmds.append(cmd)
-            return None, False       # 永远超时:正常玩家应发满 max_retries 次
+            return None, False  # 永远超时:正常玩家应发满 max_retries 次
+
         # 猴子补丁:不 key 真模块状态,tearDown 显式还原
         self._orig = self.main.send_and_capture
         self.main.send_and_capture = fake_send_and_capture
@@ -637,18 +667,15 @@ class TestMainQueryMemberEarlyExit(unittest.TestCase):
         self.main.send_and_capture = self._orig
 
     def test_masked_pid_sends_zero_commands(self):
-        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
-                                      None, MASKED_8)
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(), None, MASKED_8)
         self.assertIsNone(info, "屏蔽名查询必须返回 None(不可用)")
-        self.assertEqual(self.cmds, [],
-                         f"屏蔽名查询不该发任何命令,却发了 {self.cmds}")
+        self.assertEqual(self.cmds, [], f"屏蔽名查询不该发任何命令,却发了 {self.cmds}")
         # 早退必须留痕:否则运维在日志里看不到为什么跳过
         self.assertTrue(self.logs, "屏蔽名跳过时没有写任何错误日志")
         self.assertIn("屏蔽词", self.logs[0])
 
     def test_704_star_pid_sends_zero_commands(self):
-        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
-                                      None, MASKED_704)
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(), None, MASKED_704)
         self.assertIsNone(info)
         self.assertEqual(self.cmds, [])
 
@@ -660,21 +687,26 @@ class TestMainQueryMemberEarlyExit(unittest.TestCase):
         锁住早退条件没被无意放宽成"所有含 * 的名字"—— 放宽就等于把
         glob 注入防线也让给可用性。
         """
-        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
-                                      None, "正常名***尾巴")
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(), None, "正常名***尾巴")
         self.assertIsNone(info)
-        self.assertEqual(len(self.cmds), _MIN_CFG["timeouts"]["max_retries"],
-                         f"混串名应走满 3 次重试,实际 {len(self.cmds)} 次")
+        self.assertEqual(
+            len(self.cmds),
+            _MIN_CFG["timeouts"]["max_retries"],
+            f"混串名应走满 3 次重试,实际 {len(self.cmds)} 次",
+        )
 
     def test_normal_pid_still_sends_three_times(self):
         """回归护栏:正常玩家的 3 次重试时序未被早退改变。"""
-        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(),
-                                      None, "合成玩家甲")
+        info = self.main.query_member(_MIN_CFG, _StubWatcher(), _StubHuman(), None, "合成玩家甲")
         self.assertIsNone(info)
-        self.assertEqual(len(self.cmds), _MIN_CFG["timeouts"]["max_retries"],
-                         f"正常玩家应发满 3 次,实际 {len(self.cmds)} 次")
-        self.assertTrue(all("合成玩家甲" in c for c in self.cmds),
-                        f"发出的命令不是查这个玩家: {self.cmds}")
+        self.assertEqual(
+            len(self.cmds),
+            _MIN_CFG["timeouts"]["max_retries"],
+            f"正常玩家应发满 3 次,实际 {len(self.cmds)} 次",
+        )
+        self.assertTrue(
+            all("合成玩家甲" in c for c in self.cmds), f"发出的命令不是查这个玩家: {self.cmds}"
+        )
 
 
 class TestFailureReasonWiringInMain(unittest.TestCase):
@@ -693,27 +725,35 @@ class TestFailureReasonWiringInMain(unittest.TestCase):
 
     def _branch_texts(self):
         """收集 main() 源码里所有含'屏蔽词'的字符串字面量。"""
-        return [n.value for n in ast.walk(self.tree)
-                if isinstance(n, ast.Constant) and isinstance(n.value, str)
-                and "屏蔽词" in n.value]
+        return [
+            n.value
+            for n in ast.walk(self.tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and "屏蔽词" in n.value
+        ]
 
     def test_failure_reason_branches_on_masked_name(self):
         texts = self._branch_texts()
         self.assertTrue(texts, "main() 里找不到'屏蔽词'分支(报告分流被删了?)")
         joined = "\n".join(texts)
-        self.assertIn("需人工确认", joined,
-                      "屏蔽名失败原因必须写明'需人工确认'")
+        self.assertIn("需人工确认", joined, "屏蔽名失败原因必须写明'需人工确认'")
         # 分流必须是 IfExp:屏蔽名 reason + 正常玩家 reason 同时存在,
         # 而不是把"查询重试耗尽"替换掉(替换会让正常玩家失去原有文案)
-        self.assertTrue(any(isinstance(n, ast.IfExp) or isinstance(n, ast.If)
-                            for n in ast.walk(self.tree)
-                            if "屏蔽词" in ast.dump(n)),
-                        "屏蔽词 reason 必须与'查询重试耗尽'构成条件分支")
-        normal_reasons = [n.value for n in ast.walk(self.tree)
-                          if isinstance(n, ast.Constant) and isinstance(n.value, str)
-                          and "查询重试耗尽" in n.value]
-        self.assertTrue(normal_reasons,
-                        "main() 里正常玩家的'查询重试耗尽'分支被删了")
+        self.assertTrue(
+            any(
+                isinstance(n, ast.IfExp) or isinstance(n, ast.If)
+                for n in ast.walk(self.tree)
+                if "屏蔽词" in ast.dump(n)
+            ),
+            "屏蔽词 reason 必须与'查询重试耗尽'构成条件分支",
+        )
+        normal_reasons = [
+            n.value
+            for n in ast.walk(self.tree)
+            if isinstance(n, ast.Constant)
+            and isinstance(n.value, str)
+            and "查询重试耗尽" in n.value
+        ]
+        self.assertTrue(normal_reasons, "main() 里正常玩家的'查询重试耗尽'分支被删了")
 
     def test_masked_name_failure_reason_flows_into_action_report(self):
         """可见性回归:该 reason 必须显示在报告【未执行】区。
@@ -723,20 +763,24 @@ class TestFailureReasonWiringInMain(unittest.TestCase):
         reporter 只负责原样印出 —— 这条按 main 的同一种展开方式构造输入,
         把 failures → report 的最后一环也锚住。
         """
-        failures = [{"player": MASKED_8, "rank": "entry",
-                     "reason": "查询失败: 玩家名被网易屏蔽词过滤(星号),"
-                               "无法确认身份,需人工确认"}]
+        failures = [
+            {
+                "player": MASKED_8,
+                "rank": "entry",
+                "reason": "查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认",
+            }
+        ]
         # 与 main.py 报告前对 failures 的展开方式一致
-        action_records = [dict(f, new_rank=f.get("rank"), actions=[],
-                               error=f.get("reason") or "查询失败")
-                          for f in failures]
+        action_records = [
+            dict(f, new_rank=f.get("rank"), actions=[], error=f.get("reason") or "查询失败")
+            for f in failures
+        ]
         with tempfile.TemporaryDirectory() as d:
-            p = write_action_report(d, "演示公会", action_records,
-                                    {"contact_text": "联系人{admin}",
-                                     "admin": "管理员X"})
+            p = write_action_report(
+                d, "演示公会", action_records, {"contact_text": "联系人{admin}", "admin": "管理员X"}
+            )
             content = open(p, encoding="utf-8").read()
-        self.assertIn("【未执行】", content,
-                      f"失败原因没进报告【未执行】区:\n{content}")
+        self.assertIn("【未执行】", content, f"失败原因没进报告【未执行】区:\n{content}")
         self.assertIn("屏蔽词", content)
         self.assertIn("需人工确认", content)
         self.assertIn(MASKED_8, content)

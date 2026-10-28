@@ -28,8 +28,15 @@ from guild_auto.infrastructure import logger  # noqa: E402
 from guild_auto.application.stages import stage_confirm_execution  # noqa: E402
 from guild_auto.application.runtime import Runtime  # noqa: E402
 
-for _n in ("log_debug", "log_info", "log_warning", "log_error",
-           "log_critical", "log_trace", "log_exception"):
+for _n in (
+    "log_debug",
+    "log_info",
+    "log_warning",
+    "log_error",
+    "log_critical",
+    "log_trace",
+    "log_exception",
+):
     if not hasattr(logger, _n):
         setattr(logger, _n, lambda *a, **k: None)
 
@@ -37,6 +44,7 @@ for _n in ("log_debug", "log_info", "log_warning", "log_error",
 def _cfg():
     from guild_auto.config import DEFAULT_CONFIG
     import json
+
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     cfg["log"] = {"enabled": False, "level": 4, "dir": "logs"}
     return cfg
@@ -44,13 +52,19 @@ def _cfg():
 
 def _rt(answer=True, log_answers=None):
     """构造 Runtime;ask_confirm 固定返回 answer(可记录提问顺序)。"""
+
     def _ask(p, d=False):
         if log_answers is not None:
             log_answers.append(p)
         return answer
+
     return Runtime(
         cfg=_cfg(),
-        watcher=None, human=None, executor=None, detector=None, hwnd=None,
+        watcher=None,
+        human=None,
+        executor=None,
+        detector=None,
+        hwnd=None,
         ask_confirm=_ask,
         sleep=lambda s: None,
         stop_check=lambda: False,
@@ -62,7 +76,11 @@ def _rt_seq(answers):
     it = iter(answers)
     return Runtime(
         cfg=_cfg(),
-        watcher=None, human=None, executor=None, detector=None, hwnd=None,
+        watcher=None,
+        human=None,
+        executor=None,
+        detector=None,
+        hwnd=None,
         ask_confirm=lambda p, d=False: next(it),
         sleep=lambda s: None,
         stop_check=lambda: False,
@@ -70,8 +88,13 @@ def _rt_seq(answers):
 
 
 def _rec(player, actions):
-    return {"player": player, "rank": "entry", "weekly_total": 100,
-            "actions": actions, "executed": False}
+    return {
+        "player": player,
+        "rank": "entry",
+        "weekly_total": 100,
+        "actions": actions,
+        "executed": False,
+    }
 
 
 class TestNoActionableNoAsk(unittest.TestCase):
@@ -103,9 +126,9 @@ class TestUserDeclineBlocksExecution(unittest.TestCase):
     def test_decline_disables_execution(self):
         rt = _rt(answer=False)
         enabled, _ = stage_confirm_execution(
-            rt, [_rec("甲", ["promote"]), _rec("乙", ["demote"])], _cfg())
-        self.assertFalse(enabled,
-                         "用户拒绝执行却仍返回 enabled=True —— 命令会被发出去")
+            rt, [_rec("甲", ["promote"]), _rec("乙", ["demote"])], _cfg()
+        )
+        self.assertFalse(enabled, "用户拒绝执行却仍返回 enabled=True —— 命令会被发出去")
 
     def test_decline_skips_kick_question(self):
         """总确认被拒后不该再问 kick 二次确认(已决定不执行)。"""
@@ -140,8 +163,9 @@ class TestKickDoubleConfirm(unittest.TestCase):
         _, skipped = stage_confirm_execution(rt, records, _cfg())
         self.assertTrue(skipped)
         self.assertTrue(records[0]["executed"], "跳过的 kick 未标记,可能被补刀")
-        self.assertIn("跳过", records[0].get("error", ""),
-                      f"未写明跳过原因: {records[0].get('error')!r}")
+        self.assertIn(
+            "跳过", records[0].get("error", ""), f"未写明跳过原因: {records[0].get('error')!r}"
+        )
         # 没踢就没踢,等级保持原样
         self.assertEqual(records[0]["new_rank"], "entry")
 
@@ -170,8 +194,7 @@ class TestNonKickActions(unittest.TestCase):
         """升/降 + kick 混合 → 总确认 + kick 二次确认共两次。"""
         asked = []
         rt = _rt(answer=True, log_answers=asked)
-        stage_confirm_execution(
-            rt, [_rec("甲", ["promote"]), _rec("乙", ["kick"])], _cfg())
+        stage_confirm_execution(rt, [_rec("甲", ["promote"]), _rec("乙", ["kick"])], _cfg())
         self.assertEqual(len(asked), 2, f"应有 2 次确认,实际 {len(asked)}: {asked}")
 
     def test_kick_confirm_disabled_by_config(self):

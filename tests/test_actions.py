@@ -6,6 +6,7 @@ test_actions.py —— 业务判定单元测试
 覆盖:decide_actions 阈值矩阵(含边界语义,与原脚本逐字一致)、new_rank_after 等级链、
       build_notification 四类文案(继承原脚本)、build_command 命令格式。
 """
+
 import os
 import sys
 import unittest
@@ -132,19 +133,31 @@ class TestBuildNotification(unittest.TestCase):
 
     def test_none(self):
         msg = build_notification("测试玩家", 12345, [], CFG)
-        self.assertEqual(msg, "测试玩家 这周贡献为:12345 执行操作:无 非常感谢你对公会做出的贡献 公会群:YOUR_QQ_GROUP")
+        self.assertEqual(
+            msg,
+            "测试玩家 这周贡献为:12345 执行操作:无 非常感谢你对公会做出的贡献 公会群:YOUR_QQ_GROUP",
+        )
 
     def test_promote_with_count(self):
         msg = build_notification("测试玩家", 30000, ["promote", "promote"], CFG)
-        self.assertEqual(msg, "测试玩家 这周贡献为:30000 执行操作:升职(2次) 非常感谢你对公会做出的贡献 公会群:YOUR_QQ_GROUP")
+        self.assertEqual(
+            msg,
+            "测试玩家 这周贡献为:30000 执行操作:升职(2次) 非常感谢你对公会做出的贡献 公会群:YOUR_QQ_GROUP",
+        )
 
     def test_demote(self):
         msg = build_notification("测试玩家", 4999, ["demote"], CFG)
-        self.assertEqual(msg, "测试玩家 这周贡献为:4999 执行操作:降职 若有异议请去群里找执行此操作的管理员 公会群:YOUR_QQ_GROUP")
+        self.assertEqual(
+            msg,
+            "测试玩家 这周贡献为:4999 执行操作:降职 若有异议请去群里找执行此操作的管理员 公会群:YOUR_QQ_GROUP",
+        )
 
     def test_kick(self):
         msg = build_notification("测试玩家", 3499, ["kick"], CFG)
-        self.assertEqual(msg, "测试玩家 这周贡献为:3499 执行操作:踢出 未完成这周最低标准 若有异议请去群里寻找执行管理员 公会群:YOUR_QQ_GROUP")
+        self.assertEqual(
+            msg,
+            "测试玩家 这周贡献为:3499 执行操作:踢出 未完成这周最低标准 若有异议请去群里寻找执行管理员 公会群:YOUR_QQ_GROUP",
+        )
 
 
 class TestBuildCommand(unittest.TestCase):
@@ -158,8 +171,9 @@ class TestBuildCommand(unittest.TestCase):
         self.assertEqual(build_command(CFG, "demote", "某玩家"), "/guild demote 某玩家")
 
     def test_kick_with_reason(self):
-        self.assertEqual(build_command(CFG, "kick", "某玩家"),
-                         "/guild kick 某玩家 未完成一周最低标准")
+        self.assertEqual(
+            build_command(CFG, "kick", "某玩家"), "/guild kick 某玩家 未完成一周最低标准"
+        )
 
 
 if __name__ == "__main__":

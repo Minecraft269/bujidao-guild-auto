@@ -6,6 +6,7 @@ test_parsers.py —— 解析器单元测试
 覆盖:strip_chat_prefix(两种日志格式)、parse_guild_list(分组/●/多行名/统计)、
       parse_guild_member(千分位/今天/字段缺失/玩家校验)、parse_weekly_exp。
 """
+
 import os
 import sys
 import unittest
@@ -41,8 +42,9 @@ def to_block_lines(text):
     真实格式(网易版):整条面板为单物理行,内部换行以字面 "\\n" 写入,结尾线可能带 " [C]" 标记;
     也兼容标准 Java 版的物理多行格式。"""
     from guild_auto.infrastructure.log_watcher import is_block_end_line, is_block_start_line
+
     idx = text.find("[CHAT]")
-    content = text[idx + len("[CHAT]"):] if idx >= 0 else text
+    content = text[idx + len("[CHAT]") :] if idx >= 0 else text
     content = content.replace("\\n", "\n")  # 字面 \n → 真实换行(单行格式)
     block = []
     started = False
@@ -68,13 +70,17 @@ class TestStripChatPrefix(unittest.TestCase):
         self.assertEqual(strip_chat_prefix(line), "hello")
 
     def test_netease_format(self):
-        line = ("[158?2026 00:23:40.454] [Render thread/INFO] "
-                "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] 消息内容")
+        line = (
+            "[158?2026 00:23:40.454] [Render thread/INFO] "
+            "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] 消息内容"
+        )
         self.assertEqual(strip_chat_prefix(line), "消息内容")
 
     def test_netease_copy_marker(self):
-        line = ("[158?2026 00:23:40.454] [Render thread/INFO] "
-                "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] 某人 > 你好. [C]")
+        line = (
+            "[158?2026 00:23:40.454] [Render thread/INFO] "
+            "[net.minecraft.client.gui.components.ChatComponent/]: [CHAT] 某人 > 你好. [C]"
+        )
         self.assertEqual(strip_chat_prefix(line), "某人 > 你好.")
 
     def test_no_chat_prefix(self):
@@ -94,8 +100,9 @@ class TestParseGuildList(unittest.TestCase):
         self.assertEqual(info["total"], 200)
         self.assertEqual(info["online"], 43)
         self.assertEqual(info["groups"]["leader"], ["GuildLeader_01"])
-        self.assertEqual(info["groups"]["admin"],
-                         ["ViceAdmin_02", "演示玩家甲", "演示玩家乙", "演示玩家丙"])
+        self.assertEqual(
+            info["groups"]["admin"], ["ViceAdmin_02", "演示玩家甲", "演示玩家乙", "演示玩家丙"]
+        )
         self.assertEqual(info["groups"]["high"], ["ActivePlayer_A", "演示玩家丁", "ActivePlayer_B"])
         self.assertEqual(info["groups"]["mid"], ["MidPlayer_A", "MidPlayer_B", "演示玩家戊"])
         self.assertEqual(info["groups"]["low"], ["LowPlayer_A", "LowPlayer_B", "演示玩家己"])

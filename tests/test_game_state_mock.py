@@ -15,6 +15,7 @@ test_game_state_mock.py —— game_state.py(截图 + Windows OCR)硬件交互�
       detect(不可用降级/关键词归一化半角+全角+换行/缓存命中与过期/force/异常降级)、
       prepare_chat_state(不可用/非菜单/抖动不按 Esc/确认按 Esc/仍在则按 Enter/异常降级)。
 """
+
 import importlib.abc
 import importlib.util
 import io
@@ -47,10 +48,17 @@ NEWLINE_MENU = "回\n到\n游\n戏"
 # 假 winsdk:winsdk import 成功分支需要这些符号真实存在
 # ---------------------------------------------------------------------------
 def _make_winsdk_stub():
-    names = ["winsdk", "winsdk.windows", "winsdk.windows.graphics",
-             "winsdk.windows.graphics.imaging", "winsdk.windows.globalization",
-             "winsdk.windows.media", "winsdk.windows.media.ocr",
-             "winsdk.windows.storage", "winsdk.windows.storage.streams"]
+    names = [
+        "winsdk",
+        "winsdk.windows",
+        "winsdk.windows.graphics",
+        "winsdk.windows.graphics.imaging",
+        "winsdk.windows.globalization",
+        "winsdk.windows.media",
+        "winsdk.windows.media.ocr",
+        "winsdk.windows.storage",
+        "winsdk.windows.storage.streams",
+    ]
     mods = {n: types.ModuleType(n) for n in names}
     mods["winsdk.windows.graphics.imaging"].BitmapDecoder = object()
     mods["winsdk.windows.globalization"].Language = object()
@@ -75,8 +83,7 @@ class _BlockWinsdk(importlib.abc.MetaPathFinder):
 
 def load_game_state_probe(with_winsdk):
     """以独立模块名重新执行 game_state.py(不碰 sys.modules['game_state'] 引用)。"""
-    saved = {k: v for k, v in sys.modules.items()
-             if k == "winsdk" or k.startswith("winsdk.")}
+    saved = {k: v for k, v in sys.modules.items() if k == "winsdk" or k.startswith("winsdk.")}
     finder = None
     try:
         for k in saved:
@@ -189,8 +196,7 @@ class _FakeEngine:
             lines = self.remaining.pop(0)
         else:
             lines = self.remaining[0]
-        return types.SimpleNamespace(
-            lines=[types.SimpleNamespace(text=t) for t in lines])
+        return types.SimpleNamespace(lines=[types.SimpleNamespace(text=t) for t in lines])
 
 
 class _FakeOcrEngine:
@@ -225,8 +231,8 @@ class GameStateTestBase(unittest.TestCase):
 
     def setUp(self):
         self.mod = game_state
-        self.shots = []          # pyautogui.screenshot 调用记录
-        self.presses = []        # pyautogui.press / hotkey 调用记录
+        self.shots = []  # pyautogui.screenshot 调用记录
+        self.presses = []  # pyautogui.press / hotkey 调用记录
         self.clock = _FakeClock()
         self.image = _FakeImage()
 
@@ -240,8 +246,11 @@ class GameStateTestBase(unittest.TestCase):
         def _hotkey(*args, **kwargs):
             self.presses.append(("hotkey", args, kwargs))
 
-        self._patch(self.mod, "pyautogui", types.SimpleNamespace(
-            screenshot=_screenshot, press=_press, hotkey=_hotkey))
+        self._patch(
+            self.mod,
+            "pyautogui",
+            types.SimpleNamespace(screenshot=_screenshot, press=_press, hotkey=_hotkey),
+        )
         self._patch(self.mod, "time", self.clock)
         self._patch(self.mod, "OcrEngine", _FakeOcrEngine)
         self._patch(self.mod, "Language", _FakeLanguage)
@@ -291,8 +300,13 @@ class TestWinsdkImportBranch(unittest.TestCase):
     def test_import_success_binds_all_winsdk_symbols(self):
         mod = load_game_state_probe(with_winsdk=True)
         self.assertIs(mod._WINSDK_OK, True)
-        for name in ("BitmapDecoder", "Language", "OcrEngine",
-                     "DataWriter", "InMemoryRandomAccessStream"):
+        for name in (
+            "BitmapDecoder",
+            "Language",
+            "OcrEngine",
+            "DataWriter",
+            "InMemoryRandomAccessStream",
+        ):
             self.assertTrue(hasattr(mod, name), f"winsdk 符号 {name} 未绑定")
         self.assertTrue(mod.GameStateDetector().available)
 
@@ -312,8 +326,9 @@ class TestInit(GameStateTestBase):
         self.assertEqual(det.available, game_state._WINSDK_OK)
 
     def test_init_custom_overrides(self):
-        det = GameStateDetector(menu_keywords=["设置"], chat_keywords=["发言"],
-                                cache_seconds=9.5, chat_bar_state="open")
+        det = GameStateDetector(
+            menu_keywords=["设置"], chat_keywords=["发言"], cache_seconds=9.5, chat_bar_state="open"
+        )
         self.assertEqual(det.menu_keywords, ["设置"])
         self.assertEqual(det.chat_keywords, ["发言"])
         self.assertEqual(det.cache_seconds, 9.5)
@@ -323,11 +338,12 @@ class TestInit(GameStateTestBase):
         self.assertEqual(_FakeOcrEngine.calls, [])
 
     def test_init_empty_values_fall_back_to_defaults(self):
-        det = GameStateDetector(menu_keywords=[], chat_keywords=(),
-                                cache_seconds=0, chat_bar_state="closed")
-        self.assertIs(det.menu_keywords, MENU_KEYWORDS)   # 空列表/空元组 → 默认
+        det = GameStateDetector(
+            menu_keywords=[], chat_keywords=(), cache_seconds=0, chat_bar_state="closed"
+        )
+        self.assertIs(det.menu_keywords, MENU_KEYWORDS)  # 空列表/空元组 → 默认
         self.assertIs(det.chat_keywords, CHAT_BAR_KEYWORDS)
-        self.assertEqual(det.cache_seconds, 0)            # 0 是有效值,不被回退
+        self.assertEqual(det.cache_seconds, 0)  # 0 是有效值,不被回退
         self.assertEqual(det.chat_bar_state, "closed")
 
     def test_available_follows_module_flag(self):
@@ -395,8 +411,8 @@ class TestOcrPipeline(GameStateTestBase):
 
     def test_ocr_text_empty_when_no_engine(self):
         det = GameStateDetector()
-        self.assertEqual(det._ocr_text(), "")   # 两个引擎都 None
-        self.assertEqual(len(self.shots), 1)    # 截图照常发生
+        self.assertEqual(det._ocr_text(), "")  # 两个引擎都 None
+        self.assertEqual(len(self.shots), 1)  # 截图照常发生
         self.assertEqual([c[0] for c in _FakeOcrEngine.calls], ["language", "profile"])
 
     def test_ocr_async_joins_lines_with_newline(self):
@@ -404,7 +420,7 @@ class TestOcrPipeline(GameStateTestBase):
         det = GameStateDetector()
         det._engine = engine
         text = self._asyncio_run(det._ocr_async(b"png-bytes"))
-        self.assertEqual(text, "A\n\nB")        # 空行也保留
+        self.assertEqual(text, "A\n\nB")  # 空行也保留
         self.assertEqual(engine.seen_bitmaps, ["BITMAP"])
         self.assertEqual(_FakeDecoder.calls[0].seeks, [0])
 
@@ -418,6 +434,7 @@ class TestOcrPipeline(GameStateTestBase):
     @staticmethod
     def _asyncio_run(coro):
         import asyncio
+
         return asyncio.run(coro)
 
 
@@ -429,7 +446,7 @@ class TestDetect(GameStateTestBase):
         det = self.make_detector(ocr_lines=["回到游戏"])
         det.available = False
         self.assertEqual(det.detect(), (False, False))
-        self.assertEqual(self.shots, [])   # 不可用时连截图都不做
+        self.assertEqual(self.shots, [])  # 不可用时连截图都不做
 
     def test_normalizes_halfwidth_spaces(self):
         det = self.make_detector(ocr_lines=[SPACED_MENU])
@@ -452,8 +469,9 @@ class TestDetect(GameStateTestBase):
         self.assertEqual(det.detect(), (False, False))
 
     def test_empty_and_none_keywords_never_match(self):
-        det = self.make_detector(ocr_lines=["回到游戏"],
-                                 menu_keywords=["", None], chat_keywords=[""])
+        det = self.make_detector(
+            ocr_lines=["回到游戏"], menu_keywords=["", None], chat_keywords=[""]
+        )
         # 空关键词若不守卫会把任何文本判成命中,这里必须全部落空
         self.assertEqual(det.detect(), (False, False))
 
@@ -464,7 +482,7 @@ class TestDetect(GameStateTestBase):
     def test_cache_hit_reuses_frame(self):
         det = self.make_detector(ocr_lines=["回到游戏", "公会仓库"])
         self.assertEqual(det.detect(), (True, False))
-        self.clock.advance(2.9)                       # 未超 cache_seconds=3.0
+        self.clock.advance(2.9)  # 未超 cache_seconds=3.0
         # 帧 2 只在被重新截图时才消耗;命中缓存就说明它没被碰
         self.assertEqual(det.detect(), (True, False))
         self.assertEqual(self.frames, 1)
@@ -473,13 +491,12 @@ class TestDetect(GameStateTestBase):
     def test_cache_expiry_rescreens(self):
         det = self.make_detector(ocr_lines=["回到游戏", "公会仓库"])
         self.assertEqual(det.detect(), (True, False))
-        self.clock.advance(3.01)                      # 超过 cache_seconds
+        self.clock.advance(3.01)  # 超过 cache_seconds
         self.assertEqual(det.detect(), (False, False))
         self.assertEqual(self.frames, 2)
 
     def test_custom_cache_seconds_window(self):
-        det = self.make_detector(ocr_lines=["回到游戏", "公会仓库"],
-                                 cache_seconds=0.5)
+        det = self.make_detector(ocr_lines=["回到游戏", "公会仓库"], cache_seconds=0.5)
         det.detect()
         self.clock.advance(0.4)
         det.detect()
@@ -505,13 +522,13 @@ class TestDetect(GameStateTestBase):
             raise RuntimeError("screen grab failed")
 
         det._ocr_text = _boom
-        self.assertEqual(det.detect(), (False, False))   # 不崩,按非菜单处理
+        self.assertEqual(det.detect(), (False, False))  # 不崩,按非菜单处理
 
     def test_keyword_match_error_degrades(self):
         det = GameStateDetector(menu_keywords=[object()], chat_keywords=["输入消息"])
         det.available = True
         det._ocr_text = lambda: "输入消息"
-        self.assertEqual(det.detect(), (False, False))   # object() 不可做 in 判断 → 降级
+        self.assertEqual(det.detect(), (False, False))  # object() 不可做 in 判断 → 降级
 
 
 # ---------------------------------------------------------------------------
@@ -533,14 +550,14 @@ class TestPrepareChatState(GameStateTestBase):
         det = self.make_detector(ocr_lines=["回到游戏"])
         det.available = False
         self.assertFalse(prepare_chat_state(det, self.console))
-        self.assertEqual(self.shots, [])     # 不可用 → 走原发送流程,不截图
+        self.assertEqual(self.shots, [])  # 不可用 → 走原发送流程,不截图
         self.assertEqual(self.presses, [])
 
     def test_not_in_menu_does_not_press(self):
         det = self.make_detector(ocr_lines=["公会仓库"])
         self.assertFalse(prepare_chat_state(det, self.console))
         self.assertEqual(self.presses, [])
-        self.assertEqual(self.clock.sleeps, [])   # 非菜单不做任何等待
+        self.assertEqual(self.clock.sleeps, [])  # 非菜单不做任何等待
         self.assertEqual(self.logs, [])
 
     def test_single_frame_jitter_does_not_press_esc(self):
@@ -548,8 +565,8 @@ class TestPrepareChatState(GameStateTestBase):
         det = self.make_detector(ocr_lines=["回到游戏", "公会仓库"])
         self.assertFalse(prepare_chat_state(det, self.console))
         self.assertEqual(self.presses, [])
-        self.assertEqual(self.frames, 2)               # 检测 + 去抖复查,不再多截
-        self.assertEqual(self.clock.sleeps, [0.2])      # 只等了去抖的 200ms
+        self.assertEqual(self.frames, 2)  # 检测 + 去抖复查,不再多截
+        self.assertEqual(self.clock.sleeps, [0.2])  # 只等了去抖的 200ms
         self.assertEqual(self.logs, [])
 
     def test_confirmed_menu_presses_esc_only(self):
@@ -558,7 +575,7 @@ class TestPrepareChatState(GameStateTestBase):
         self.assertEqual([p[1] for p in self.presses], [("esc",)])
         self.assertEqual(self.clock.sleeps, [0.2, 0.8])
         self.assertTrue(any("按 Esc 关闭" in m for m in self.logs))
-        self.assertEqual(self.frames, 3)   # 检测 / 去抖复查 / Esc 后复查,恰好 3 次截图
+        self.assertEqual(self.frames, 3)  # 检测 / 去抖复查 / Esc 后复查,恰好 3 次截图
 
     def test_menu_persisting_presses_enter(self):
         det = self.make_detector(ocr_lines=["回到游戏"])
@@ -586,8 +603,10 @@ class TestPrepareChatState(GameStateTestBase):
         # console_func 是定义期默认值(就是内建 print),不传时按 print 输出
         import contextlib
         import inspect
-        self.assertIs(inspect.signature(prepare_chat_state)
-                      .parameters["console_func"].default, print)
+
+        self.assertIs(
+            inspect.signature(prepare_chat_state).parameters["console_func"].default, print
+        )
         det = self.make_detector(ocr_lines=["回到游戏", "回到游戏", "公会仓库"])
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
