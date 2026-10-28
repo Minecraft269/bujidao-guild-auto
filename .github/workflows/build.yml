@@ -62,6 +62,11 @@ jobs:
         # 重试 3 次：choco 源偶发返回 "Unable to find package 'upx'"
         # （实测 PR#2 的 run 40754070293 就是这样失败的），属于外部索引抖动，
         # 不是版本或权限问题。最后一行的 upx --version 仍是硬门禁。
+        #
+        # 必须显式 shell: bash —— windows runner 默认是 PowerShell，
+        # 它会把 `for i in 1 2 3; do` 当语法错误（实测 run 40756215039:
+        # ParserError: Missing opening '(' after keyword 'for'）。
+        shell: bash
         run: |
           for i in 1 2 3; do
             choco install upx --no-progress -y && break
