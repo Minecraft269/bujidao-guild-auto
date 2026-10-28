@@ -19,6 +19,7 @@ UI 需要的"把配置摊平成表单字段 / 把表单值写回配置 / 校验�
 写回时的类型转换是"严格"的：数字字段收到 "abc" 不会静默变 0，
 而是产生一条 error 并把该字段标红——这正是 UI 实时校验的基础。
 """
+
 from __future__ import annotations
 
 import copy
@@ -164,10 +165,7 @@ def _coerce(field, raw):
         if (
             isinstance(original, list)
             and original
-            and all(
-                isinstance(x, (int, float)) and not isinstance(x, bool)
-                for x in original
-            )
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in original)
         ):
             converted = []
             for x in items:
@@ -177,9 +175,7 @@ def _coerce(field, raw):
                     try:
                         converted.append(float(str(x).strip()))
                     except (TypeError, ValueError):
-                        raise ValueError(
-                            f"{field.path} 的元素应为数字,当前: {x!r}"
-                        ) from None
+                        raise ValueError(f"{field.path} 的元素应为数字,当前: {x!r}") from None
             return converted
         return items
 
@@ -242,12 +238,14 @@ def apply_edits(cfg, edits):
         from guild_auto.domain.rules import validate_rules
 
         for rule_err in validate_rules(new_cfg.get("rules")):
-            errors.append({
-                "path": "",
-                "message": (
-                    f"规则 {rule_err['rule_id']} 的 {rule_err['field']}: {rule_err['message']}"
-                ),
-            })
+            errors.append(
+                {
+                    "path": "",
+                    "message": (
+                        f"规则 {rule_err['rule_id']} 的 {rule_err['field']}: {rule_err['message']}"
+                    ),
+                }
+            )
     return new_cfg, errors
 
 

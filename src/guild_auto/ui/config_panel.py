@@ -9,6 +9,7 @@ ui/config_panel.py —— 配置面板（全配置项可编辑）
 校验：保存时收集 {path: 文本} → apply_edits → 有 error 的字段标红；
       零 error 才真正落盘。
 """
+
 import tkinter as tk
 from tkinter import messagebox
 
@@ -28,9 +29,7 @@ class ConfigPanel(tk.Frame):
         canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         scroll = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
         self.inner = tk.Frame(canvas)
-        self.inner.bind(
-            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        self.inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.inner, anchor="nw")
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
@@ -50,8 +49,9 @@ class ConfigPanel(tk.Frame):
             if sec != section:
                 section = sec
                 if sec:
-                    tk.Label(self.inner, text=f"── {sec} ──", anchor="w",
-                             font=("", 9, "bold")).pack(fill="x", padx=6, pady=(10, 2))
+                    tk.Label(
+                        self.inner, text=f"── {sec} ──", anchor="w", font=("", 9, "bold")
+                    ).pack(fill="x", padx=6, pady=(10, 2))
 
             row = tk.Frame(self.inner)
             row.pack(fill="x", padx=8, pady=1)
@@ -64,9 +64,15 @@ class ConfigPanel(tk.Frame):
             self.widgets[f.path] = entry
 
             if f.comment:
-                tk.Label(self.inner, text=f.comment, anchor="w", justify="left",
-                         fg="#666666", font=("", 8), wraplength=560).pack(
-                    fill="x", padx=(30, 8))
+                tk.Label(
+                    self.inner,
+                    text=f.comment,
+                    anchor="w",
+                    justify="left",
+                    fg="#666666",
+                    font=("", 8),
+                    wraplength=560,
+                ).pack(fill="x", padx=(30, 8))
 
     def collect(self):
         """收集当前表单值（未修改的项也一并带上，apply_edits 幂等）。"""
