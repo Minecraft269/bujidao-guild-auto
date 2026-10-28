@@ -241,8 +241,13 @@ def apply_edits(cfg, edits):
     if new_cfg.get("rules_enabled"):
         from guild_auto.domain.rules import validate_rules
 
-        for e in validate_rules(new_cfg.get("rules")):
-            errors.append({"path": "", "message": f"规则 {e['rule_id']} 的 {e['field']}: {e['message']}"})
+        for rule_err in validate_rules(new_cfg.get("rules")):
+            errors.append({
+                "path": "",
+                "message": (
+                    f"规则 {rule_err['rule_id']} 的 {rule_err['field']}: {rule_err['message']}"
+                ),
+            })
     return new_cfg, errors
 
 
