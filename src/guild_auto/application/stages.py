@@ -284,29 +284,28 @@ def stage_execute_async(rt, records, cfg):
     # ---- 验证器:后台线程调用,委托 executor 单条执行(含重试/回显判定) ----
     executor = rt.executor
 
-    # 命令文本由 executor 的配置真源 build_command 生成 —— 与串行路径逐字一致,
-    # 这里只为提交队列提供可读的 command 字段(报告/日志引用)。
+    # 命令文本由配置真源 build_command 生成 —— 与串行路径逐字一致。
+    # meta 里带 action 与业务 key:
+    #   * action —— verify_fn 据此知道该执行哪个动作(不靠命令文本反查,
+    #     因为同一玩家 promote×2 的两条命令**文本完全相同**,反查会张冠李戴);
+    #   * key    —— 去重键。重试产生的新 task_id 与首次共享同一 key(应算一条),
+    #     而 promote×2 的两条是**两次真实操作**,必须用不同 key。
     from guild_auto.domain.decisions import build_command
 
-    # 命令到 action 的反查表:run_async_round 只传 (command, player) 到 verify,
-    # 必须在外层做反查表。
-    cmd_to_action = {}
     commands = []
-    actionable_players = []
     for r in records:
         if not r.get("actions") or r.get("executed"):
             continue
         player = r["player"]
-        actionable_players.append(player)
-        for a in r["actions"]:
+        for idx, a in enumerate(r["actions"]):
             cmd = build_command(cfg, a, player)
-            commands.append((cmd, player))
-            cmd_to_action[(cmd, player)] = a
+            commands.append((cmd, player, {"action": a,
+                                           "key": (player, "action", idx)}))
 
     def verify(cmd, player, meta):
-        action = cmd_to_action.get((cmd, player))
+        action = (meta or {}).get("action")
         if not action:
-            return False, "无法定位命令对应的 action(内部错误)", None
+            return False, "meta 缺少 action(内部错误)", None
         ok, err = executor.execute_action(action, player)
         return (ok, None if ok else (err or "执行失败"), None)
 
@@ -314,15 +313,15 @@ def stage_execute_async(rt, records, cfg):
     system.attach_sender(send_only)
 
     console(f"[5/5] 执行操作(异步模式:主线程只发不验,{len(commands)} 条命令)...")
-    logger.log_info(f"(异步)阶段5 执行: {len(commands)} 命令, belonging {len(actionable_players)} 玩家")
+    logger.log_info(f"(异步)阶段5 执行: {len(commands)} 条命令(主线程只发不验)")
     ok_snaps, failed_snaps = run_async_round(system, commands, send_only,
                                              max_retries=retries)
     console("(异步)执行阶段验证完成,回填结果")
     system.stop()
 
-    # ---- 回填:每条 record 的 executed / error / new_rank ----
-    ok_by_key = {(s["command"], s["player"]) for s in ok_snaps}
-    err_by_key = {s["player"]: (s["command"], s.get("error") or "执行失败")
+    # ---- 回填:按 meta.key 精确知道"第几条动作成功",不靠命令文本匹配 ----
+    ok_keys = {(s.get("meta") or {}).get("key") for s in ok_snaps}
+    err_by_key = {(s.get("meta") or {}).get("key"): (s.get("error") or "执行失败")
                   for s in failed_snaps}
     from guild_auto.domain.decisions import new_rank_after
     failures = []
@@ -330,34 +329,27 @@ def stage_execute_async(rt, records, cfg):
         if not r.get("actions") or r.get("executed"):
             continue
         player = r["player"]
-        actions = r["actions"]
-        # 该玩家的每条 action 有自己的命令;按序判定每条的成败
-        from guild_auto.domain.decisions import build_command as _bc
         per_ok, per_err = [], []
-        for a in actions:
-            key = (_bc(cfg, a, player), player)
-            if key in ok_by_key:
+        for idx, a in enumerate(r["actions"]):
+            k = (player, "action", idx)
+            if k in ok_keys:
                 per_ok.append(a)
             else:
-                per_err.append((a, err_by_key.get(player, (None, "执行失败"))[1]))
+                per_err.append((a, err_by_key.get(k, "执行失败")))
         ok_count = len(per_ok)
         r["executed"] = True
-        if per_err:
-            first_action, first_err = per_err[0]
-            r["error"] = f"执行失败({first_action}): {first_err}"
-        else:
-            r["error"] = None
+        r["error"] = (f"执行失败({per_err[0][0]}): {per_err[0][1]}"
+                      if per_err else None)
         # 部分失败:按成功条数算 new_rank(与串行路径同一规则)
-        r["new_rank"] = new_rank_after(r["rank"], r["actions"][:ok_count]) \
-            if ok_count else r["rank"]
+        r["new_rank"] = (new_rank_after(r["rank"], r["actions"][:ok_count])
+                         if ok_count else r["rank"])
         if per_err:
             console(f"    ⚠ {player} 执行失败({per_err[0][0]}): {per_err[0][1]}")
         else:
             console(f"    ✓ {player} 全部完成")
         if per_err:
             failures.append({"player": player, "rank": r["rank"],
-                             "actions": actions,
-                             "error": r["error"]})
+                             "actions": r["actions"], "error": r["error"]})
     return failures
 
 

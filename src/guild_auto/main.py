@@ -30,7 +30,12 @@ from guild_auto.infrastructure.log_watcher import LogWatcher, detect_encoding
 from guild_auto.domain import parsers
 from guild_auto.domain.parsers import ParseError, parse_guild_list, parse_guild_member
 from guild_auto.domain.reporter import write_action_report, write_contribution_report
-from guild_auto.application.stages import stage_confirm_execution, stage_notify, stage_query_async
+from guild_auto.application.stages import (
+    stage_confirm_execution,
+    stage_execute_async,
+    stage_notify,
+    stage_query_async,
+)
 from guild_auto.infrastructure.window_input import HumanInput, activate_window, find_game_window
 
 DEFAULT_CONFIG_FILE = "config.json"
@@ -608,6 +613,7 @@ def main():
 
     # 2. 初始化(异常时释放已打开的资源)
     listener = None
+    watcher = None   # build_runtime 失败时 except 分支要用到,必须先占位
     gname = ""     # 公会名(第二 try 块赋值;finally 写待办时兜底引用)
     records = []   # 查询记录(第二 try 块赋值;finally 中断兜底补扫引用,提前退出时为空)
     failures = []
@@ -685,13 +691,10 @@ def main():
 
         console("开始运行\n")
     except BaseException:  # 含 SystemExit(sys.exit(0) 未找到窗口退出路径),确保资源清理
+        # watcher 必须预置 None:若 build_runtime() 自己就抛了,这里再用 watcher
+        # 会二次抛 NameError,把真正的失败原因盖掉。
         if watcher is not None:
             watcher.close()
-        if async_executor is not None:
-            try:
-                async_executor.stop(timeout=3)
-            except Exception:
-                pass
         if listener is not None:
             listener.stop()
         raise
@@ -825,125 +828,63 @@ def main():
                 prepare_chat_state(detector, console)
             time.sleep(0.5)  # 等待界面稳定
 
+        # ---- 执行阶段 ----
+        # 两种模式只有"发送节奏"不同,验证语义完全一致:
+        #   串行 — 逐条发送并立刻读日志验证
+        #   异步 — 主线程只发不验,验证交给 async_system(与查询阶段同一套 B→D→E 闭环)
+        execution_failures = []
         if sw["execution_enabled"]:
-            # 即使debug跳过执行，仍发送，但需要确保 actions 存在（模拟数据已有）
+            # 即使 debug 跳过执行,仍尝试发送(玩家不存在时 execute_action 会返回错误)
             if debug.get("enabled") and "execute" in debug.get("skip_stages", []):
-                console("Debug: 跳过执行（但会尝试发送指令，预期失败）")
-                # 仍然执行，但注意玩家不存在，execute_action 会返回错误
-            # 下面的执行代码不变，因为 execute_action 会验证并返回失败
-            for r in records:
-                if r.get("executed"):
-                    continue
-                wait_if_paused()
-                # 暂停恢复后重置窗口状态(激活窗口+关菜单+处理聊天栏),
-                # 否则 _reset_needed 残留,恢复后直接发命令窗口状态未知。
-                # 异步模式跳过:主线程此时动 Esc/Enter 会与持锁发送的 worker 竞争
-                #(Esc 取消已粘贴未回车的命令、OCR 误判的 Enter 提前发出半成品),
-                # 重置统一交给 _send_with_gate 锁内 reset_ui(同样消费 _reset_needed)
-                if async_executor is None:
+                console("Debug: 跳过执行(但会尝试发送指令,预期失败)")
+            if rt.async_enabled:
+                execution_failures = stage_execute_async(rt, records, cfg)
+            else:
+                # 串行模式:逐条执行并等待结果
+                for r in records:
+                    if r.get("executed"):
+                        continue
+                    wait_if_paused()
+                    # 暂停恢复后重置窗口状态,否则恢复后直接发命令窗口状态未知
                     reset_window_state_after_pause(hwnd, detector)
-                if not r["actions"]:
-                    r["executed"] = False
-                    executed.append(r)
-                    continue
-                kind = r["actions"][0]
-                if kind == "promote" and not sw["promote_enabled"]:
-                    r["executed"], r["error"] = False, "升职开关已关闭"
-                    r["new_rank"] = r["rank"]
-                    executed.append(r)
-                    continue
-                if kind == "demote" and not sw["demote_enabled"]:
-                    r["executed"], r["error"] = False, "降职开关已关闭"
-                    r["new_rank"] = r["rank"]
-                    executed.append(r)
-                    continue
-                if kind == "kick" and not sw["kick_enabled"]:
-                    r["executed"], r["error"] = False, "踢出开关已关闭"
-                    r["new_rank"] = r["rank"]
-                    executed.append(r)
-                    continue
-                console(f"  执行 {r['player']}: {r['actions']}")
-                logger.trace_code_location("execute_phase.player", f"player={r['player']} actions={r['actions']}")
-                if async_executor is not None:
-                    # 异步流水线:把每个 action 拆成独立任务提交,主线程不阻塞等回显
-                    # AsyncCommandExecutor._worker 内调 verify_fn(cmd, player) —— verify 必须是
-                    # 2 参数 (cmd, player) 签名。修复"执行阶段不能执行操作"TypeError:
-                    # 之前 _verify 写成 4 参数 (cmd, player, a, r) 但 _worker 只传 2 个位置参数
-                    # → 每次执行都 TypeError: _verify() missing 1 required positional argument
-                    # 用闭包捕获 a 和 r,_verify 实际只有 (cmd, player) 两个参数。
-                    def _make_verify(_a, _r):
-                        def _verify(_cmd, _player):
-                            # 同步走 _send_with_gate 锁内串行读回显,后台 worker 内执行
-                            ok, err = executor.execute_action(_a, _player)
-                            return ok, err
-                        return _verify
-                    action_keys = []
-                    # 修复"执行阶段指令拼接错误":player 字段必须是纯玩家名("Test_子治积"),
-                    # 不能带 @action 后缀——execute_action 内部 build_command 用 player 拼
-                    # /guild promote {player} 等命令,带 @promote 会变成非法命令
-                    # /guild promote Test_子治积@promote。但 task_id 仍要带 @action 才能
-                    # 区分同一玩家多条 action 的结果(2 条 promote 必须分开追踪)。
-                    player = r["player"]
-                    for a in r["actions"]:
-                        task_id = f"{player}@{a}"  # 唯一 ID(玩家+动作)
-                        # 注意:submit() 的返回值是 True/False(入队是否成功),
-                        # **不是**结果 key。拿它当 key 会让 get_result_nowait()
-                        # 永远取到 None,于是每条动作都被误报成"后台重试中"。
-                        # 真正的 key 是 task_id(AsyncCommandExecutor 用它作 player 键)。
-                        if not async_executor.submit(a, task_id, _make_verify(a, player)):
-                            logger.log_warning(f"异步队列已满,丢弃: {task_id}")
-                        action_keys.append((a, task_id))
-                    r["_async_action_keys"] = action_keys   # 记下供 finally 回填结果
-                    r["_async_pending"] = True
-                else:
-                    # 串行模式:同步执行并等待结果
+                    if not r["actions"]:
+                        r["executed"] = False
+                        executed.append(r)
+                        continue
+                    kind = r["actions"][0]
+                    if kind == "promote" and not sw["promote_enabled"]:
+                        r["executed"], r["error"] = False, "升职开关已关闭"
+                        r["new_rank"] = r["rank"]
+                        executed.append(r)
+                        continue
+                    if kind == "demote" and not sw["demote_enabled"]:
+                        r["executed"], r["error"] = False, "降职开关已关闭"
+                        r["new_rank"] = r["rank"]
+                        executed.append(r)
+                        continue
+                    if kind == "kick" and not sw["kick_enabled"]:
+                        r["executed"], r["error"] = False, "踢出开关已关闭"
+                        r["new_rank"] = r["rank"]
+                        executed.append(r)
+                        continue
+                    console(f"  执行 {r['player']}: {r['actions']}")
+                    logger.trace_code_location(
+                        "execute_phase.player",
+                        f"player={r['player']} actions={r['actions']}")
                     results = executor.execute_actions(r["player"], r["actions"])
                     failed = next(((a, e) for a, ok, e in results if not ok), None)
                     r["executed"] = True
                     r["error"] = f"执行失败({failed[0]}): {failed[1]}" if failed else None
-                    # 部分失败:按成功条数计算实际新等级(如 promote×2 第一条成功则升 1 级)
+                    # 部分失败:按成功条数算实际新等级(promote×2 第一条成功则升 1 级)
                     ok_count = sum(1 for _, ok, _ in results if ok)
-                    r["new_rank"] = new_rank_after(r["rank"], r["actions"][:ok_count]) if ok_count else r["rank"]
+                    r["new_rank"] = (new_rank_after(r["rank"], r["actions"][:ok_count])
+                                     if ok_count else r["rank"])
                     if failed:
                         console(f"    ⚠ {r['player']} 执行失败: {failed[1]}")
                         logger.log_error(f"执行失败 {r['player']} ({failed[0]}): {failed[1]}")
-                executed.append(r)
-
-            # ---- 异步模式:阶段内 join + 收集(确保阶段门控:执行阶段完成才进入下一阶段) ----
-            # 用户原话"上一阶段 -> 下一阶段发送指令 -> 下一条指令 -> .... 最后后台验证完成
-            #   返回失败/无动作给主线程重试(在该阶段完成前不显示下一阶段入口)"
-            # 实现:主线程先把所有 action 快速入队,后台串行执行+重试+补做;
-            # 阶段结束前 join 一次拿全部结果(后台重试也在这里完成),
-            # 阶段真正完成才推下一阶段。失败/重试耗尽写入 retry_queue,主线程同步取回
-            # 给报告+待办使用。
-            if async_executor is not None and any(r.get("_async_pending") for r in records):
-                pending_rs = [r for r in records if r.pop("_async_pending", None)]
-                total_tasks = sum(len(r.get("_async_action_keys", [])) for r in pending_rs)
-                logger.log_info(f"(异步)已提交 {len(pending_rs)} 玩家 {total_tasks} 条 action")
-                # 原始要求"主线程不进行任何验证 快速完成所有指令和操作由异步系统进行验证"
-                # ——不 join:主线程立即推报告(阶段 9)。后台 retry 失败入 retry_queue,finally 收尾。
-                # pending 的 record 标"待回填"在报告里。
-                for r in pending_rs:
-                    r["executed"] = True   # 占位:动作已提交后台,真实结果在 finally 收尾时填
-                    action_keys = r.pop("_async_action_keys", [])
-                    pending_actions = []
-                    ok_actions = []
-                    for (action, key) in action_keys:
-                        res = async_executor.get_result_nowait(key)
-                        if res is None or res.get("status") != "ok":
-                            err_txt = (res or {}).get("error") or "后台重试中"
-                            pending_actions.append((action, err_txt))
-                        else:
-                            ok_actions.append(action)
-                    # 部分成功按成功条数算 new_rank;pending 留原等级
-                    r["error"] = (f"{len(pending_actions)} 条后台重试中,下次启动从待办续做"
-                                  if pending_actions else None)
-                    ok_count = len(ok_actions)
-                    r["new_rank"] = new_rank_after(r["rank"], r["actions"][:ok_count]) if ok_count else r["rank"]
-                    if pending_actions:
-                        console(f"    ⏳ {r['player']} {r['error']}")
-                    elif ok_actions:
-                        console(f"    ✓ {r['player']} {len(ok_actions)} 条 action 已提交后台")
+                    executed.append(r)
+            # 异步执行失败计入最终失败清单(报告与待办都要看得见)
+            failures.extend(execution_failures)
         else:
             console("  dry-run:跳过全部执行")
             for r in records:
@@ -1003,42 +944,42 @@ def main():
     finally:
         watcher.close()
         # 停止异步执行器(若已启动):失败/中断的任务真正写入 pending_actions.json(不丢失)
-        if async_executor is not None:
+        # 停止异步系统(若已启动):失败/中断的任务真正写入 pending_actions.json(不丢失)
+        if rt.async_enabled and rt.async_system is not None:
             try:
-                retry_tasks = async_executor.get_retry_tasks()
+                retry_tasks = rt.async_system.get_retry_queue()
                 failed_players = {t["player"] for t in retry_tasks}
-                # ---- ① 重试耗尽的补做任务 → 待办格式(actions 从命令摘要拆回) ----
+                # ① 重试耗尽的补做任务 → 待办格式
                 incomplete_async = [{
                     "player": t["player"], "rank": "?",
                     "actions": [a for a in (t.get("command") or "").split(",") if a],
                     "trigger": None, "weekly": None, "status": "failed",
                     "error": f"(异步)验证失败: {t.get('error')}",
                 } for t in retry_tasks]
-                # ---- ② Ctrl+C/异常中断兜底:补扫仍带 _async_pending 的记录 ----
-                # (执行循环被中断时回填块未运行,这批任务既未执行也未入待办,防静默丢失)
-                interrupted = [r for r in records
-                               if r.pop("_async_pending", None) and r.get("actions")]
+                # ② Ctrl+C/异常中断兜底:补扫仍在途的任务(get_stranded)
+                # 在途任务绝不能被归档抹掉,否则主线程再也拿不到结果(静默丢指令)
+                stranded = rt.async_system.get_stranded()
                 incomplete_interrupted = [{
-                    "player": r["player"], "rank": r["rank"],
-                    "actions": r["actions"], "trigger": r.get("trigger"),
-                    "weekly": r.get("weekly_total"), "status": "failed",
+                    "player": s["player"], "rank": "?",
+                    "actions": [a for a in (s.get("command") or "").split(",") if a],
+                    "trigger": None, "weekly": None, "status": "failed",
                     "error": "(异步)脚本中断,任务未完成,已转待办",
-                } for r in interrupted if r["player"] not in failed_players]
+                } for s in stranded if s["player"] not in failed_players]
                 to_save = incomplete_async + incomplete_interrupted
                 if to_save:
                     merged = load_pending(pending_path) + to_save
-                    # 按 player 去重:后写覆盖先写(避免 step10 与 finally 对同一玩家重复落盘)
                     dedup = {}
                     for it in merged:
                         dedup[it["player"]] = it
                     merged = list(dedup.values())
                     save_pending(pending_path, gname, merged)
-                    console(f"⚠ {len(to_save)} 条异步失败/中断任务已写入待办({pending_path}),下次启动可续做")
+                    console(f"⚠ {len(to_save)} 条异步失败/中断任务已写入待办"
+                            f"({pending_path}),下次启动可续做")
                     logger.log_warning(f"{len(to_save)} 条异步失败/中断任务转入待办: "
                                        f"{[it['player'] for it in to_save]}")
-                async_executor.stop(timeout=5)
+                rt.async_system.stop(timeout=5)
             except Exception as e:
-                logger.log_error(f"停止异步执行器异常: {e}")
+                logger.log_error(f"停止异步系统异常: {e}")
         try:
             listener.stop()
         except Exception:

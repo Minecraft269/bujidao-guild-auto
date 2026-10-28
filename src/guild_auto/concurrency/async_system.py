@@ -512,6 +512,17 @@ def run_async_round(system, commands, send_fn, max_retries=3):
     """
     results_ok = []
     final_failed = []
+    def _biz_key(s):
+        """业务去重键。
+
+        默认用 (command, player):重试会为同一条业务指令产生多个 task_id,
+        必须只算一次。但**同一条命令可能本来就该执行多次**(promote×2 升两级),
+        这种由调用方在 meta 里给 "key" 显式区分;给了就用它,避免把两条真实
+        操作误并成一条(promote×2 只成功一次时会把等级算错)。
+        """
+        mk = (s.get("meta") or {}).get("key")
+        return mk if mk is not None else (s["command"], s["player"])
+
     remaining = list(commands)
     max_rounds = max(1, int(max_retries))
     all_round_ids = set()   # 本次闭环提交过的全部 task_id(用于收尾时只统计本次的任务)
@@ -540,7 +551,11 @@ def run_async_round(system, commands, send_fn, max_retries=3):
         # 还有轮次可重试 → 全部转入下一轮(本轮 FAILED 不算"最终失败",
         # 它只是"这条要重试"的信号);最后一轮才把未通过的计入 final_failed。
         if round_no < max_rounds:
-            remaining = [(s["command"], s["player"]) for s in failed]
+            # 重试必须携带原 meta:否则 verify_fn 在第二轮拿不到 action 等上下文
+            # (执行阶段就是靠 meta["action"] 定位该执行哪个动作)。
+            remaining = [((s["command"], s["player"], s["meta"])
+                          if s.get("meta") else (s["command"], s["player"]))
+                         for s in failed]
             logger.log_warning(f"(异步系统)第 {round_no} 轮有 {len(remaining)} 条失败需重试")
         else:
             final_failed.extend(failed)
@@ -569,19 +584,19 @@ def run_async_round(system, commands, send_fn, max_retries=3):
             f"(异步系统)⚠ {len(stranded)} 条指令在 wait_all 超时后仍未验证完成,"
             f"已保留在系统内并计入失败清单(指令未静默丢弃): "
             f"{[s['player'] for s in stranded][:5]}")
-        seen = {(s["command"], s["player"]) for s in final_failed}
+        seen = {_biz_key(s) for s in final_failed}
         for s in stranded:
-            if (s["command"], s["player"]) not in seen:
+            if _biz_key(s) not in seen:
                 final_failed.append(s)
-                seen.add((s["command"], s["player"]))
+                seen.add(_biz_key(s))
 
     # 收尾:某条指令若在后续轮次验证成功过,就不该同时留在"最终失败"里 ——
     # 重试会为同一 (command, player) 产生多个 task_id,前几轮的 FAILED 只是
     # "要重试"的信号。业务事实只有一个:这条指令最终过没过。
-    ok_keys = {(s["command"], s["player"]) for s in results_ok}
+    ok_keys = {_biz_key(s) for s in results_ok}
     dedup_fail, seen_fail = [], set()
     for s in final_failed:
-        key = (s["command"], s["player"])
+        key = _biz_key(s)
         if key in ok_keys:          # 后续轮次成功了 → 不算最终失败
             continue
         if key in seen_fail:        # 同一条失败不重复计入
@@ -593,7 +608,7 @@ def run_async_round(system, commands, send_fn, max_retries=3):
     # 成功结果同样按业务键去重:让"成功数"等于"成功的指令数"而非"成功的尝试数"。
     deduped, seen_ok = [], set()
     for s in results_ok:
-        key = (s["command"], s["player"])
+        key = _biz_key(s)
         if key in seen_ok:
             continue
         seen_ok.add(key)

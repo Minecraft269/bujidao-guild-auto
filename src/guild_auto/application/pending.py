@@ -140,4 +140,8 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None,
         ans = (ans or "").strip().lower()
     except EOFError:
         ans = ""
-    return ans != "c", remaining
+    # 语义:cont = "是否继续新的统计操作"。
+    # 提示语是「直接退出(回车)还是继续新的统计(输入 c)」—— 所以输入 c 才是继续。
+    # 原实现写成 `ans != "c"` 把语义取反了:用户按 c 反而退出、直接回车反而继续,
+    # main() 的 `if not cont: return` 因此总是走反。这条路径此前无任何测试。
+    return ans == "c", remaining
