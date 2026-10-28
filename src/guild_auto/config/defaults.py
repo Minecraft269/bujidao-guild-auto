@@ -48,6 +48,18 @@ DEFAULT_CONFIG = {
     # 跳过职位:默认跳过 会长/副会长/管理员(不查询不操作,与原脚本 skip_groups 一致);
     # 如需查询某职位,将其从列表移除即可
     "skip_ranks": ["leader", "vice_leader", "admin"],
+    # ── 名单(阶段 5)────────────────────────────────────────────────────
+    # 名字匹配一律**大小写不敏感**;match_wildcard=true 时支持 * 与 ? 通配。
+    # 优先级(短路):功能开关 > blacklist > 屏蔽词策略 > whitelist
+    #               > whitelist_protected > 阈值判定
+    "blacklist": [],
+    "whitelist": [],
+    "whitelist_protected": [],
+    "match_wildcard": True,
+    # 屏蔽词玩家(名字被网易过滤成整串星号)的策略:
+    #   "skip"(默认)     = 不发送查询指令,直接记 blocked(指令不可查)
+    #   "query_attempt"  = 仍尝试查询(通常会超时并浪费重试,仅调试用)
+    "blocked_name_policy": "skip",
 
     # ── 升/降/踢 阈值(原样继承自原脚本,勿改动数值) ────────────────────────
     # 取值:非负整数,单位=公会经验周贡献。语义与边界(含/不含)见 docs/业务规则继承清单.md §1
@@ -262,6 +274,17 @@ CONFIG_COMMENTS = {
                    "'high'(高活跃)/'mid'(中等活跃)/'low'(低活跃)/'entry'(入门)",
     "skip_ranks": "跳过的职位(不查询不操作):'leader'(会长)/'vice_leader'(副会长)/'admin'(管理员);如需查询请从列表移除",
     "kick_confirm": "踢出确认:true=执行踢出前在控制台列出清单,输入 kick-confirm 才执行(踢出不可逆,建议保持 true)",
+    "blacklist": "黑名单:名单内的玩家**完全不处理**(不查询/不通知/不升降踢)。可填玩家名列表,如 [\"捣乱玩家\"];"
+                 "大小写不敏感,match_wildcard=true 时支持 * 通配(如 [\"测试*\"])。优先级最高(仅次于功能开关)",
+    "whitelist": "白名单:非空时**只有**名单内的玩家参与升降踢判定,其余玩家一律不处理。"
+                 "留空 [] 表示不启用该限制。可填玩家名或通配模式(需 match_wildcard=true)",
+    "whitelist_protected": "保护名单:名单内的玩家**免于降职与踢出**(升职仍然生效)。"
+                           "适合保护新人或管理人小号。留空 [] 表示不启用",
+    "match_wildcard": "名字匹配是否启用通配符:true=支持 * 与 ? (如 '测试*' 匹配所有以'测试'开头的名字);"
+                      "false=只做精确匹配。两种情况都大小写不敏感",
+    "blocked_name_policy": "屏蔽词玩家策略(名字被网易过滤成整串星号,身份不可读):"
+                           "'skip'(默认)=不发送 /guild member *** 指令,直接记为 blocked 并在报告单列;"
+                           "'query_attempt'=仍尝试查询(通常超时浪费重试,仅用于调试)",
     # ── 升/降/踢 阈值(原样继承自原脚本,勿改动数值) ────────────────────────
     "thresholds": "升/降/踢阈值:取值非负整数,单位=公会经验周贡献。语义与边界(含/不含)见 docs/业务规则继承清单.md §1",
     "thresholds.high_demote": "高活跃:周贡献 <= 此值 → 降职(原 run_auto.py,含边界)",

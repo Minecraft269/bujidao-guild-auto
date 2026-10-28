@@ -19,7 +19,11 @@ from pynput import keyboard
 import pyautogui
 
 import guild_auto.config as config_mod
-from guild_auto.domain.decisions import build_notification, decide_actions, new_rank_after
+from guild_auto.domain.decisions import (
+    build_notification,
+    decide_for_player,
+    new_rank_after,
+)
 from guild_auto.infrastructure.action_executor import ActionExecutor
 from guild_auto.infrastructure import logger
 from guild_auto.config import console
@@ -711,7 +715,11 @@ def main():
         console(f"[3/5] 判定: {len(records)} 名玩家")
         if not (debug.get("enabled") and "decide" in debug.get("skip_stages", [])):
             for r in records:
-                actions, trigger = decide_actions(r["rank"], r["weekly_total"], cfg["thresholds"])
+                # 名单短路优先于阈值判定(阶段 5):
+                # blacklist/whitelist 命中即不处理,保护名单剥夺降职/踢出。
+                # 阈值矩阵本身零改动,仍由 decide_actions 决定。
+                actions, trigger = decide_for_player(
+                    r["player"], r["rank"], r["weekly_total"], cfg)
                 logger.log_debug(f"判定输入: player={r['player']} rank={r['rank']} "
                                  f"weekly={r['weekly_total']} → 输出 actions={actions} trigger={trigger}")
                 r["actions"] = actions

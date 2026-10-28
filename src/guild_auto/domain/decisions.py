@@ -14,6 +14,7 @@ actions.py —— 决策引擎 + 通知文案 + 命令格式(纯逻辑)
 本模块只产出「该做什么」与「该发什么字」,不碰设备。
 """
 
+import fnmatch
 from guild_auto.infrastructure import logger
 
 # 等级链:索引越小等级越低(用于计算 升职N次/降职1次 后的新等级)
@@ -279,3 +280,82 @@ def build_summary_message(records, cfg):
     tmpl = templates["summary"]
     return tmpl.format(promote=c["promote"], demote=c["demote"], kick=c["kick"],
                        admin=cfg.get("admin") or "管理员")
+
+# ---------------------------------------------------------------------------
+# 名单匹配与优先级短路(阶段 5)
+# ---------------------------------------------------------------------------
+# 优先级(短路,先命中先返回):
+#   功能开关(promote/demote/kick enabled)
+#     > blacklist            → 完全不处理
+#     > 屏蔽词策略            → 名字不可读,不发送查询
+#     > whitelist(非空)       → 只处理名单内的人
+#     > whitelist_protected   → 免降职/踢出(升职仍生效)
+#     > 阈值判定
+# 功能开关在执行阶段生效(此处不重复判断),因此本函数返回的第 4 步之后
+# 仍可能被执行阶段按开关拦下 —— 这与原脚本行为一致。
+
+BLOCK_BLACKLIST = "blacklist"
+BLOCK_NOT_WHITELISTED = "not_in_whitelist"
+
+
+def name_matches(name, patterns, wildcard=True):
+    """名字是否命中名单。**大小写不敏感**;wildcard=True 时支持 * 与 ?。
+
+    用 fnmatch 的语义(casefold 后比较),空模式列表恒 False。
+    注意:这里只做名字比较,不做任何 IO,便于纯函数单测。
+    """
+    if not patterns:
+        return False
+    target = str(name).casefold()
+    for pat in patterns:
+        p = str(pat).casefold()
+        if wildcard:
+            if fnmatch.fnmatchcase(target, p):
+                return True
+        elif target == p:
+            return True
+    return False
+
+
+def name_list_block_reason(player, cfg):
+    """名单层短路:返回拦截原因常量,或 None 表示放行。
+
+    只看 blacklist 与 whitelist(屏蔽词由查询阶段处理,因为它跟"能不能
+    发送指令"有关,与"该不该动他"是两个维度)。
+    """
+    wildcard = bool(cfg.get("match_wildcard", True))
+    if name_matches(player, cfg.get("blacklist") or [], wildcard):
+        return BLOCK_BLACKLIST
+    wl = cfg.get("whitelist") or []
+    if wl and not name_matches(player, wl, wildcard):
+        return BLOCK_NOT_WHITELISTED
+    return None
+
+
+def is_protected(player, cfg):
+    """是否在保护名单(免降职/踢出,升职仍生效)。"""
+    return name_matches(player, cfg.get("whitelist_protected") or [],
+                        bool(cfg.get("match_wildcard", True)))
+
+
+def decide_for_player(player, rank, weekly, cfg):
+    """单个玩家的完整判定:名单短路优先于阈值矩阵。
+
+    返回 (actions, trigger):
+      * 被 blacklist / whitelist 拦下 → ([], 原因常量),报告里据此说明
+      * 命中保护名单 → 只保留升职动作(降职/踢出被剥夺)
+      * 其余 → 交给 decide_actions 走原阈值矩阵(业务规则零改动)
+    """
+    blocked = name_list_block_reason(player, cfg)
+    if blocked is not None:
+        return [], blocked
+
+    actions, trigger = decide_actions(rank, weekly, cfg["thresholds"])
+
+    if actions and is_protected(player, cfg):
+        # 保护名单:只允许 promote,降职/踢出一律剥夺
+        kept = [a for a in actions if a == "promote"]
+        if not kept:
+            return [], "whitelist_protected"
+        return kept, trigger
+    return actions, trigger

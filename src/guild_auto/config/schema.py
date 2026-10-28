@@ -121,6 +121,19 @@ def validate_config(cfg):
             issues.append(("error", f"switches.notify_mode 取值非法: {sw.get('notify_mode')!r},"
                                      f"应为 {VALID_NOTIFY_MODES} 之一"))
     check_bool(cfg, "kick_confirm", "")  # 顶层键:路径前缀为空
+    # ── 名单(阶段 5)──
+    for key in ("blacklist", "whitelist", "whitelist_protected"):
+        if key in cfg:
+            val = cfg[key]
+            if not isinstance(val, list) or not all(isinstance(x, str) for x in val):
+                issues.append(("error", f"配置项 {key} 应为字符串列表,当前: {val!r}"))
+    if "match_wildcard" in cfg:
+        check_bool(cfg, "match_wildcard", "")
+    if "blocked_name_policy" in cfg:
+        pol = cfg["blocked_name_policy"]
+        if pol not in ("skip", "query_attempt"):
+            issues.append(("error", f"配置项 blocked_name_policy 取值非法: {pol!r},"
+                                     f"应为 ('skip', 'query_attempt') 之一"))
     if "pause_key" in cfg and not isinstance(cfg["pause_key"], str):
         issues.append(("error", f"配置项 pause_key 应为字符串,当前: {cfg['pause_key']!r}"))
 
