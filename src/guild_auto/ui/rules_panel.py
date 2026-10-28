@@ -12,6 +12,7 @@ ui/rules_panel.py —— 自定义规则管理（阶段 4）
   * JSON 编辑：选中规则可编辑原文，应用前用 validate_rules 校验并指出字段
   * 实时预览：输入模拟成员数据，显示命中哪条规则、动作、条件明细
 """
+
 import json
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -51,19 +52,26 @@ class RulesPanel(tk.Frame):
 
         cols = ("id", "name", "enabled", "priority", "actions")
         self.tree = ttk.Treeview(self, columns=cols, show="headings", height=8)
-        for c, w in (("id", 120), ("name", 140), ("enabled", 60),
-                     ("priority", 70), ("actions", 160)):
+        for c, w in (
+            ("id", 120),
+            ("name", 140),
+            ("enabled", 60),
+            ("priority", 70),
+            ("actions", 160),
+        ):
             self.tree.heading(c, text=c)
             self.tree.column(c, width=w, anchor="w")
         self.tree.pack(fill="both", expand=True, padx=6)
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.load_selected())
 
         tk.Label(self, text="规则 JSON（选中后可编辑，应用前会校验）", anchor="w").pack(
-            fill="x", padx=6, pady=(6, 0))
+            fill="x", padx=6, pady=(6, 0)
+        )
         self.editor = tk.Text(self, height=8, wrap="none")
         self.editor.pack(fill="both", expand=True, padx=6)
         tk.Button(self, text="应用 JSON 修改", command=self.apply_json).pack(
-            anchor="w", padx=6, pady=4)
+            anchor="w", padx=6, pady=4
+        )
 
         preview = tk.LabelFrame(self, text="实时预览（模拟一名玩家）")
         preview.pack(fill="x", padx=6, pady=6)
@@ -74,15 +82,17 @@ class RulesPanel(tk.Frame):
         tk.Entry(row, textvariable=self.var_player, width=14).pack(side="left", padx=4)
         tk.Label(row, text="等级").pack(side="left")
         self.var_rank = tk.StringVar(value="entry")
-        ttk.Combobox(row, textvariable=self.var_rank, width=8,
-                     values=("entry", "low", "mid", "high")).pack(side="left", padx=4)
+        ttk.Combobox(
+            row, textvariable=self.var_rank, width=8, values=("entry", "low", "mid", "high")
+        ).pack(side="left", padx=4)
         tk.Label(row, text="周贡献").pack(side="left")
         self.var_weekly = tk.StringVar(value="800")
         tk.Entry(row, textvariable=self.var_weekly, width=8).pack(side="left", padx=4)
         tk.Button(row, text="预览", command=self.preview).pack(side="left", padx=6)
         self.var_result = tk.StringVar(value="（未预览）")
-        tk.Label(preview, textvariable=self.var_result, anchor="w", justify="left",
-                 fg="#004080").pack(fill="x", padx=6, pady=(0, 4))
+        tk.Label(
+            preview, textvariable=self.var_result, anchor="w", justify="left", fg="#004080"
+        ).pack(fill="x", padx=6, pady=(0, 4))
 
         self.refresh()
 
@@ -92,10 +102,18 @@ class RulesPanel(tk.Frame):
             self.tree.delete(item)
         for i, rule in enumerate(self.rules):
             acts = ",".join(a.get("type", "?") for a in (rule.get("actions") or []))
-            self.tree.insert("", "end", iid=str(i),
-                             values=(rule.get("id", ""), rule.get("name", ""),
-                                     "是" if rule.get("enabled", True) else "否",
-                                     rule.get("priority", 0), acts))
+            self.tree.insert(
+                "",
+                "end",
+                iid=str(i),
+                values=(
+                    rule.get("id", ""),
+                    rule.get("name", ""),
+                    "是" if rule.get("enabled", True) else "否",
+                    rule.get("priority", 0),
+                    acts,
+                ),
+            )
 
     def _selected_index(self):
         sel = self.tree.selection()
@@ -180,11 +198,17 @@ class RulesPanel(tk.Frame):
         except ValueError:
             self.var_result.set("周贡献必须是整数")
             return None
-        member = {"player": self.var_player.get(), "rank": self.var_rank.get(),
-                  "weekly_total": weekly, "joined_at": None,
-                  "last_online": None, "online": None}
+        member = {
+            "player": self.var_player.get(),
+            "rank": self.var_rank.get(),
+            "weekly_total": weekly,
+            "joined_at": None,
+            "last_online": None,
+            "online": None,
+        }
         actions, hits, traces = evaluate_rules(
-            list(self.rules), member, self.cfg.get("rules_strategy", "first_match"))
+            list(self.rules), member, self.cfg.get("rules_strategy", "first_match")
+        )
         if hits:
             detail = next((t for t in traces if t["rule_id"] == hits[0]), {})
             conds = "; ".join(c["detail"] for c in detail.get("conditions") or [])

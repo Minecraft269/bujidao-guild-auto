@@ -105,6 +105,7 @@ class TestLoadConfigWithBrokenComments(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
+
 class TestConsoleFallbacks(unittest.TestCase):
     """console() 的两个兜底分支：控制台编码失败 / 日志系统不可用。"""
 
@@ -115,7 +116,10 @@ class TestConsoleFallbacks(unittest.TestCase):
 
         fake_out = mock.MagicMock()
         fake_out.buffer = mock.MagicMock()
-        with mock.patch.object(sys, "stdout", fake_out),              mock.patch("builtins.print", side_effect=UnicodeEncodeError("gbk", "x", 0, 1, "bad")):
+        with (
+            mock.patch.object(sys, "stdout", fake_out),
+            mock.patch("builtins.print", side_effect=UnicodeEncodeError("gbk", "x", 0, 1, "bad")),
+        ):
             console("中文")
         self.assertTrue(fake_out.buffer.write.called)
 
@@ -124,5 +128,4 @@ class TestConsoleFallbacks(unittest.TestCase):
         from guild_auto.config import console
 
         with mock.patch.dict("sys.modules", {"guild_auto.infrastructure.logger": None}):
-            console("中文")     # 不得抛异常
-
+            console("中文")  # 不得抛异常

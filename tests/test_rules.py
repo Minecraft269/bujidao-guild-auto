@@ -9,6 +9,7 @@ test_rules.py —— 自定义规则引擎（核心层）
   4. 语法错误可被启动校验拦截，并指明规则 id 与字段
   5. 结果可追溯：每条命中都能给出规则 id 与条件明细
 """
+
 import json
 import unittest
 
@@ -24,9 +25,14 @@ def _cfg(**overrides):
 
 
 def _member(**kw):
-    base = {"player": "甲", "rank": "entry", "weekly_total": 100,
-            "joined_at": "2026-01-01 00:00:00",
-            "last_online": "2026-10-01 12:00:00", "online": False}
+    base = {
+        "player": "甲",
+        "rank": "entry",
+        "weekly_total": 100,
+        "joined_at": "2026-01-01 00:00:00",
+        "last_online": "2026-10-01 12:00:00",
+        "online": False,
+    }
     base.update(kw)
     return base
 
@@ -35,28 +41,38 @@ class TestCheckCondition(unittest.TestCase):
     def test_numeric_ops(self):
         m = _member(weekly_total=100)
         self.assertTrue(R.check_condition({"field": "weekly_total", "op": "<", "value": 200}, m)[0])
-        self.assertTrue(R.check_condition({"field": "weekly_total", "op": "<=", "value": 100}, m)[0])
-        self.assertFalse(R.check_condition({"field": "weekly_total", "op": "<", "value": 100}, m)[0])
-        self.assertTrue(R.check_condition({"field": "weekly_total", "op": ">=", "value": 100}, m)[0])
+        self.assertTrue(
+            R.check_condition({"field": "weekly_total", "op": "<=", "value": 100}, m)[0]
+        )
+        self.assertFalse(
+            R.check_condition({"field": "weekly_total", "op": "<", "value": 100}, m)[0]
+        )
+        self.assertTrue(
+            R.check_condition({"field": "weekly_total", "op": ">=", "value": 100}, m)[0]
+        )
 
     def test_numeric_unreadable_is_false(self):
-        ok, detail = R.check_condition({"field": "weekly_total", "op": "<", "value": 1},
-                                       _member(weekly_total=None))
+        ok, detail = R.check_condition(
+            {"field": "weekly_total", "op": "<", "value": 1}, _member(weekly_total=None)
+        )
         self.assertFalse(ok)
         self.assertIn("不可读", detail)
 
     def test_numeric_bool_is_not_number(self):
-        ok, _ = R.check_condition({"field": "weekly_total", "op": "<", "value": 1},
-                                  _member(weekly_total=True))
+        ok, _ = R.check_condition(
+            {"field": "weekly_total", "op": "<", "value": 1}, _member(weekly_total=True)
+        )
         self.assertFalse(ok, "bool 不应被当成数字")
 
     def test_rank_in_and_not_in(self):
         m = _member(rank="low")
         self.assertTrue(
-            R.check_condition({"field": "rank", "op": "in", "value": ["low", "entry"]}, m)[0])
+            R.check_condition({"field": "rank", "op": "in", "value": ["low", "entry"]}, m)[0]
+        )
         self.assertFalse(R.check_condition({"field": "rank", "op": "in", "value": ["high"]}, m)[0])
         self.assertTrue(
-            R.check_condition({"field": "rank", "op": "not_in", "value": ["high"]}, m)[0])
+            R.check_condition({"field": "rank", "op": "not_in", "value": ["high"]}, m)[0]
+        )
 
     def test_rank_in_requires_list(self):
         ok, detail = R.check_condition({"field": "rank", "op": "in", "value": "low"}, _member())
@@ -65,34 +81,43 @@ class TestCheckCondition(unittest.TestCase):
 
     def test_online_is_not_supported(self):
         """解析层不产出 online 字段 → 该条件不支持（避免"文档宣称但恒不可读"）。"""
-        ok, detail = R.check_condition({"field": "online", "op": "==", "value": True},
-                                       _member(online=True))
+        ok, detail = R.check_condition(
+            {"field": "online", "op": "==", "value": True}, _member(online=True)
+        )
         self.assertFalse(ok)
         self.assertIn("未知字段", detail)
 
     def test_player_matches_wildcard_casefold(self):
         self.assertTrue(
-            R.check_condition({"field": "player", "op": "matches", "value": "test*"},
-                              _member(player="TestPlayer"))[0])
+            R.check_condition(
+                {"field": "player", "op": "matches", "value": "test*"}, _member(player="TestPlayer")
+            )[0]
+        )
         self.assertFalse(
-            R.check_condition({"field": "player", "op": "matches", "value": "x*"},
-                              _member(player="小明"))[0])
+            R.check_condition(
+                {"field": "player", "op": "matches", "value": "x*"}, _member(player="小明")
+            )[0]
+        )
 
     def test_date_before_after(self):
         m = _member(joined_at="2026-01-01 00:00:00")
-        self.assertTrue(R.check_condition({"field": "joined_at", "op": "before",
-                                           "value": "2026-02-01"}, m)[0])
-        self.assertFalse(R.check_condition({"field": "joined_at", "op": "after",
-                                            "value": "2026-02-01"}, m)[0])
+        self.assertTrue(
+            R.check_condition({"field": "joined_at", "op": "before", "value": "2026-02-01"}, m)[0]
+        )
+        self.assertFalse(
+            R.check_condition({"field": "joined_at", "op": "after", "value": "2026-02-01"}, m)[0]
+        )
 
     def test_date_unreadable_or_bad_threshold(self):
-        ok, detail = R.check_condition({"field": "joined_at", "op": "before",
-                                        "value": "2026-01-01"},
-                                       _member(joined_at="不是日期"))
+        ok, detail = R.check_condition(
+            {"field": "joined_at", "op": "before", "value": "2026-01-01"},
+            _member(joined_at="不是日期"),
+        )
         self.assertFalse(ok)
         self.assertIn("不可读", detail)
-        ok, detail = R.check_condition({"field": "joined_at", "op": "before", "value": "乱写"},
-                                       _member())
+        ok, detail = R.check_condition(
+            {"field": "joined_at", "op": "before", "value": "乱写"}, _member()
+        )
         self.assertFalse(ok)
         self.assertIn("非法", detail)
 
@@ -121,8 +146,9 @@ class TestConditionBranchCoverage(unittest.TestCase):
         self.assertTrue(R.check_condition({"field": "rank", "op": "!=", "value": "high"}, m)[0])
 
     def test_rank_unreadable(self):
-        ok, detail = R.check_condition({"field": "rank", "op": "==", "value": "low"},
-                                       _member(rank=None))
+        ok, detail = R.check_condition(
+            {"field": "rank", "op": "==", "value": "low"}, _member(rank=None)
+        )
         self.assertFalse(ok)
         self.assertIn("不可读", detail)
 
@@ -132,9 +158,15 @@ class TestConditionBranchCoverage(unittest.TestCase):
         self.assertIn("算子非法", detail)
 
     def test_online_condition_rejected_by_validation(self):
-        errs = R.validate_rules([{"id": "r", "conditions": [
-            {"field": "online", "op": "==", "value": True}],
-            "actions": [{"type": "notify"}]}])
+        errs = R.validate_rules(
+            [
+                {
+                    "id": "r",
+                    "conditions": [{"field": "online", "op": "==", "value": True}],
+                    "actions": [{"type": "notify"}],
+                }
+            ]
+        )
         self.assertIn("conditions[0].field", {e["field"] for e in errs})
 
     def test_player_eq_ne(self):
@@ -143,8 +175,9 @@ class TestConditionBranchCoverage(unittest.TestCase):
         self.assertTrue(R.check_condition({"field": "player", "op": "!=", "value": "Bob"}, m)[0])
 
     def test_player_empty_unreadable(self):
-        ok, detail = R.check_condition({"field": "player", "op": "==", "value": "x"},
-                                       _member(player=""))
+        ok, detail = R.check_condition(
+            {"field": "player", "op": "==", "value": "x"}, _member(player="")
+        )
         self.assertFalse(ok)
         self.assertIn("不可读", detail)
 
@@ -155,8 +188,9 @@ class TestConditionBranchCoverage(unittest.TestCase):
 
     def test_date_after_and_bad_op(self):
         m = _member(joined_at="2026-03-01")
-        ok, detail = R.check_condition({"field": "joined_at", "op": "after",
-                                        "value": "2026-02-01"}, m)
+        ok, detail = R.check_condition(
+            {"field": "joined_at", "op": "after", "value": "2026-02-01"}, m
+        )
         self.assertTrue(ok)
         ok, detail = R.check_condition({"field": "joined_at", "op": "==", "value": "2026-02-01"}, m)
         self.assertFalse(ok)
@@ -169,10 +203,12 @@ class TestConditionBranchCoverage(unittest.TestCase):
 
 class TestRuleMatching(unittest.TestCase):
     def test_conditions_are_and(self):
-        rule = {"conditions": [
-            {"field": "weekly_total", "op": "<", "value": 500},
-            {"field": "rank", "op": "in", "value": ["entry"]},
-        ]}
+        rule = {
+            "conditions": [
+                {"field": "weekly_total", "op": "<", "value": 500},
+                {"field": "rank", "op": "in", "value": ["entry"]},
+            ]
+        }
         ok, trace = R.rule_matches(rule, _member(weekly_total=100, rank="entry"))
         self.assertTrue(ok)
         self.assertEqual(len(trace), 2)
@@ -200,6 +236,7 @@ class TestRuleMatching(unittest.TestCase):
     def test_notify_is_kept_out_of_execution(self):
         """notify 保留为动作标记，但执行层只认 promote/demote/kick。"""
         from guild_auto.application.stages import EXECUTABLE_ACTIONS
+
         self.assertIn("notify", R.ACTIONS)
         self.assertNotIn("notify", EXECUTABLE_ACTIONS)
 
@@ -226,23 +263,30 @@ class TestBuiltinSharesInterface(unittest.TestCase):
 class TestStrategies(unittest.TestCase):
     def _table(self):
         return [
-            {"id": "a", "priority": 10, "stop": True,
-             "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
-             "actions": [{"type": "demote"}]},
-            {"id": "b", "priority": 99,
-             "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
-             "actions": [{"type": "kick"}]},
+            {
+                "id": "a",
+                "priority": 10,
+                "stop": True,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+                "actions": [{"type": "demote"}],
+            },
+            {
+                "id": "b",
+                "priority": 99,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+                "actions": [{"type": "kick"}],
+            },
         ]
 
     def test_first_match_takes_list_order(self):
-        actions, hits, _ = R.evaluate_rules(self._table(), _member(weekly_total=100),
-                                            "first_match")
+        actions, hits, _ = R.evaluate_rules(self._table(), _member(weekly_total=100), "first_match")
         self.assertEqual(actions, ["demote"])
         self.assertEqual(hits, ["a"])
 
     def test_highest_priority_wins(self):
-        actions, hits, _ = R.evaluate_rules(self._table(), _member(weekly_total=100),
-                                            "highest_priority")
+        actions, hits, _ = R.evaluate_rules(
+            self._table(), _member(weekly_total=100), "highest_priority"
+        )
         self.assertEqual(actions, ["kick"])
         self.assertEqual(hits, ["b"])
 
@@ -261,12 +305,17 @@ class TestStrategies(unittest.TestCase):
     def test_non_match_does_not_trigger_stop(self):
         """stop 的语义是"命中后停止"，未命中不得中断后续规则。"""
         table = [
-            {"id": "first", "stop": True,
-             "conditions": [{"field": "weekly_total", "op": ">", "value": 99999}],
-             "actions": [{"type": "kick"}]},
-            {"id": "second",
-             "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
-             "actions": [{"type": "demote"}]},
+            {
+                "id": "first",
+                "stop": True,
+                "conditions": [{"field": "weekly_total", "op": ">", "value": 99999}],
+                "actions": [{"type": "kick"}],
+            },
+            {
+                "id": "second",
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+                "actions": [{"type": "demote"}],
+            },
         ]
         actions, hits, _ = R.evaluate_rules(table, _member(weekly_total=100), "first_match")
         self.assertEqual(hits, ["second"])
@@ -279,8 +328,9 @@ class TestStrategies(unittest.TestCase):
         self.assertEqual(hits, ["b"])
 
     def test_no_match_returns_empty(self):
-        actions, hits, _ = R.evaluate_rules(self._table(), _member(weekly_total=99999),
-                                            "highest_priority")
+        actions, hits, _ = R.evaluate_rules(
+            self._table(), _member(weekly_total=99999), "highest_priority"
+        )
         self.assertEqual((actions, hits), ([], []))
 
     def test_trace_records_matched_rules(self):
@@ -318,17 +368,27 @@ class TestValueTypeValidation(unittest.TestCase):
         self.assertIsNone(self._err("nope", "<", 1))
 
     def test_validation_surfaces_value_errors(self):
-        errs = R.validate_rules([{
-            "id": "r", "conditions": [
-                {"field": "rank", "op": "in", "value": "low"}],
-            "actions": [{"type": "notify"}]}])
+        errs = R.validate_rules(
+            [
+                {
+                    "id": "r",
+                    "conditions": [{"field": "rank", "op": "in", "value": "low"}],
+                    "actions": [{"type": "notify"}],
+                }
+            ]
+        )
         self.assertIn("conditions[0].value", {e["field"] for e in errs})
 
 
 class TestValidateRules(unittest.TestCase):
-    GOOD = {"id": "r1", "enabled": True, "priority": 1, "stop": True,
-            "conditions": [{"field": "weekly_total", "op": "<", "value": 100}],
-            "actions": [{"type": "kick", "reason": "x"}]}
+    GOOD = {
+        "id": "r1",
+        "enabled": True,
+        "priority": 1,
+        "stop": True,
+        "conditions": [{"field": "weekly_total", "op": "<", "value": 100}],
+        "actions": [{"type": "kick", "reason": "x"}],
+    }
 
     def test_good_rule_passes(self):
         self.assertEqual(R.validate_rules([self.GOOD]), [])
@@ -396,9 +456,16 @@ class TestDecideForPlayerIntegration(unittest.TestCase):
     def test_custom_rule_takes_precedence_over_builtin(self):
         cfg = self._cfg2()
         cfg["rules_enabled"] = True
-        cfg["rules"] = [{"id": "r1", "enabled": True, "priority": 100, "stop": True,
-                         "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
-                         "actions": [{"type": "demote"}]}]
+        cfg["rules"] = [
+            {
+                "id": "r1",
+                "enabled": True,
+                "priority": 100,
+                "stop": True,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                "actions": [{"type": "demote"}],
+            }
+        ]
         actions, trigger = decide_for_player("甲", "entry", 0, cfg)
         self.assertEqual(actions, ["demote"])
         self.assertEqual(trigger, "rule:r1")
@@ -406,9 +473,14 @@ class TestDecideForPlayerIntegration(unittest.TestCase):
     def test_builtin_fallback_when_no_custom_match(self):
         cfg = self._cfg2()
         cfg["rules_enabled"] = True
-        cfg["rules"] = [{"id": "r1", "enabled": True,
-                         "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
-                         "actions": [{"type": "demote"}]}]
+        cfg["rules"] = [
+            {
+                "id": "r1",
+                "enabled": True,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                "actions": [{"type": "demote"}],
+            }
+        ]
         actions, trigger = decide_for_player("乙", "entry", 20000, cfg)
         # 与纯阈值判定逐字一致（不硬编码期望，避免阈值夹具不全导致误判）
         self.assertEqual(actions, decide_actions("entry", 20000, cfg["thresholds"])[0])
@@ -418,9 +490,14 @@ class TestDecideForPlayerIntegration(unittest.TestCase):
         cfg = self._cfg2()
         cfg["rules_enabled"] = True
         cfg["blacklist"] = ["甲"]
-        cfg["rules"] = [{"id": "r1", "enabled": True,
-                         "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
-                         "actions": [{"type": "kick"}]}]
+        cfg["rules"] = [
+            {
+                "id": "r1",
+                "enabled": True,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                "actions": [{"type": "kick"}],
+            }
+        ]
         actions, trigger = decide_for_player("甲", "entry", 0, cfg)
         self.assertEqual((actions, trigger), ([], "blacklist"))
 
@@ -428,9 +505,15 @@ class TestDecideForPlayerIntegration(unittest.TestCase):
         cfg = self._cfg2()
         cfg["rules_enabled"] = True
         cfg["whitelist_protected"] = ["甲"]
-        cfg["rules"] = [{"id": "r1", "enabled": True, "stop": True,
-                         "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
-                         "actions": [{"type": "kick"}]}]
+        cfg["rules"] = [
+            {
+                "id": "r1",
+                "enabled": True,
+                "stop": True,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                "actions": [{"type": "kick"}],
+            }
+        ]
         actions, trigger = decide_for_player("甲", "entry", 0, cfg)
         self.assertEqual(actions, [])
         self.assertEqual(trigger, "whitelist_protected")

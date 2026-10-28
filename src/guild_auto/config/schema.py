@@ -161,25 +161,39 @@ def validate_config(cfg):
                 if k in ui:
                     check_bool(ui, k, "ui")
             if "start_mode" in ui and ui["start_mode"] not in ("normal", "compact"):
-                issues.append(("error", f"配置项 ui.start_mode 取值非法: {ui['start_mode']!r},"
-                                         f"应为 ('normal', 'compact') 之一"))
+                issues.append(
+                    (
+                        "error",
+                        f"配置项 ui.start_mode 取值非法: {ui['start_mode']!r},"
+                        f"应为 ('normal', 'compact') 之一",
+                    )
+                )
             if "kick_confirm_mode" in ui and ui["kick_confirm_mode"] not in ("dialog", "inline"):
-                issues.append(("error", f"配置项 ui.kick_confirm_mode 取值非法: "
-                                         f"{ui['kick_confirm_mode']!r},应为 ('dialog', 'inline') 之一"))
+                issues.append(
+                    (
+                        "error",
+                        f"配置项 ui.kick_confirm_mode 取值非法: "
+                        f"{ui['kick_confirm_mode']!r},应为 ('dialog', 'inline') 之一",
+                    )
+                )
             txt = ui.get("kick_confirm_text")
             if txt is not None and (not isinstance(txt, str) or not txt.strip()):
-                issues.append(("error", f"配置项 ui.kick_confirm_text 必须是非空字符串,当前: {txt!r}"))
+                issues.append(
+                    ("error", f"配置项 ui.kick_confirm_text 必须是非空字符串,当前: {txt!r}")
+                )
     # ── 自定义规则(阶段 4)──
     if "rules_enabled" in cfg:
         check_bool(cfg, "rules_enabled", "")
     if "rules_strategy" in cfg:
         strat = cfg["rules_strategy"]
         if strat not in ("first_match", "highest_priority", "all"):
-            issues.append((
-                "error",
-                f"配置项 rules_strategy 取值非法: {strat!r},"
-                f"应为 ('first_match', 'highest_priority', 'all') 之一",
-            ))
+            issues.append(
+                (
+                    "error",
+                    f"配置项 rules_strategy 取值非法: {strat!r},"
+                    f"应为 ('first_match', 'highest_priority', 'all') 之一",
+                )
+            )
     if "rules" in cfg and not isinstance(cfg["rules"], list):
         issues.append(("error", f"配置项 rules 应为列表,当前: {cfg['rules']!r}"))
     check_bool(cfg, "kick_confirm", "")  # 顶层键:路径前缀为空
