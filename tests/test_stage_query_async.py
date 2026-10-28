@@ -179,6 +179,29 @@ class TestStageQueryAsyncFailures(unittest.TestCase):
         self.assertEqual([r["player"] for r in records], ["甲"])
         self.assertEqual([f["player"] for f in failures], ["乙"])
 
+    def test_masked_player_is_not_sent_at_all(self):
+        """屏蔽词玩家**不得发出任何指令**。
+
+        /guild member *** 在网易服务器不会得到响应 —— 发出去只是白烧
+        重试周期(历史真 bug:浪费 3 次重试后仍被丢弃)。所以必须在
+        提交前就过滤掉,并单独记为 blocked。
+        """
+        sent = []
+        w = _FakeWatcher()
+        cfg = _cfg()
+        cfg["timeouts"]["max_retries"] = 1
+        cfg["timeouts"]["response_wait"] = 0.2
+        rt = _make_rt(cfg, w, send_log=sent)
+        records, failures = stage_query_async(rt, [("entry", "*" * 8)], cfg)
+
+        self.assertEqual(records, [])
+        self.assertTrue(all("*" * 8 not in c for c in sent),
+                        f"屏蔽词玩家仍被发送了指令: {sent}")
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].get("blocked"),
+                        f"屏蔽词玩家应标 blocked: {failures[0]}")
+        self.assertIn("屏蔽", failures[0]["reason"])
+
     def test_masked_player_gets_readable_reason(self):
         """屏蔽词玩家的失败原因必须说清是网易过滤,而不是笼统的查询重试耗尽。"""
         w = _FakeWatcher()

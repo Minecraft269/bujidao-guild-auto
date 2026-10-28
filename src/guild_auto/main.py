@@ -10,7 +10,6 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 首次运行自动生成 config.json;所有业务参数均在配置中,请阅读 docs/《配置说明.md》。
 """
 import argparse
-import itertools
 import os
 import re
 import sys
@@ -38,10 +37,6 @@ from guild_auto.application.stages import (
 from guild_auto.infrastructure.window_input import HumanInput, activate_window, find_game_window
 
 DEFAULT_CONFIG_FILE = "config.json"
-
-# 广播 key 自增序号:同一玩家可能被广播多次(summary + per_player),
-# 只用 player 做键会让后一条结果覆盖前一条。进程内单调即可,无需持久化。
-_BROADCAST_SEQ = itertools.count(1)
 
 # ---------------------------------------------------------------------------
 # 从拆分出的模块 re-export(保持历史调用点不变)
@@ -400,65 +395,6 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
             attempt += 1
     return None
 
-
-
-def async_query_member(cfg, watcher, human, hwnd, async_executor,
-                       detector, stop_check, pid):
-    """纯提交式异步查询(主线程不等验证返回):把 send_and_capture + parse_guild_member
-    投到后台 worker,主线程立即返回继续下一条;后台验证完成(成功/失败/重试耗尽)
-    写入 result[player] —— 失败会由 _worker 内部重试 + 补做队列自动处理。
-    主线程最后用 async_executor.get_result_nowait(player) 一次性取回。
-    真正的发送+读回显在后台走 ActionExecutor._send_with_gate 锁内串行。"""
-    cmds = cfg["commands"]
-    cmd = cmds["guild_member"].format(player=pid)
-    timeout = float(cfg["timeouts"].get("response_wait", 12.0))
-    try_wait = float(cfg["timeouts"].get("try_wait", 6.0))
-    try_times = int(cfg["timeouts"].get("try_times", 3))
-
-    def verify(_cmd, _pid):
-        # 屏蔽词玩家:身份不可读,后台验证重发命令结果必然相同 —— 立即失败,
-        # 不占用 _worker 的重试配额(留着给真的网络抖动)
-        if parsers.is_masked_name(pid):
-            return False, "解析失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
-        block, _interrupted = send_and_capture(
-            watcher, human, hwnd, cmd, timeout,
-            detector=detector, try_wait=try_wait, try_times=try_times,
-            first_command=False, stop_check=stop_check)
-        if _interrupted:
-            return False, "暂停中断"
-        if not block:
-            return False, "等待响应超时"
-        try:
-            return True, parse_guild_member(block, expected_id=pid)
-        except ParseError as e:
-            return False, f"解析失败: {e}"
-
-    # 仅提交,不阻塞等待:verify 在后台 _worker 串行执行+重试+补做;
-    # 主线程立即继续下一条,最后用 get_result_nowait(pid) 取结果
-    async_executor.submit(cmd, pid, verify)
-    return True  # 已入队
-
-
-def async_broadcast(cfg, executor, async_executor, hwnd, detector, stop_check,
-                     msg, player, retries, timeout):
-    """纯提交式异步广播:仅 submit,主线程不阻塞等验证;后台失败/重试/补做自动处理。
-    返回 key(player+seq 唯一),主线程最后用 get_result_nowait(key) 取回结果。
-
-    key 必须含**自增 seq** 而不能只用 player:同一玩家可能被广播多次
-    (summary 总广播 + per_player 逐条通知),只用 player 做键会让后一条
-    结果覆盖前一条 —— 主线程取回的是错的那条,通知状态遂不可信
-    (原测试断言的是自己拼的字面量所以恒真;改成真调本函数后立刻抓到
-    两条 key 都是 __broadcast__:P1)。
-
-    seq 用 itertools.count 保证进程内单调;CPython 下 next() 对 int 自增是
-    原子的,多线程调用不需额外加锁。
-    """
-    def verify(_cmd, _pid):
-        ok, err = executor.gc_broadcast_with_retry(msg, retries=retries, timeout=timeout)
-        return ok, err
-    pid_key = f"__broadcast__:{player}:{next(_BROADCAST_SEQ)}"
-    async_executor.submit(f"/gc broadcast({len(msg)}字->{player})", pid_key, verify)
-    return pid_key
 
 
 def build_targets(guild_groups, scope="all", skip_ranks=()):

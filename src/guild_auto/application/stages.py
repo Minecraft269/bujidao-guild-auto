@@ -76,8 +76,27 @@ def stage_query_async(rt, targets, cfg):
     system = AsyncVerifySystem(verify_fn=verify, task_timeout=timeout + 5.0)
     system.attach_sender(send_only)
 
-    commands = [(cmds["guild_member"].format(player=pid), pid) for _rk, pid in targets]
     rank_of = {pid: rk for rk, pid in targets}
+
+    # ---- 屏蔽词玩家:**不发送** /guild member <全星号> ----
+    # 网易服务器不会响应这种参数,发出去只会白烧重试周期(历史真 bug:
+    # 浪费 3 次重试后仍被丢弃)。身份不可读是事实,直接记为 blocked,
+    # 报告单列"屏蔽词玩家(指令不可查)"一节。
+    # blocked_name_policy 由配置决定:skip(默认)=不发送;query_attempt=仍尝试。
+    blocked_policy = str(cfg.get("blocked_name_policy", "skip")).lower()
+    blocked_targets, queryable = [], []
+    for rk, pid in targets:
+        if is_masked_name(pid) and blocked_policy != "query_attempt":
+            blocked_targets.append((rk, pid))
+        else:
+            queryable.append((rk, pid))
+    if blocked_targets:
+        logger.log_warning(f"(异步)跳过 {len(blocked_targets)} 名屏蔽词玩家:"
+                           f"名字为全星号,指令不可查(不消耗重试)")
+        console(f"  ⚠ {len(blocked_targets)} 名玩家名字被网易屏蔽词替换为星号,"
+                f"无法查询贡献(报告中将单列)")
+
+    commands = [(cmds["guild_member"].format(player=pid), pid) for _rk, pid in queryable]
 
     logger.log_info(f"(异步)阶段2 查询: {len(commands)} 条指令,主线程只发不验")
     ok_snaps, failed_snaps = run_async_round(
@@ -102,7 +121,14 @@ def stage_query_async(rt, targets, cfg):
         failures.append({"player": pid, "rank": rank_of.get(pid, ""), "reason": reason})
         logger.log_error(f"(异步)查询失败({reason}): {pid}")
 
-    logger.log_info(f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)}")
+    for rk, pid in blocked_targets:
+        failures.append({
+            "player": pid, "rank": rk, "blocked": True,
+            "reason": "屏蔽词玩家: 名字被网易过滤为星号,指令不可查,需人工确认",
+        })
+
+    logger.log_info(f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)} "
+                    f"(其中屏蔽词 {len(blocked_targets)})")
     return records, failures
 
 

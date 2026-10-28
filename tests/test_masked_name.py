@@ -677,62 +677,6 @@ class TestMainQueryMemberEarlyExit(unittest.TestCase):
                         f"发出的命令不是查这个玩家: {self.cmds}")
 
 
-class TestMainAsyncVerifyEarlyExit(unittest.TestCase):
-    """第 2 层异步路径:verify 闭包同样不得 burn _worker 的重试配额。"""
-
-    def setUp(self):
-        self.main = _import_main()
-
-    def test_async_masked_pid_does_not_send_commands(self):
-        sent = []
-
-        def fake_send_and_capture(watcher, human, hwnd, cmd, timeout, **kw):
-            sent.append(cmd)
-            return None, False
-
-        class _StubExecutor:
-            def submit(self, cmd, pid, verify):
-                # 直接同步调用 verify —— 与 AsyncCommandExecutor 的契约一致
-                self.result = verify(cmd, pid)
-
-        orig = self.main.send_and_capture
-        self.main.send_and_capture = fake_send_and_capture
-        self.addCleanup(lambda: setattr(self.main, "send_and_capture", orig))
-
-        ex = _StubExecutor()
-        ok = self.main.async_query_member(
-            _MIN_CFG, _StubWatcher(), _StubHuman(), None, ex, None,
-            lambda: False, MASKED_8)
-        self.assertTrue(ok, "已入队应返回 True")
-        self.assertEqual(sent, [],
-                         f"屏蔽名不该发出任何命令,却发了 {sent}")
-        ok_flag, payload = ex.result
-        self.assertFalse(ok_flag, "屏蔽名后台验证必须失败")
-        self.assertIn("屏蔽词", payload)
-        self.assertIn("需人工确认", payload)
-
-    def test_async_failure_reason_mentions_manual_confirm(self):
-        """文案回归:报告里必须看得出是网易过滤,而不是网络抖动。"""
-        class _StubExecutor:
-            def submit(self, cmd, pid, verify):
-                self.result = verify(cmd, pid)
-
-        orig = self.main.send_and_capture
-        self.main.send_and_capture = (
-            lambda *a, **k: (_ for _ in ()).throw(
-                AssertionError("屏蔽名不该走到发送")))
-        self.addCleanup(lambda: setattr(self.main, "send_and_capture", orig))
-
-        ex = _StubExecutor()
-        self.main.async_query_member(
-            _MIN_CFG, _StubWatcher(), _StubHuman(), None, ex, None,
-            lambda: False, MASKED_704)
-        ok_flag, payload = ex.result
-        self.assertFalse(ok_flag)
-        self.assertIn("屏蔽词", payload)
-        self.assertIn("需人工确认", payload)
-
-
 class TestFailureReasonWiringInMain(unittest.TestCase):
     """第 2 层的报告分流:屏蔽名报真实原因,正常玩家仍报"查询重试耗尽"。
 
