@@ -195,7 +195,7 @@ def stage_confirm_execution(rt, records, cfg):
             for r in pending_kicks:
                 r["executed"] = True  # 标记已处理,防止执行循环再次执行(不可逆操作)
                 r["error"] = "kick 已按确认要求跳过"
-                r["skipped_by_confirm"] = True   # 写待办时排除:不得下次补踢
+                r["skipped_by_confirm"] = True  # 写待办时排除:不得下次补踢
                 r["new_rank"] = r["rank"]
             skipped_kicks = True
 
@@ -406,10 +406,10 @@ def _report_notify(label, ok, err):
         console(f"  /gc 广播失败: {err}")
         logger.log_warning(f"/gc 广播失败 [{label}]: {err}")
 
+
 # 只有这三类动作会被发往游戏；notify 由通知阶段处理，ignore 无动作。
 EXECUTABLE_ACTIONS = ("promote", "demote", "kick")
-_SWITCH_OF = {"promote": "promote_enabled", "demote": "demote_enabled",
-              "kick": "kick_enabled"}
+_SWITCH_OF = {"promote": "promote_enabled", "demote": "demote_enabled", "kick": "kick_enabled"}
 
 
 def apply_action_gates(records, cfg):
@@ -430,7 +430,7 @@ def apply_action_gates(records, cfg):
         kept, off = [], []
         for a in actions:
             if a not in EXECUTABLE_ACTIONS:
-                continue                      # notify/ignore 不进执行层
+                continue  # notify/ignore 不进执行层
             key = _SWITCH_OF.get(a)
             if key and not sw.get(key, True):
                 off.append(a)
@@ -439,9 +439,8 @@ def apply_action_gates(records, cfg):
         if off:
             blocked += 1
             r["blocked_by_switch"] = True
-            r["executed"] = True              # 已处理完毕,不得再进入待办
-            names = "".join({"promote": "升职", "demote": "降职", "kick": "踢出"}[a]
-                            for a in off)
+            r["executed"] = True  # 已处理完毕,不得再进入待办
+            names = "".join({"promote": "升职", "demote": "降职", "kick": "踢出"}[a] for a in off)
             r["error"] = f"{names}开关已关闭"
             r["new_rank"] = r["rank"]
         r["actions"] = kept

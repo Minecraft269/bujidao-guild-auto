@@ -12,6 +12,7 @@ tkinter 在无桌面环境（部分 CI）不可用，因此：
   3. --ui 在 ui.enabled=false 时**报错**，不得静默降级到控制台
   4. 首次运行未修改配置时禁止切页
 """
+
 import functools
 import json
 import os
@@ -93,8 +94,9 @@ class TestUiEntryGate(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False)
 
-        with mock.patch.object(main_mod, "parse_args") as m_args, mock.patch.object(
-            main_mod, "prepare_config", return_value=cfg
+        with (
+            mock.patch.object(main_mod, "parse_args") as m_args,
+            mock.patch.object(main_mod, "prepare_config", return_value=cfg),
         ):
             m_args.return_value = mock.Mock(
                 config=path,
@@ -203,8 +205,11 @@ class TestToolbarCallbacks(unittest.TestCase):
         root = tk.Tk()
         try:
             calls = {"mode": 0, "top": 0}
-            tb = Toolbar(root, lambda: calls.__setitem__("mode", calls["mode"] + 1),
-                         lambda: calls.__setitem__("top", calls["top"] + 1))
+            tb = Toolbar(
+                root,
+                lambda: calls.__setitem__("mode", calls["mode"] + 1),
+                lambda: calls.__setitem__("top", calls["top"] + 1),
+            )
             tb._toggle_mode()
             tb._toggle_top()
             self.assertEqual(calls, {"mode": 1, "top": 1})
@@ -287,7 +292,9 @@ class TestConfirmDialog(unittest.TestCase):
                 pass
 
         fake_tk = types.SimpleNamespace(
-            Toplevel=FakeToplevel, Entry=FakeEntry, Button=FakeButton,
+            Toplevel=FakeToplevel,
+            Entry=FakeEntry,
+            Button=FakeButton,
             Label=lambda *a, **k: type("L", (), {"pack": lambda self, **kw: None})(),
             Frame=lambda *a, **k: type("F", (), {"pack": lambda self, **kw: None})(),
         )
@@ -353,8 +360,9 @@ class TestConfigPanel(unittest.TestCase):
         with mock.patch("guild_auto.ui.config_panel.messagebox.showerror") as m_err:
             self.assertFalse(self.panel.save())
         m_err.assert_called_once()
-        self.assertEqual(str(self.panel.widgets["thresholds.high_demote"].cget("background")),
-                         "#ffd6d6")
+        self.assertEqual(
+            str(self.panel.widgets["thresholds.high_demote"].cget("background")), "#ffd6d6"
+        )
 
     def test_mark_errors_resets_others(self):
         self.panel.mark_errors([{"path": "admin", "message": "x"}])
@@ -410,7 +418,7 @@ class TestAppMore(unittest.TestCase):
         self.assertEqual(self.app.body.winfo_ismapped(), 0)
 
     def test_on_close_destroys(self):
-        self.app._on_close()   # 不应抛异常
+        self.app._on_close()  # 不应抛异常
 
 
 @unittest.skipUnless(TK_OK, "当前环境无可用 Tk 显示")
@@ -426,12 +434,22 @@ class TestRulesPanel(unittest.TestCase):
         self.root = tk.Tk()
         self.cfg = json.loads(json.dumps(DEFAULT_CONFIG))
         self.cfg["rules"] = [
-            {"id": "a", "name": "A", "enabled": True, "priority": 10,
-             "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
-             "actions": [{"type": "demote"}]},
-            {"id": "b", "name": "B", "enabled": True, "priority": 20,
-             "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
-             "actions": [{"type": "kick"}]},
+            {
+                "id": "a",
+                "name": "A",
+                "enabled": True,
+                "priority": 10,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+                "actions": [{"type": "demote"}],
+            },
+            {
+                "id": "b",
+                "name": "B",
+                "enabled": True,
+                "priority": 20,
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+                "actions": [{"type": "kick"}],
+            },
         ]
         self.changes = []
         self.panel = RulesPanel(self.root, self.cfg, on_change=self.changes.append)
@@ -483,17 +501,22 @@ class TestRulesPanel(unittest.TestCase):
         with mock.patch("guild_auto.ui.rules_panel.messagebox.showerror") as m_err:
             self.assertFalse(self.panel.apply_json())
         m_err.assert_called_once()
-        self.assertEqual(self.panel.rules[0]["actions"], [{"type": "demote"}],
-                         "校验失败不得写入")
+        self.assertEqual(self.panel.rules[0]["actions"], [{"type": "demote"}], "校验失败不得写入")
 
     def test_apply_json_accepts_valid(self):
         self.panel.tree.selection_set("0")
         self.panel.editor.delete("1.0", "end")
         self.panel.editor.insert(
             "1.0",
-            json.dumps({"id": "a", "enabled": True, "priority": 5,
-                        "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
-                        "actions": [{"type": "kick"}]}),
+            json.dumps(
+                {
+                    "id": "a",
+                    "enabled": True,
+                    "priority": 5,
+                    "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                    "actions": [{"type": "kick"}],
+                }
+            ),
         )
         self.assertTrue(self.panel.apply_json())
         self.assertEqual(self.panel.rules[0]["actions"], [{"type": "kick"}])

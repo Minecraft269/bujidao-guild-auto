@@ -9,6 +9,7 @@ UI 配置绑定与校验属核心层（门禁 ≥98%）。本文件覆盖：
   * 跨字段校验：写回后仍走 validate_config（如阈值被改成字符串必须报错）
   * 首次运行放行判据：diff_against_default
 """
+
 import json
 import unittest
 
@@ -31,8 +32,14 @@ class TestFlatten(unittest.TestCase):
     def test_flattens_nested_sections(self):
         fields = flatten_config(_cfg())
         paths = {f.path for f in fields}
-        for p in ("admin", "thresholds.high_demote", "switches.kick_enabled",
-                  "commands.guild_kick", "ui.enabled", "blocked_name_policy"):
+        for p in (
+            "admin",
+            "thresholds.high_demote",
+            "switches.kick_enabled",
+            "commands.guild_kick",
+            "ui.enabled",
+            "blocked_name_policy",
+        ):
             self.assertIn(p, paths, f"缺少字段 {p}")
 
     def test_kinds(self):
@@ -131,8 +138,7 @@ class TestApplyEdits(unittest.TestCase):
         """单字段类型都对，但整体校验失败时也必须报错（如 game_log 指向自身日志）。"""
         # log.level 超出 1-6 时，validate_config 必须报错（path 为空表示整体错误）
         _, errors = apply_edits(_cfg(), {"log.level": "99"})
-        self.assertTrue(any("1~6" in e["message"] for e in errors),
-                        f"整体校验未生效: {errors}")
+        self.assertTrue(any("1~6" in e["message"] for e in errors), f"整体校验未生效: {errors}")
 
 
 class TestNumericListRegression(unittest.TestCase):
@@ -222,7 +228,7 @@ class TestNumericListFloatAndRulesGate(unittest.TestCase):
         """规则面板之外的表单保存也要拦住非法规则（避免绕过校验）。"""
         cfg = _cfg()
         cfg["rules_enabled"] = True
-        cfg["rules"] = [{"id": "r1", "actions": [{"type": "kick"}]}]   # 缺 conditions
+        cfg["rules"] = [{"id": "r1", "actions": [{"type": "kick"}]}]  # 缺 conditions
         _, errors = apply_edits(cfg, {"admin": "X"})
         self.assertTrue(any("规则 r1" in e["message"] for e in errors), errors)
 

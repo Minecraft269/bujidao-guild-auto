@@ -10,6 +10,7 @@ ui/toolbar.py —— 窗口控制按钮（小窗/大窗切换、置顶）
   * 图钉：📍（未置顶）/ 📌（已置顶，高亮）
 选 Unicode 的原因：零资源文件、不依赖材质包/DPI，打包体积不变。
 """
+
 import tkinter as tk
 
 ARROW_FROM_BIG = "◱"

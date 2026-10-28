@@ -344,9 +344,9 @@ def is_protected(player, cfg):
     )
 
 
-def decide_for_player(player, rank, weekly, cfg,
-                      member_joined_at=None, member_last_online=None,
-                      member_online=None):
+def decide_for_player(
+    player, rank, weekly, cfg, member_joined_at=None, member_last_online=None, member_online=None
+):
     """单个玩家的完整判定:名单短路优先于阈值矩阵。
 
     返回 (actions, trigger):

@@ -120,13 +120,14 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
             reset_window_state_after_pause(executor.hwnd, executor.detector)
             # 续做同样受功能开关约束：本次关掉的开关不得因"上次遗留"而绕过。
             sw = cfg.get("switches", {})
-            _SW = {"promote": "promote_enabled", "demote": "demote_enabled",
-                   "kick": "kick_enabled"}
-            allowed = [a for a in it["actions"]
-                       if a in _SW and sw.get(_SW[a], True)]
+            _SW = {"promote": "promote_enabled", "demote": "demote_enabled", "kick": "kick_enabled"}
+            allowed = [a for a in it["actions"] if a in _SW and sw.get(_SW[a], True)]
             if not allowed:
-                dropped = "".join({"promote": "升职", "demote": "降职",
-                                   "kick": "踢出"}[a] for a in it["actions"] if a in _SW)
+                dropped = "".join(
+                    {"promote": "升职", "demote": "降职", "kick": "踢出"}[a]
+                    for a in it["actions"]
+                    if a in _SW
+                )
                 console_fn(f"    - {it['player']}: {dropped}开关已关闭,跳过(保留待下次)")
                 it["error"] = f"{dropped}开关已关闭"
                 remaining.append(it)

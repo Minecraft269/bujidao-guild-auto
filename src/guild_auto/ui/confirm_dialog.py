@@ -7,7 +7,9 @@ ui/confirm_dialog.py —— 破坏性操作二次确认弹窗
 
 方式可配置：ui.kick_confirm_mode = "dialog"（本弹窗）或 "inline"（主界面确认）。
 """
+
 import tkinter as tk
+
 
 def check_confirm_text(typed, expected):
     """输入的确认词是否逐字匹配（去首尾空白，区分大小写）。
