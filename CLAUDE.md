@@ -16,7 +16,7 @@
 - 等级显示名、`contact_text`、QQ 群号
 - 报告文件的标题/分组名/格式
 
-**唯一合法的例外**：`config.py` 的 `DEFAULT_CONFIG` —— 它是配置的**默认值与单一真源**，
+**唯一合法的例外**：`src/guild_auto/config/defaults.py` 的 `DEFAULT_CONFIG` —— 它是配置的**默认值与单一真源**，
 不在业务代码里出现第二次。
 
 **落地方式**：业务代码一律 `cfg["xxx"]` / `cfg["notify_templates"]["yyy"]`；

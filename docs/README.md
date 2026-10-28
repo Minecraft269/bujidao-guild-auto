@@ -23,22 +23,23 @@
 
 | 流水线 | 说明 |
 |---|---|
-| [![Lint](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/lint.yml/badge.svg)](.github/workflows/lint.yml) | ruff 风格检查 |
-| [![Tests & Coverage](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/test.yml/badge.svg)](.github/workflows/test.yml) | 测试 + 双档覆盖率门禁(核心层 ≥98% / 总体 ≥92%) |
-| [![Build](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/build.yml/badge.svg)](.github/workflows/build.yml) | PyInstaller 打包 Windows 可执行文件 |
-| [![Security](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/security.yml/badge.svg)](.github/workflows/security.yml) | CodeQL + 依赖审查 + pip-audit |
+| [![Lint](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/lint.yml/badge.svg)](../.github/workflows/lint.yml) | ruff 风格检查 |
+| [![Tests & Coverage](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/test.yml/badge.svg)](../.github/workflows/test.yml) | 测试 + 双档覆盖率门禁(核心层 ≥98% / 总体 ≥92%) |
+| [![Build](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/build.yml/badge.svg)](../.github/workflows/build.yml) | PyInstaller 打包 Windows 可执行文件 |
+| [![Security](https://github.com/Minecraft269/bujidao-guild-auto/actions/workflows/security.yml/badge.svg)](../.github/workflows/security.yml) | CodeQL + 依赖审查 + pip-audit |
 
 ## 文档索引
 
 | 文档 | 内容 |
 |---|---|
-| **`使用说明.md`** | **怎么用**：启动流程、两种模式差异、交互按键、CLI 参数、Debug 模式、日志排障 |
-| **`配置说明.md`** | 逐个配置项的作用与可填值 |
-| `覆盖率报告.md` | 分档覆盖率(核心层/硬件层/总体) + 硬件层 mock 策略 |
-| `CI路径过滤验证.md` | 四条流水线的路径过滤规则与实测验证(文档变更不触发重活) |
-| `本次变更声明.md` | 本轮改了什么、为什么、修了哪些缺陷 |
-| `更改声明.md` | 2026-08 历史变更记录 |
-| `docs/业务规则继承清单.md` | **业务规则真源**：阈值矩阵/命令格式/通知文案(零改动) |
+| **[使用说明.md](使用说明.md)** | **怎么用**：启动流程、两种模式差异、交互按键、CLI 参数、Debug 模式、日志排障 |
+| **[配置说明.md](配置说明.md)** | 逐个配置项的作用与可填值 |
+| [覆盖率报告.md](覆盖率报告.md) | 分档覆盖率(核心层/硬件层/总体) + 硬件层 mock 策略 |
+| [CI路径过滤验证.md](CI路径过滤验证.md) | 四条流水线的路径过滤规则与实测验证(文档变更不触发重活) |
+| [本次变更声明.md](本次变更声明.md) | 本轮改了什么、为什么、修了哪些缺陷 |
+| [更改声明.md](更改声明.md) | 2026-08 历史变更记录 |
+| [流程与架构图.md](流程与架构图.md) | **架构真源**：分层依赖、双模式流程、UI 识别模式、构建变体矩阵 |
+| [业务规则继承清单.md](业务规则继承清单.md) | **业务规则真源**：阈值矩阵/命令格式/通知文案(零改动) |
 
 > 首次运行会自动生成带中文注释的 `config.json`,照着注释填即可。
 
@@ -65,7 +66,7 @@ Unauthorized redistribution or dissemination is prohibited.
 
 ## 二、环境要求
 
-- Windows + Python 3.8+(原脚本环境相同;包内安装包 python-3.12.9-amd64.exe 可用)
+- Windows + Python 3.10+(pyproject.toml 的 requires-python 为 >=3.10)
 - 依赖(二选一):
   - `pip install -r requirements.txt`(推荐,已含版本要求)
   - 或 `pip install pyautogui pynput pyperclip winsdk`
@@ -76,12 +77,16 @@ Unauthorized redistribution or dissemination is prohibited.
 ## 三、快速开始
 
 ```bat
-:: 1. 首次运行自动生成 config.json(请按需修改,每个键的说明见《配置说明.md》)
+:: 0. 安装项目本身(src-layout:必须装包,否则 python -m guild_auto 会 ModuleNotFoundError)
+pip install -e .
+:: 如需 OCR 界面检测:  pip install -e ".[ocr]"
+
+:: 1. 首次运行自动生成 config.json(请按需修改,每个键的说明见 docs/《配置说明.md》)
 :: 2. 试运行(不执行任何升/降/踢,只查询+通知+报告):
-python main.py --admin 你的游戏ID --dry-run
+python -m guild_auto --admin 你的游戏ID --dry-run
 
 :: 3. 确认查询与判定无误后,正式运行:
-python main.py --admin 你的游戏ID
+python -m guild_auto --admin 你的游戏ID
 ```
 
 > ⚠️ **重要**:运行期间请勿移动鼠标/切换窗口;脚本会自动把游戏窗口置前并发送命令。
@@ -181,7 +186,7 @@ build.bat            :: 单文件模式,产物 dist\布吉岛公会管理脚本.
 ## 九、测试
 
 ```bat
-python -m unittest tests.test_parsers -v
+python -m pytest tests/test_parsers.py -v
 ```
 
 解析器测试覆盖:两种日志格式前缀、分组/●/多行名/统计行解析、千分位周贡献、字段缺失与玩家校验失败等。
@@ -190,15 +195,26 @@ python -m unittest tests.test_parsers -v
 
 ```
 guild_auto_v2/
-├── main.py            # 入口(流程编排 + 命令行参数 + 暂停热键)
-├── config.py          # 配置模块(默认值/生成/加载/校验)
-├── log_watcher.py     # 日志钩子(增量读取/编码检测/消息切分/等待响应块)
-├── parsers.py         # 解析器(/guild list、/guild member)
-├── window_input.py    # 窗口置前 + 模拟输入 + 聊天键解析(options.txt)
-├── actions.py         # 判定(继承阈值)+ 通知文案 + 执行器
-├── reporter.py        # 报告输出
-├── config.json        # 配置文件(首次运行自动生成)
-├── 配置说明.md         # 逐键中文注释与取值范围
-├── docs/业务规则继承清单.md  # 继承规则逐项对照(重构依据)
-└── tests/             # 单元测试与日志样例
+├── pyproject.toml            # 项目元数据 + 入口点 + ruff/pytest/coverage 配置
+├── CLAUDE.md                 # 项目纪律(零硬编码、业务规则零改动、结论需证据)
+├── src/guild_auto/           # 全部生产代码(src-layout:根目录不放 .py)
+│   ├── main.py               #   CLI 入口(参数解析 → 控制台流程)
+│   ├── __main__.py           #   python -m guild_auto 入口
+│   ├── config/               #   配置层:defaults(默认值) schema(校验) loader(读写)
+│   ├── domain/               #   领域层:decisions(判定/文案/命令) parsers reporter
+│   ├── application/          #   应用层:stages(runtime(状态) pause pending debug_data
+│   ├── infrastructure/       #   基础设施:window_input game_state log_watcher
+│   │                         #             logger action_executor
+│   ├── concurrency/          #   并发层:async_system async_executor
+│   └── ui/                   #   UI 层(阶段 3 填充)
+├── tests/                    # 单元测试(924 个)
+├── docs/                     # 文档:README/流程与架构图/使用说明/配置说明/
+│                             #       业务规则继承清单/覆盖率报告/变更声明
+├── config.json               # 配置文件(首次运行自动生成,已 gitignore)
+├── logs/  reports/           # 运行期产物(已 gitignore)
+└── .github/workflows/        # CI
 ```
+
+> 依赖方向严格单向:`domain`(零 IO)← `application` ← `ui`;
+> `infrastructure` 只被调用不反向 import;`concurrency` 经接口注入。
+> 详见 [流程与架构图.md](流程与架构图.md)。

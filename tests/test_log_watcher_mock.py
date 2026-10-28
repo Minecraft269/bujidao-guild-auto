@@ -131,9 +131,11 @@ def no_runtime():
     """runtime 不可导入时仍能轮询(回退为"未收到 Ctrl+C")。
 
     真实触发场景:解释器关闭阶段 sys.modules 里的条目会被置为 None,
-    此时 `from runtime import is_force_stop` 抛 ImportError。
+    此时 `from guild_auto.application.runtime import is_force_stop` 抛 ImportError。
     """
-    with mock.patch.dict(sys.modules, {"runtime": None}):
+    # src-layout 后模块键是 guild_auto.application.runtime；
+    # 仍写裸 "runtime" 的话这个夹具什么都不 patch，回退分支实际未被测试。
+    with mock.patch.dict(sys.modules, {"guild_auto.application.runtime": None}):
         yield
 
 

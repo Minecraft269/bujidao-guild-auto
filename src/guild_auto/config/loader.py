@@ -123,7 +123,7 @@ def ensure_default_config(path):
     if os.path.exists(path):
         return False
     header = ("// 布吉岛公会管理脚本配置文件。每个配置键前有 '//' 中文注释行,说明其作用与取值范围;"
-                "详细说明见同目录《配置说明.md》。修改后保存即可,重启脚本生效。")
+                "详细说明见 docs/《配置说明.md》。修改后保存即可,重启脚本生效。")
     text = "{\n" + _dump_jsonc(DEFAULT_CONFIG, 2) + "\n}"
     with open(path, "w", encoding="utf-8") as f:
         f.write(header + "\n" + text + "\n")

@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 name = "guild-auto"
 version = "2.0.0"
 description = "布吉岛公会管理脚本 —— 半自动公会成员贡献统计与升/降/踢执行"
-readme = "README.md"
+readme = "docs/README.md"
 requires-python = ">=3.10"
 license = { text = "All Rights Reserved" }
 dependencies = [
@@ -78,19 +78,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 filterwarnings = ["ignore::DeprecationWarning"]
 
-[tool.coverage.run]
-branch = true
-source = ["guild_auto"]
-omit = [
-    "*/tests/*",
-]
-
-[tool.coverage.report]
-show_missing = true
-skip_empty = true
-exclude_lines = [
-    "pragma: no cover",
-    "if __name__ == .__main__.:",
-    "raise NotImplementedError",
-    "if TYPE_CHECKING:",
-]
+# 覆盖率配置唯一真源是仓库根的 .coveragerc —— coverage 在 CWD 会自动加载它,
+# pyproject 里的 [tool.coverage.*] 永远不会生效,故不在此重复声明(避免两处漂移)。

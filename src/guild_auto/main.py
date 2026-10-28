@@ -5,9 +5,9 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 流程:读取配置 → 初始化 → 窗口置前 → /guild list → 逐人 /guild member → 判定(继承规则)→ /gc 通知 → 执行 升/降/踢 → 输出报告
 
 运行:
-    python main.py [--config 配置文件] [--admin 管理员] [--log 日志路径] [--options 游戏配置路径] [--dry-run]
+    python -m guild_auto [--config 配置文件] [--admin 管理员] [--log 日志路径] [--options 游戏配置路径] [--dry-run]
 
-首次运行自动生成 config.json;所有业务参数均在配置中,请阅读《配置说明.md》。
+首次运行自动生成 config.json;所有业务参数均在配置中,请阅读 docs/《配置说明.md》。
 """
 import argparse
 import itertools
@@ -22,7 +22,6 @@ import pyautogui
 import guild_auto.config as config_mod
 from guild_auto.domain.decisions import build_notification, decide_actions, new_rank_after
 from guild_auto.infrastructure.action_executor import ActionExecutor
-from guild_auto.concurrency.async_executor import AsyncCommandExecutor
 from guild_auto.infrastructure import logger
 from guild_auto.config import console
 from guild_auto.infrastructure.game_state import GameStateDetector, prepare_chat_state
@@ -531,7 +530,7 @@ def prepare_config(args, console_fn=None, exit_fn=None):
         console_fn(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
         console_fn("请先查看并修改该配置文件——每个配置键前都有 '//' 中文注释,说明作用与取值范围")
         console_fn("重点确认:管理员名(留空自动识别)、日志路径、聊天键、升/降/踢阈值、各开关")
-        console_fn("详细说明见同目录《配置说明.md》")
+        console_fn("详细说明见 docs/《配置说明.md》")
         try:
             input("按回车退出...")
         except EOFError:
@@ -578,7 +577,7 @@ def prepare_config(args, console_fn=None, exit_fn=None):
         console_fn(f"  [{'错误' if lvl == 'error' else '警告'}] {m}",
                    level="error" if lvl == "error" else "warning")
     if errors:
-        console_fn("配置校验失败,请修正后重试(参考《配置说明.md》)", level="error")
+        console_fn("配置校验失败,请修正后重试(参考 docs/《配置说明.md》)", level="error")
         exit_fn(1)
 
     sw = cfg["switches"]
