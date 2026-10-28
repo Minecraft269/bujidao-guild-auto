@@ -80,3 +80,18 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 # 覆盖率配置唯一真源是仓库根的 .coveragerc —— coverage 在 CWD 会自动加载它,
 # pyproject 里的 [tool.coverage.*] 永远不会生效,故不在此重复声明(避免两处漂移)。
+
+# ---------------------------------------------------------------------------
+# mypy（阻塞门禁，见 .github/workflows/mypy.yml）
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+files = ["src/guild_auto"]
+# 渐进式类型化：存量代码大量无注解，先只拦真正的类型错误。
+ignore_missing_imports = true
+allow_untyped_defs = true
+allow_incomplete_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true

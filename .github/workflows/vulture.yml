@@ -1,0 +1,39 @@
+name: "Dead Code (vulture)"
+on:
+  push:
+    paths-ignore: ['**.md', 'docs/**', '.gitignore', '.gitattributes', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', '.gitignore', '.gitattributes', 'LICENSE']
+  workflow_dispatch:
+
+concurrency:
+  group: vulture-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
+
+jobs:
+  vulture:
+    name: vulture
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install vulture
+      # 阻塞门禁，min-confidence 90：只拦"几乎确定没人用"的定义。
+      - name: vulture
+        run: python -m vulture src/guild_auto vulture_whitelist.py --min-confidence 90

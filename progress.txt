@@ -1,0 +1,70 @@
+RALPH 进度记录 — 布吉岛公会管理脚本
+=====================================
+由 ralph-prompt.txt 驱动。每条含命令 + 输出摘录，禁止无证据结论。
+
+────────────────────────────────────────────────────────────────────
+迭代 1 — 基线核对（US-001）
+────────────────────────────────────────────────────────────────────
+日期：2026-10-28
+
+命令与结果：
+  $ python -c "清 __pycache__"                      → pycache cleared: 7
+  $ PYTHONPATH=src python -m unittest discover -s tests
+    Ran 967 tests in 96.908s / OK (skipped=2)
+  $ COVERAGE_FILE=.coverage.total COVERAGE_RCFILE=.coveragerc \
+      python -m pytest tests -q --cov=guild_auto --cov-report=term
+    TOTAL  3198  185  1150  90  93%     ← 总体 93%（门禁 92% 通过）
+    967 passed, 6 skipped, 117 subtests passed
+
+核心层另跑（parsers/decisions/config/reporter/async_system）：
+  TOTAL  987  19  416  15  98%         ← 核心层 98%（门禁 98% 通过）
+
+未提交改动（本轮开始前）：
+  ?? docs/CI与Bot.md
+  ?? docs/日志规范.md
+  （HEAD = 8b2b889 feat(阶段5): 黑白名单 + 保护名单 + 屏蔽词策略）
+
+────────────────────────────────────────────────────────────────────
+迭代 1 — US-002 CI workflow（已完成，待提交）
+────────────────────────────────────────────────────────────────────
+新增文件（8 个 workflow + 2 个 Bot 配置 + 1 个 release-drafter 配置）：
+  .github/workflows/mypy.yml                 阻塞：mypy src/guild_auto
+  .github/workflows/vulture.yml              阻塞：min-confidence 90 + 白名单
+  .github/workflows/mutmut.yml               非阻塞（schedule + dispatch），产出 artifact
+  .github/workflows/format.yml               阻塞：ruff format --check .
+  .github/workflows/codecov.yml              上传 coverage.xml（fail_ci_if_error=false）
+  .github/workflows/stale.yml                actions/stale
+  .github/workflows/release-drafter.yml      release-drafter v6
+  .github/workflows/super-linter.yml         markdown/yaml/json（VALIDATE_PYTHON=false）
+  .github/dependabot.yml                     pip + github-actions，每周，分组 minor/patch
+  .github/workflows/dependabot-auto-merge.yml 自行轮询 check-runs 并排除 Auto-merge
+  .github/release-drafter.yml                分组模板
+
+配套改动：
+  * 全仓库执行 ruff format .（57 files reformatted）—— 为让 format.yml 能阻塞
+  * lint.yml 移除重复的 ruff format --check（已独立为 format.yml）
+  * pyproject.toml 新增 [tool.mypy]（渐进式类型化，不启用 strict）
+  * vulture_whitelist.py（记录 signal handler 形参由 API 强制）
+  * pause._signal_handler 形参改 _sig/_frame（vulture 约定）
+
+本地实测：
+  $ python -m mypy src/guild_auto
+    Success: no issues found in 27 source files
+  $ python -m vulture src/guild_auto --min-confidence 90
+    （无输出，exit=0）
+  $ python -c "yaml.safe_load 全部 15 个 yml"
+    bad = 0
+
+────────────────────────────────────────────────────────────────────
+下一步（迭代 2）
+────────────────────────────────────────────────────────────────────
+* 提交本批（format + workflow）
+* push 后逐一确认 13 个 workflow 实际触发（gh run list）
+* US-003：Dependabot PR 实际产出、仓库设置回读
+* US-004：日志 6 级逐级实测 + 轮转 + 11 类关键事件可检索
+* US-005/006/007/008/009：UI / 规则引擎 / vision / 变体 / 自动暂停
+
+注意：
+  - 改完模块先清 __pycache__（纪律第 8 条）
+  - 架构/流程改动必须同步 docs/流程与架构图.md（第 11 条）
+  - 引用规格用章节名，禁止写死行号（第 12 条）

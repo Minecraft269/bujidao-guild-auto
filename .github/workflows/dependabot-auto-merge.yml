@@ -1,0 +1,72 @@
+name: "Dependabot Auto-merge"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  # 必须显式声明 checks: read —— 不声明时默认 none，读取 check-runs 会 403
+  checks: read
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    # 只处理 Dependabot 开的 PR；人工 PR 永不走自动合并
+    if: github.actor == 'dependabot[bot]'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: 等待检查完成（自行轮询，避免等待自己造成死锁）
+        id: wait
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # 坑①：不能用 `gh pr checks --watch` —— 本 job 自身的检查也在列表里，
+          # 会一直等自己 → 死锁。改为轮询 commits/{sha}/check-runs，
+          # 并在 jq 中排除名为 "Auto-merge" 的检查。
+          for i in $(seq 1 80); do
+            json=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100")
+            total=$(echo "$json" | jq '[.check_runs[] | select(.name != "Auto-merge")] | length')
+            pending=$(echo "$json" | jq '[.check_runs[] | select(.name != "Auto-merge") | select(.status != "completed")] | length')
+            failed=$(echo "$json" | jq '[.check_runs[] | select(.name != "Auto-merge") | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length')
+            echo "checks total=$total pending=$pending failed=$failed (round $i)"
+            if [ "$failed" -gt 0 ]; then echo "has_failure=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then echo "all_green=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+            sleep 20
+          done
+          echo "timeout=true" >> "$GITHUB_OUTPUT"
+
+      - name: 合并（不加 --delete-branch）
+        if: steps.wait.outputs.all_green == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          # 坑②：仓库已开 delete_branch_on_merge，合并时 GitHub 会自动删分支；
+          # 再加 --delete-branch 会二次删除并报错，可能被误判为"合并不了"。
+          out=$(gh pr merge "$PR" --squash --auto 2>&1)
+          rc=$?
+          echo "$out"
+          if [ $rc -ne 0 ]; then
+            gh pr comment "$PR" --body "@dependabot rebase — 自动合并失败（可能与其他改动冲突），请 rebase 后重试。"
+          fi
+          exit 0
+
+      - name: 有检查失败 — 留给人处理
+        if: steps.wait.outputs.has_failure == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR" --body "CI 有检查未通过，已跳过自动合并，请人工查看。"

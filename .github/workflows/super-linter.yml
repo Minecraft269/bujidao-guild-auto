@@ -1,0 +1,44 @@
+name: "Super-Linter (docs / yaml / json)"
+
+on:
+  push:
+    paths:
+      - '**.md'
+      - '**.yml'
+      - '**.yaml'
+      - '**.json'
+  pull_request:
+    paths:
+      - '**.md'
+      - '**.yml'
+      - '**.yaml'
+      - '**.json'
+  workflow_dispatch:
+
+concurrency:
+  group: superlinter-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  superlinter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # 只校验非 Python 文件；Python 由 ruff/mypy/vulture 负责。
+      - name: Super-Linter
+        uses: github/super-linter@v6
+        env:
+          DEFAULT_BRANCH: main
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATE_ALL_CODEBASE: false
+          VALIDATE_PYTHON: false
+          VALIDATE_MARKDOWN: true
+          VALIDATE_YAML: true
+          VALIDATE_JSON: true

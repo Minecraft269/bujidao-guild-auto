@@ -69,18 +69,5 @@ jobs:
       - name: ruff check
         run: ruff check --output-format=github .
 
-      # 暂不阻塞（continue-on-error）：仓库现有 27 个 .py 里 22 个会被 ruff
-      # format 重排，一次性重排会把整个 diff 打散成纯噪音。先只报不改，
-      # 跑 `ruff format .` 提交后再把 continue-on-error 摘掉。
-      # 不加 --diff：22 个文件的重排 diff 上千行，没人会在 CI 日志里读它，
-      # 维护者要 diff 自己本地跑一把即可。要看就加 --diff。
-      - name: ruff format --check
-        continue-on-error: true
-        run: |
-          set +e
-          ruff format --check .
-          rc=$?
-          set -e
-          if [ "$rc" -ne 0 ]; then
-            echo "::warning::ruff format --check 未通过（暂不阻塞）。本地跑 'ruff format .' 提交后可将本步骤改为阻塞。"
-          fi
+      # ruff format --check 已独立为 .github/workflows/format.yml（阻塞门禁），
+      # 这里不再重复执行，避免同一次推送跑两遍格式化检查。

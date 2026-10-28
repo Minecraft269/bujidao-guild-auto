@@ -1,0 +1,39 @@
+name: "Format (ruff format --check)"
+on:
+  push:
+    paths-ignore: ['**.md', 'docs/**', '.gitignore', '.gitattributes', 'LICENSE']
+  pull_request:
+    paths-ignore: ['**.md', 'docs/**', '.gitignore', '.gitattributes', 'LICENSE']
+  workflow_dispatch:
+
+concurrency:
+  group: format-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
+
+jobs:
+  format:
+    name: ruff format --check
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install "ruff==0.16.10"
+      # 阻塞门禁：仓库已整体执行过一次 ruff format .
+      - name: ruff format --check
+        run: ruff format --check .
