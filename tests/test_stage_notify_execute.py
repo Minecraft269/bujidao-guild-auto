@@ -176,6 +176,31 @@ class TestStageExecuteAsync(unittest.TestCase):
         stages_mod.stage_execute_async(rt, [rec], self.cfg)
         self.assertEqual(rec["new_rank"], new_rank_after("entry", ["promote"]))
 
+    def test_switch_gate_blocks_kick_in_async_mode(self):
+        """功能开关优先于任何判定结果（含自定义规则命中）。
+
+        异步路径此前漏了开关检查 —— 关掉 kick 仍会踢人。
+        """
+        cfg = json.loads(json.dumps(self.cfg))
+        cfg["switches"]["kick_enabled"] = False
+        rt = _FakeRT(async_enabled=True)
+        rec = _record("甲", ["kick"])
+        failures = stages_mod.stage_execute_async(rt, [rec], cfg)
+        rt.executor.execute_action.assert_not_called()
+        self.assertEqual(rt.human.send_chat_text.call_count, 0, "关闭的开关不得发出指令")
+        self.assertTrue(rec["executed"])
+        self.assertIn("踢出开关已关闭", rec["error"])
+        self.assertEqual(failures, [], "被开关拦下不算执行失败")
+
+    def test_switch_gate_keeps_enabled_actions(self):
+        cfg = json.loads(json.dumps(self.cfg))
+        cfg["switches"]["promote_enabled"] = False
+        rt = _FakeRT(async_enabled=True)
+        rt.executor.execute_action.return_value = (True, None)
+        rec = _record("甲", ["promote", "demote"])
+        stages_mod.stage_execute_async(rt, [rec], cfg)
+        self.assertEqual(rec["actions"], ["demote"], "只应保留开关开启的动作")
+
     def test_sender_uses_human_not_executor_in_main_thread(self):
         """主线程只发:发送走 human.send_chat_text,而不是直接调 execute_action。"""
         rt = _FakeRT(async_enabled=True)

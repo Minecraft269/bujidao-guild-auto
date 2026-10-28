@@ -150,12 +150,17 @@ def load_config(path):
 
 
 def save_config(path, cfg):
-    """保存配置(UTF-8、缩进 2、保留中文)。"""
+    """保存配置(UTF-8、缩进 2、保留中文)。
+
+    写成 JSONC(每个键上方一行 // 注释)，与 ensure_default_config 一致 ——
+    否则用户用 UI 保存一次后，config.json 就再也看不到"每项怎么填"的说明，
+    违反"每个配置键都必须有描述"的初衷。
+    """
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+        f.write("{" + "\n")
+        f.write(_dump_jsonc(cfg, 0))
 
-
+        f.write("\n" + "}" + "\n")
 def apply_cli_overrides(cfg, args):
     """命令行参数覆盖配置(--admin/--log/--options/--config 已在 main 处理路径,这里覆盖其余)。"""
     if getattr(args, "admin", None):

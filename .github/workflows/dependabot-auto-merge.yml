@@ -10,6 +10,11 @@ permissions:
   # 必须显式声明 checks: read —— 不声明时默认 none，读取 check-runs 会 403
   checks: read
 
+env:
+  # 本 job 不做 checkout（不需要源码），但 gh CLI 需要知道操作哪个仓库，
+  # 否则报 “fatal: not a git repository”。
+  GH_REPO: ${{ github.repository }}
+
 concurrency:
   group: dependabot-automerge-${{ github.event.pull_request.number }}
   cancel-in-progress: true

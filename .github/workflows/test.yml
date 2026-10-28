@@ -104,8 +104,8 @@ jobs:
         run: |
           set +e
 
-          echo "### Gate 1/2: core layer (parsers, actions, config, reporter, async_system) >= 98%"
-          COVERAGE_FILE=.coverage.core python -m pytest tests -v --cov=guild_auto.domain.parsers --cov=guild_auto.domain.decisions --cov=guild_auto.config --cov=guild_auto.domain.reporter --cov=guild_auto.concurrency.async_system --cov-report=term-missing --cov-report=xml:htmlcov/core.xml --cov-report=html:htmlcov/core --cov-fail-under=98
+          echo "### Gate 1/2: core layer (parsers, decisions, rules, config, reporter, async_system) >= 98%"
+          COVERAGE_FILE=.coverage.core python -m pytest tests -v --cov=guild_auto.domain.parsers --cov=guild_auto.domain.decisions --cov=guild_auto.domain.rules --cov=guild_auto.config --cov=guild_auto.domain.reporter --cov=guild_auto.concurrency.async_system --cov-report=term-missing --cov-report=xml:htmlcov/core.xml --cov-report=html:htmlcov/core --cov-fail-under=98
           rc_core=$?
 
           echo ""
