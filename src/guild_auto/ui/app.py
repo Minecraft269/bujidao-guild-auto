@@ -11,6 +11,7 @@ ui/app.py —— 图形配置界面主窗口
 
 不做流程编排：点"开始运行"后交给 main.main()（与命令行同一条路径）。
 """
+
 import tkinter as tk
 from tkinter import messagebox
 
@@ -35,7 +36,12 @@ def set_always_on_top(win, on_top):
         top = win32gui.GetParent(hwnd) or hwnd
         flag = win32con.HWND_TOPMOST if on_top else win32con.HWND_NOTOPMOST
         win32gui.SetWindowPos(
-            top, flag, 0, 0, 0, 0,
+            top,
+            flag,
+            0,
+            0,
+            0,
+            0,
             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE,
         )
         return
@@ -136,8 +142,11 @@ class App(tk.Tk):
             return False
         changed = diff_against_default(self.cfg)
         self.status.configure(
-            text=("配置已保存，请重新启动脚本" if self.first_run
-                  else f"配置已保存（{len(changed)} 项与默认不同）")
+            text=(
+                "配置已保存，请重新启动脚本"
+                if self.first_run
+                else f"配置已保存（{len(changed)} 项与默认不同）"
+            )
         )
         return True
 
@@ -187,7 +196,7 @@ class App(tk.Tk):
 
     def confirm_kick(self, player):
         """踢出二次确认：方式由配置决定（dialog 弹窗 / inline 主界面）。"""
-        ui_cfg = self.cfg["ui"]          # 缺键直接抛 KeyError（禁止硬编码兜底）
+        ui_cfg = self.cfg["ui"]  # 缺键直接抛 KeyError（禁止硬编码兜底）
         mode = str(ui_cfg["kick_confirm_mode"])
         expected = ui_cfg["kick_confirm_text"]
         message = f"即将踢出玩家 {player}（不可逆）"

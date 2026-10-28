@@ -34,6 +34,7 @@ domain/rules.py —— 自定义规则引擎（纯函数，零 IO）
 
 求值结果 (actions, hit_rule_ids, traces) 是纯数据，可追溯（每步条件是否满足）。
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -148,8 +149,13 @@ def rule_matches(rule, member):
     """
     conds = rule.get("conditions")
     if not isinstance(conds, list) or not conds:
-        return False, [{"index": -1, "ok": False,
-                        "detail": "conditions 缺失或为空（自定义规则必须至少一个条件）"}]
+        return False, [
+            {
+                "index": -1,
+                "ok": False,
+                "detail": "conditions 缺失或为空（自定义规则必须至少一个条件）",
+            }
+        ]
     trace = []
     for i, cond in enumerate(conds):
         ok, detail = check_condition(cond, member)
@@ -205,9 +211,7 @@ def _eval_builtin(rule, member):
     """内置规则求值：委托 decide_actions（唯一真源）。"""
     from guild_auto.domain.decisions import decide_actions
 
-    return decide_actions(
-        member.get("rank"), member.get("weekly_total"), rule["_thresholds"]
-    )
+    return decide_actions(member.get("rank"), member.get("weekly_total"), rule["_thresholds"])
 
 
 def evaluate(rule, member):
@@ -308,21 +312,20 @@ def validate_rules(rules):
             seen.add(rid)
 
         if "priority" in rule and not isinstance(rule["priority"], int):
-            errors.append(
-                {"rule_id": where, "field": "priority", "message": "priority 必须是整数"}
-            )
+            errors.append({"rule_id": where, "field": "priority", "message": "priority 必须是整数"})
         for key in ("stop", "enabled"):
             if key in rule and not isinstance(rule[key], bool):
-                errors.append(
-                    {"rule_id": where, "field": key, "message": f"{key} 必须是布尔值"}
-                )
+                errors.append({"rule_id": where, "field": key, "message": f"{key} 必须是布尔值"})
 
         conds = rule.get("conditions")
         if not isinstance(conds, list) or not conds:
             # 空/缺失 conditions 会命中所有人（kick 规则即全员踢）——必须报错
             errors.append(
-                {"rule_id": where, "field": "conditions",
-                 "message": "conditions 必须是非空列表（无条件规则会命中所有人）"}
+                {
+                    "rule_id": where,
+                    "field": "conditions",
+                    "message": "conditions 必须是非空列表（无条件规则会命中所有人）",
+                }
             )
         for ci, cond in enumerate(conds or []):
             if not isinstance(cond, dict):
@@ -367,8 +370,7 @@ def validate_rules(rules):
                 msg = _value_type_error(field, op, cond["value"])
                 if msg:
                     errors.append(
-                        {"rule_id": where, "field": f"conditions[{ci}].value",
-                         "message": msg}
+                        {"rule_id": where, "field": f"conditions[{ci}].value", "message": msg}
                     )
 
         acts = rule.get("actions")
@@ -404,6 +406,7 @@ def validate_rules(rules):
                     )
     return errors
 
+
 def _value_type_error(field, op, value):
     """校验条件 value 的类型是否与该字段匹配。返回错误文案或 None。
 
@@ -417,9 +420,7 @@ def _value_type_error(field, op, value):
         return None
     if field == "rank":
         if op in ("in", "not_in"):
-            if not isinstance(value, (list, tuple)) or not all(
-                isinstance(x, str) for x in value
-            ):
+            if not isinstance(value, (list, tuple)) or not all(isinstance(x, str) for x in value):
                 return f"rank 的 {op} 的 value 必须是字符串列表，当前: {value!r}"
             return None
         if not isinstance(value, str):

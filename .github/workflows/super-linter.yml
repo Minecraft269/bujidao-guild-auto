@@ -43,3 +43,7 @@ jobs:
           VALIDATE_YAML: true
           VALIDATE_JSON: true
           MARKDOWN_CONFIG_FILE: .markdown-lint.yml
+          # AGENTS.md 由 aoci 生成、CLAUDE.md 的纪律段由 project-init 托管：
+          # 两者都是工具重写的长段落中文，手工断行会被下一次生成覆盖，
+          # 且不属于本项目的文档质量范围。只在 lint 阶段排除，文件照常入库。
+          FILTER_REGEX_EXCLUDE: '(^|/)(AGENTS|CLAUDE)\.md$'
