@@ -42,3 +42,4 @@ jobs:
           VALIDATE_MARKDOWN: true
           VALIDATE_YAML: true
           VALIDATE_JSON: true
+          MARKDOWN_CONFIG_FILE: .markdown-lint.yml

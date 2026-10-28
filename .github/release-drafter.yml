@@ -2,23 +2,23 @@ name-template: "v$RESOLVED_VERSION"
 tag-template: "v$RESOLVED_VERSION"
 categories:
   - title: "🚀 功能"
-    labels: ["feature", "enhancement"]
+    labels: ["enhancement"]
   - title: "🐛 修复"
-    labels: ["bug", "fix"]
+    labels: ["bug"]
   - title: "📦 依赖更新"
     labels: ["dependencies"]
   - title: "🧪 测试与 CI"
     labels: ["ci", "tests"]
   - title: "📝 文档"
-    labels: ["docs"]
+    labels: ["documentation"]
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
 version-resolver:
   major:
     labels: ["major", "breaking"]
   minor:
-    labels: ["minor", "feature"]
+    labels: ["minor", "enhancement"]
   patch:
-    labels: ["patch", "fix"]
+    labels: ["patch", "bug"]
   default: patch
 template: |
   ## 本次变更

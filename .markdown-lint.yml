@@ -1,0 +1,7 @@
+# markdownlint 配置（super-linter 使用）
+# 中文文档不适合按 80 列断行；其余保持默认。
+default: true
+MD013: false   # line-length —— 中文按字符计宽，强制断行反而降低可读性
+MD033: false   # inline HTML（表格/徽章常用）
+MD024: false   # 重复标题（FAQ/变更记录允许同名小节）
+MD041: false   # 首行必须是标题 —— 部分文档以引用块开头
