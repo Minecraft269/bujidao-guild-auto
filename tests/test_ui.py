@@ -48,6 +48,31 @@ def require_tk(fn):
     return _wrapped
 
 
+def make_root():
+    """创建 Tk 根窗口；运行时不可用时 skip 当前用例而不是让门禁变红。
+
+    为什么不能只靠模块级 TK_OK：CI（setup-python 缓存的 CPython）上出现过
+    「首次 Tk() 成功、后续 Tk() 报 Can't find a usable init.tcl」的情况 ——
+    模块级探测发生在 import 期，拦不住中途损坏，只能每个用例自己兜底。
+    """
+    import tkinter as tk
+
+    try:
+        return tk.Tk()
+    except Exception as exc:  # TclError / 缺 init.tcl / 无显示
+        raise unittest.SkipTest(f"Tk 运行时不可用: {exc}")
+
+
+class TestMakeRootGuard(unittest.TestCase):
+    def test_broken_tk_runtime_turns_into_skip_not_failure(self):
+        """Tk 运行时缺失时必须 SkipTest，不能让整个覆盖率门禁变红。"""
+        import tkinter as tk
+
+        with mock.patch.object(tk, "Tk", side_effect=tk.TclError("缺 init.tcl")):
+            with self.assertRaises(unittest.SkipTest):
+                make_root()
+
+
 class TestConfirmText(unittest.TestCase):
     def test_exact_match(self):
         self.assertTrue(confirm_dialog.check_confirm_text("kick-confirm", "kick-confirm"))
@@ -198,11 +223,9 @@ class TestToolbarCallbacks(unittest.TestCase):
 
     @require_tk
     def test_callbacks_invoked(self):
-        import tkinter as tk
-
         from guild_auto.ui.toolbar import Toolbar
 
-        root = tk.Tk()
+        root = make_root()
         try:
             calls = {"mode": 0, "top": 0}
             tb = Toolbar(
@@ -223,11 +246,9 @@ class TestToolbarCallbacks(unittest.TestCase):
     @require_tk
     def test_no_callback_is_safe(self):
         """回调为 None 时点击不得抛异常（构造期尚未接线的场景）。"""
-        import tkinter as tk
-
         from guild_auto.ui.toolbar import Toolbar
 
-        root = tk.Tk()
+        root = make_root()
         try:
             tb = Toolbar(root, None, None)
             tb._toggle_mode()
@@ -326,12 +347,10 @@ class TestConfigPanel(unittest.TestCase):
     """配置面板：收集、标红、保存成功/失败。"""
 
     def setUp(self):
-        import tkinter as tk
-
         from guild_auto.config import DEFAULT_CONFIG
         from guild_auto.ui.config_panel import ConfigPanel
 
-        self.root = tk.Tk()
+        self.root = make_root()
         self.cfg = json.loads(json.dumps(DEFAULT_CONFIG))
         self.saved = []
         self.panel = ConfigPanel(self.root, self.cfg, self.saved.append)
@@ -426,12 +445,10 @@ class TestRulesPanel(unittest.TestCase):
     """规则管理：增删/启停/排序/JSON 编辑校验/预览。"""
 
     def setUp(self):
-        import tkinter as tk
-
         from guild_auto.config import DEFAULT_CONFIG
         from guild_auto.ui.rules_panel import RulesPanel
 
-        self.root = tk.Tk()
+        self.root = make_root()
         self.cfg = json.loads(json.dumps(DEFAULT_CONFIG))
         self.cfg["rules"] = [
             {
