@@ -84,11 +84,18 @@ def _label_of(path):
     return comment[:24]
 
 
+# 结构化字段：由专用编辑器（规则管理面板）维护，**不得**当普通文本摊平，
+# 否则会像 ["{...}", "..."] 这样被逗号切碎，静默写坏配置。
+STRUCTURED_PATHS = ("rules",)
+
+
 def _flatten(node, prefix=""):
     """递归把配置摊平成 FieldSpec 列表（dict 继续展开，list/标量成为字段）。"""
     out = []
     for key, value in node.items():
         path = f"{prefix}.{key}" if prefix else key
+        if path in STRUCTURED_PATHS:
+            continue
         if isinstance(value, dict):
             out.extend(_flatten(value, path))
             continue
@@ -218,12 +225,24 @@ def apply_edits(cfg, edits):
     if errors:
         return new_cfg, errors
 
+    # 结构化字段保持原值（编辑它们的是专用面板，不经表单）
+    for _p in STRUCTURED_PATHS:
+        if _p in cfg:
+            new_cfg[_p] = copy.deepcopy(cfg[_p])
+
     # 写回后再跑一次整体校验（跨字段一致性：必填、min<=max、路径存在性等）
     from guild_auto.config.schema import validate_config
 
     for level, msg in validate_config(new_cfg):
         if level == "error":
             errors.append({"path": "", "message": msg})
+
+    # 规则语法：规则面板之外的表单保存也要拦住非法规则
+    if new_cfg.get("rules_enabled"):
+        from guild_auto.domain.rules import validate_rules
+
+        for e in validate_rules(new_cfg.get("rules")):
+            errors.append({"path": "", "message": f"规则 {e['rule_id']} 的 {e['field']}: {e['message']}"})
     return new_cfg, errors
 
 

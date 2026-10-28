@@ -34,6 +34,7 @@ from guild_auto.domain import parsers
 from guild_auto.domain.parsers import ParseError, parse_guild_list, parse_guild_member
 from guild_auto.domain.reporter import write_action_report, write_contribution_report
 from guild_auto.application.stages import (
+    apply_action_gates as stage_apply_action_gates,
     stage_confirm_execution,
     stage_execute_async,
     stage_notify,
@@ -615,7 +616,11 @@ def main():
             )
         from guild_auto.ui.app import run_ui
 
-        return run_ui(args.config)
+        # run_ui 返回 True = 用户点了「开始运行」：重新读取刚保存的配置，
+        # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
+        if not run_ui(args.config):
+            return 0
+        cfg = config_mod.load_config(args.config)
     # 功能开关的本地别名。此前 main() 里直接引用 `sw` 却从未定义 —— 查询阶段的
     # 详细输出、执行阶段的三个开关判断、dry-run 分支全都挂在未定义名上,
     # 而这些代码行此前从未被任何测试执行过,所以一直没被发现。
@@ -876,6 +881,12 @@ def main():
             time.sleep(0.5)  # 等待界面稳定
 
         # ---- 执行阶段 ----
+        # 统一动作门禁（功能开关 + 非执行类动作 notify/ignore），串行与异步共用。
+        # 必须在确认之后、真正发送之前；被拦下的记录标 blocked_by_switch，
+        # 写入待办时会被排除（否则下次续做会绕过开关）。
+        blocked_n = stage_apply_action_gates(records, cfg)
+        if blocked_n:
+            console(f"  {blocked_n} 名玩家的动作被功能开关关闭,本次不执行")
         # 两种模式只有"发送节奏"不同,验证语义完全一致:
         #   串行 — 逐条发送并立刻读日志验证
         #   异步 — 主线程只发不验,验证交给 async_system(与查询阶段同一套 B→D→E 闭环)
@@ -896,22 +907,6 @@ def main():
                     reset_window_state_after_pause(hwnd, detector)
                     if not r["actions"]:
                         r["executed"] = False
-                        executed.append(r)
-                        continue
-                    kind = r["actions"][0]
-                    if kind == "promote" and not sw["promote_enabled"]:
-                        r["executed"], r["error"] = False, "升职开关已关闭"
-                        r["new_rank"] = r["rank"]
-                        executed.append(r)
-                        continue
-                    if kind == "demote" and not sw["demote_enabled"]:
-                        r["executed"], r["error"] = False, "降职开关已关闭"
-                        r["new_rank"] = r["rank"]
-                        executed.append(r)
-                        continue
-                    if kind == "kick" and not sw["kick_enabled"]:
-                        r["executed"], r["error"] = False, "踢出开关已关闭"
-                        r["new_rank"] = r["rank"]
                         executed.append(r)
                         continue
                     console(f"  执行 {r['player']}: {r['actions']}")
@@ -964,6 +959,10 @@ def main():
         # 10. 未完成操作(跳过/失败)写入待办,供下次启动续做(与上次失败项合并)
         incomplete = []
         for r in records:
+            # 被功能开关拦下、或被 kick 二次确认跳过的记录不得写入待办 ——
+            # 否则下次启动续做会绕过开关/确认把不可逆操作补执行。
+            if r.get("blocked_by_switch") or r.get("skipped_by_confirm"):
+                continue
             if r.get("actions") and r.get("error"):
                 incomplete.append(
                     {

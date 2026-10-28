@@ -9,17 +9,14 @@ ui/confirm_dialog.py —— 破坏性操作二次确认弹窗
 """
 import tkinter as tk
 
-DEFAULT_CONFIRM_TEXT = "kick-confirm"
-
-
 def check_confirm_text(typed, expected):
     """输入的确认词是否逐字匹配（去首尾空白，区分大小写）。
 
     不做模糊匹配：踢出不可逆，宁可让用户重输，也不能因为"差不多"就执行。
+    expected 必须由配置提供（ui.kick_confirm_text）；空值一律判否 ——
+    这里**不提供默认词**，否则配置被删改后会悄悄用硬编码值。
     """
-    if expected is None:
-        expected = DEFAULT_CONFIRM_TEXT
-    exp = str(expected).strip()
+    exp = str(expected or "").strip()
     return exp != "" and str(typed).strip() == exp
 
 

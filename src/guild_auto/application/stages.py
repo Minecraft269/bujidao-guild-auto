@@ -195,6 +195,7 @@ def stage_confirm_execution(rt, records, cfg):
             for r in pending_kicks:
                 r["executed"] = True  # 标记已处理,防止执行循环再次执行(不可逆操作)
                 r["error"] = "kick 已按确认要求跳过"
+                r["skipped_by_confirm"] = True   # 写待办时排除:不得下次补踢
                 r["new_rank"] = r["rank"]
             skipped_kicks = True
 
@@ -316,32 +317,8 @@ def stage_execute_async(rt, records, cfg):
     retries = int(cfg.get("timeouts", {}).get("max_retries", 3))
 
     # ---- 功能开关优先于任何判定结果（含自定义规则命中）----
-    # 串行路径在执行循环里逐条查开关；异步路径（本函数）此前**漏了这一步** ——
-    # 关掉 kick 后异步模式仍会踢人。这里统一过滤：被开关拦下的动作不提交，
-    # 并给 record 打 error（报告可见），与串行路径的文案保持一致。
-    _SWITCH_OF = {"promote": "promote_enabled", "demote": "demote_enabled",
-                  "kick": "kick_enabled"}
-    blocked_switches = {}
-    for r in records:
-        if not r.get("actions") or r.get("executed"):
-            continue
-        kept, off_names = [], []
-        for a in r["actions"]:
-            key = _SWITCH_OF.get(a)
-            if key and not sw.get(key, True):
-                blocked_switches[a] = True
-                off_names.append(a)
-            else:
-                kept.append(a)
-        if off_names:
-            r["actions"] = kept
-            if not kept:
-                r["executed"] = True
-                r["error"] = f"{'升职' if 'promote' in off_names else ''}"                              f"{'降职' if 'demote' in off_names else ''}"                              f"{'踢出' if 'kick' in off_names else ''}开关已关闭"
-                r["new_rank"] = r["rank"]
-                console(f"    - {r['player']}: {r['error']},不执行")
-    for a in blocked_switches:
-        logger.log_info(f"(异步)动作 {a} 被功能开关关闭,已跳过")
+    # 串行与异步共用 apply_action_gates（见文件末尾），避免两模式行为不一致。
+    apply_action_gates(records, cfg)
 
     # ---- 发送器:只发(暂停门在 execute_action 内部,这里不重复) ----
     def send_only(cmd, player, meta):
@@ -428,3 +405,44 @@ def _report_notify(label, ok, err):
     else:
         console(f"  /gc 广播失败: {err}")
         logger.log_warning(f"/gc 广播失败 [{label}]: {err}")
+
+# 只有这三类动作会被发往游戏；notify 由通知阶段处理，ignore 无动作。
+EXECUTABLE_ACTIONS = ("promote", "demote", "kick")
+_SWITCH_OF = {"promote": "promote_enabled", "demote": "demote_enabled",
+              "kick": "kick_enabled"}
+
+
+def apply_action_gates(records, cfg):
+    """统一的"动作门禁"：功能开关 + 非执行类动作过滤。
+
+    串行与异步**共用本函数**，在通知/确认之前调用一次。返回被拦下的记录数。
+    为什么必须逐动作过滤：执行器会执行 actions 列表里的**全部**动作，
+    只按 actions[0] 判开关会让 ["demote","kick"] 在 kick 关闭时仍踢人。
+    被拦下的记录标注 blocked_by_switch=True（写入待办时据此排除），
+    避免"这次没踢、下次续做时补踢"。
+    """
+    sw = cfg.get("switches", {})
+    blocked = 0
+    for r in records:
+        actions = r.get("actions") or []
+        if not actions:
+            continue
+        kept, off = [], []
+        for a in actions:
+            if a not in EXECUTABLE_ACTIONS:
+                continue                      # notify/ignore 不进执行层
+            key = _SWITCH_OF.get(a)
+            if key and not sw.get(key, True):
+                off.append(a)
+            else:
+                kept.append(a)
+        if off:
+            blocked += 1
+            r["blocked_by_switch"] = True
+            r["executed"] = True              # 已处理完毕,不得再进入待办
+            names = "".join({"promote": "升职", "demote": "降职", "kick": "踢出"}[a]
+                            for a in off)
+            r["error"] = f"{names}开关已关闭"
+            r["new_rank"] = r["rank"]
+        r["actions"] = kept
+    return blocked

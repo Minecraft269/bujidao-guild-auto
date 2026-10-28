@@ -151,6 +151,24 @@ def validate_config(cfg):
                     f"应为 {VALID_NOTIFY_MODES} 之一",
                 )
             )
+    # ── UI 配置界面(阶段 3)──
+    if "ui" in cfg:
+        ui = cfg["ui"]
+        if not isinstance(ui, dict):
+            issues.append(("error", f"配置项 ui 应为对象(dict),当前: {ui!r}"))
+        else:
+            for k in ("enabled", "always_on_top"):
+                if k in ui:
+                    check_bool(ui, k, "ui")
+            if "start_mode" in ui and ui["start_mode"] not in ("normal", "compact"):
+                issues.append(("error", f"配置项 ui.start_mode 取值非法: {ui['start_mode']!r},"
+                                         f"应为 ('normal', 'compact') 之一"))
+            if "kick_confirm_mode" in ui and ui["kick_confirm_mode"] not in ("dialog", "inline"):
+                issues.append(("error", f"配置项 ui.kick_confirm_mode 取值非法: "
+                                         f"{ui['kick_confirm_mode']!r},应为 ('dialog', 'inline') 之一"))
+            txt = ui.get("kick_confirm_text")
+            if txt is not None and (not isinstance(txt, str) or not txt.strip()):
+                issues.append(("error", f"配置项 ui.kick_confirm_text 必须是非空字符串,当前: {txt!r}"))
     # ── 自定义规则(阶段 4)──
     if "rules_enabled" in cfg:
         check_bool(cfg, "rules_enabled", "")

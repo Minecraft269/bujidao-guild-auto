@@ -64,8 +64,9 @@ class TestConfirmText(unittest.TestCase):
         """配置把确认词清空时，绝不能因此"空输入即通过"。"""
         self.assertFalse(confirm_dialog.check_confirm_text("", ""))
 
-    def test_none_expected_uses_default(self):
-        self.assertTrue(confirm_dialog.check_confirm_text("kick-confirm", None))
+    def test_none_expected_is_rejected(self):
+        """确认词必须由配置提供；None 不得回落到硬编码默认词。"""
+        self.assertFalse(confirm_dialog.check_confirm_text("kick-confirm", None))
 
     def test_chinese_confirm_text(self):
         self.assertTrue(confirm_dialog.check_confirm_text("确认踢出", "确认踢出"))

@@ -45,7 +45,6 @@ ACTIONS = ("promote", "demote", "kick", "notify", "ignore")
 _DATE_FIELDS = ("joined_at", "last_online")
 _NUM_FIELDS = ("weekly_total",)
 _ENUM_FIELDS = ("rank",)
-_BOOL_FIELDS = ("online",)
 _NAME_FIELDS = ("player",)
 
 
@@ -113,14 +112,6 @@ def check_condition(cond, member):
             return (inside if op == "in" else not inside), f"{field}={raw!r} {op} {value}"
         return False, f"{field} 算子非法: {op}"
 
-    if field in _BOOL_FIELDS:
-        raw = member.get(field)
-        if not isinstance(raw, bool):
-            return False, f"{field} 不可读"
-        if op not in ("==", "!="):
-            return False, f"{field} 算子非法: {op}"
-        return _cmp(op, raw, bool(value)), f"{field}={raw} {op} {value}"
-
     if field in _NAME_FIELDS:
         raw = member.get(field)
         if not raw:
@@ -149,9 +140,18 @@ def check_condition(cond, member):
 
 
 def rule_matches(rule, member):
-    """规则是否命中。返回 (ok, trace_list)。条件之间是 AND；空条件恒真。"""
+    """规则是否命中。返回 (ok, trace_list)。条件之间是 AND。
+
+    ⚠ 自定义规则的 conditions 必须是**非空列表**：
+    缺失/空列表一律判否并写明原因 —— 否则"漏写 conditions"会命中所有人，
+    在 kick 规则上等于全员被踢（不可逆）。内置规则走 _eval_builtin，不经此函数。
+    """
+    conds = rule.get("conditions")
+    if not isinstance(conds, list) or not conds:
+        return False, [{"index": -1, "ok": False,
+                        "detail": "conditions 缺失或为空（自定义规则必须至少一个条件）"}]
     trace = []
-    for i, cond in enumerate(rule.get("conditions") or []):
+    for i, cond in enumerate(conds):
         ok, detail = check_condition(cond, member)
         trace.append({"index": i, "ok": ok, "detail": detail})
         if not ok:
@@ -177,7 +177,8 @@ def _actions_of(rule):
         elif kind == "notify":
             out.append("notify")
         elif kind == "ignore":
-            out.append("ignore")
+            # ignore = 明确"什么都不做"，不产生动作（否则执行层会拿它去拼命令）
+            pass
     return out
 
 
@@ -317,9 +318,11 @@ def validate_rules(rules):
                 )
 
         conds = rule.get("conditions")
-        if conds is not None and not isinstance(conds, list):
+        if not isinstance(conds, list) or not conds:
+            # 空/缺失 conditions 会命中所有人（kick 规则即全员踢）——必须报错
             errors.append(
-                {"rule_id": where, "field": "conditions", "message": "conditions 必须是列表"}
+                {"rule_id": where, "field": "conditions",
+                 "message": "conditions 必须是非空列表（无条件规则会命中所有人）"}
             )
         for ci, cond in enumerate(conds or []):
             if not isinstance(cond, dict):
@@ -332,7 +335,6 @@ def validate_rules(rules):
             allowed = {
                 "weekly_total": ("<", "<=", ">", ">=", "=="),
                 "rank": ("==", "!=", "in", "not_in"),
-                "online": ("==", "!="),
                 "player": ("==", "!=", "matches"),
                 "joined_at": ("before", "after"),
                 "last_online": ("before", "after"),
@@ -361,6 +363,13 @@ def validate_rules(rules):
                         "message": "缺少 value",
                     }
                 )
+            else:
+                msg = _value_type_error(field, op, cond["value"])
+                if msg:
+                    errors.append(
+                        {"rule_id": where, "field": f"conditions[{ci}].value",
+                         "message": msg}
+                    )
 
         acts = rule.get("actions")
         if not isinstance(acts, list) or not acts:
@@ -394,3 +403,34 @@ def validate_rules(rules):
                         }
                     )
     return errors
+
+def _value_type_error(field, op, value):
+    """校验条件 value 的类型是否与该字段匹配。返回错误文案或 None。
+
+    为什么必须校验：运行期才暴露的类型错误会让整条判定链崩溃
+    （如 weekly_total < "1000" → TypeError），而 online=="false" 这种
+    字符串会被 bool() 当成真，规则静默命中错的人。
+    """
+    if field == "weekly_total":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return f"weekly_total 的 value 必须是数字，当前: {value!r}"
+        return None
+    if field == "rank":
+        if op in ("in", "not_in"):
+            if not isinstance(value, (list, tuple)) or not all(
+                isinstance(x, str) for x in value
+            ):
+                return f"rank 的 {op} 的 value 必须是字符串列表，当前: {value!r}"
+            return None
+        if not isinstance(value, str):
+            return f"rank 的 value 必须是等级键字符串，当前: {value!r}"
+        return None
+    if field == "player":
+        if not isinstance(value, str):
+            return f"player 的 value 必须是字符串，当前: {value!r}"
+        return None
+    if field in _DATE_FIELDS:
+        if _parse_date(value) is None:
+            return f"{field} 的 value 必须是 YYYY-MM-DD[ HH:MM:SS]，当前: {value!r}"
+        return None
+    return None

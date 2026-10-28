@@ -55,14 +55,16 @@ class App(tk.Tk):
         self.config_path = config_path
         self.first_run = bool(first_run)
         self.on_run = on_run
-        self.compact = False
-        self.always_on_top = False
+        # 先加载配置，再据此决定初始窗口形态（start_mode / always_on_top）
+        self.cfg = load_config(config_path)
+        ui_cfg = self.cfg.get("ui", {})
+        self.compact = str(ui_cfg.get("start_mode", "normal")) == "compact"
+        self.always_on_top = bool(ui_cfg.get("always_on_top", False))
         self._dirty = False
+        self.run_requested = False
 
         self.title("布吉岛公会管理脚本")
-        self.geometry("%dx%d" % BIG_SIZE)
-
-        self.cfg = load_config(config_path)
+        self.geometry("%dx%d" % (SMALL_SIZE if self.compact else BIG_SIZE))
 
         self.toolbar = Toolbar(self, self.toggle_mode, self.toggle_on_top)
         self.toolbar.pack(fill="x")
@@ -86,6 +88,8 @@ class App(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._apply_mode()
+        if self.always_on_top:
+            set_always_on_top(self, True)
 
     # ---------------- 窗口形态 ----------------
     def toggle_mode(self):
@@ -168,16 +172,24 @@ class App(tk.Tk):
 
     # ---------------- 运行 ----------------
     def start_run(self):
+        """保存配置并请求进入主流程。
+
+        UI 不自己跑流程（避免在 Tk 事件循环里再起线程）：
+        记录 run_requested 并关窗，run_ui 据此返回 True，main() 继续控制台主流程。
+        """
         if not self.save():
             return False
+        self.run_requested = True
         if self.on_run:
             self.on_run(self.cfg)
+        self.destroy()
         return True
 
     def confirm_kick(self, player):
         """踢出二次确认：方式由配置决定（dialog 弹窗 / inline 主界面）。"""
-        mode = str(self.cfg.get("ui", {}).get("kick_confirm_mode", "dialog"))
-        expected = self.cfg.get("ui", {}).get("kick_confirm_text", "kick-confirm")
+        ui_cfg = self.cfg["ui"]          # 缺键直接抛 KeyError（禁止硬编码兜底）
+        mode = str(ui_cfg["kick_confirm_mode"])
+        expected = ui_cfg["kick_confirm_text"]
         message = f"即将踢出玩家 {player}（不可逆）"
         if mode == "inline":
             return messagebox.askyesno("确认踢出", message)
@@ -188,7 +200,7 @@ class App(tk.Tk):
 
 
 def run_ui(config_path, first_run=False, on_run=None):
-    """UI 入口：创建并运行主窗口。返回 Tk mainloop 退出码。"""
+    """UI 入口。返回 True 表示用户点了「开始运行」，main() 应继续主流程。"""
     app = App(config_path, first_run=first_run, on_run=on_run)
     app.mainloop()
-    return 0
+    return bool(getattr(app, "run_requested", False))

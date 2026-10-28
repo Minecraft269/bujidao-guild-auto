@@ -63,11 +63,12 @@ class TestCheckCondition(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("需要列表", detail)
 
-    def test_online(self):
-        self.assertTrue(R.check_condition({"field": "online", "op": "==", "value": True},
-                                          _member(online=True))[0])
-        self.assertFalse(R.check_condition({"field": "online", "op": "==", "value": True},
-                                           _member(online=None))[0])
+    def test_online_is_not_supported(self):
+        """解析层不产出 online 字段 → 该条件不支持（避免"文档宣称但恒不可读"）。"""
+        ok, detail = R.check_condition({"field": "online", "op": "==", "value": True},
+                                       _member(online=True))
+        self.assertFalse(ok)
+        self.assertIn("未知字段", detail)
 
     def test_player_matches_wildcard_casefold(self):
         self.assertTrue(
@@ -130,10 +131,11 @@ class TestConditionBranchCoverage(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("算子非法", detail)
 
-    def test_online_bad_op(self):
-        ok, detail = R.check_condition({"field": "online", "op": "<", "value": True}, _member())
-        self.assertFalse(ok)
-        self.assertIn("算子非法", detail)
+    def test_online_condition_rejected_by_validation(self):
+        errs = R.validate_rules([{"id": "r", "conditions": [
+            {"field": "online", "op": "==", "value": True}],
+            "actions": [{"type": "notify"}]}])
+        self.assertIn("conditions[0].field", {e["field"] for e in errs})
 
     def test_player_eq_ne(self):
         m = _member(player="Alice")
@@ -178,16 +180,28 @@ class TestRuleMatching(unittest.TestCase):
         self.assertFalse(ok)
         self.assertFalse(trace[-1]["ok"], "失败的条件要留痕")
 
-    def test_empty_conditions_match(self):
-        self.assertTrue(R.rule_matches({"conditions": []}, _member())[0])
+    def test_empty_conditions_is_not_a_match(self):
+        """空/缺失 conditions 必须判否 —— 否则漏写就命中所有人（kick 即全员踢）。"""
+        ok, trace = R.rule_matches({"conditions": []}, _member())
+        self.assertFalse(ok)
+        self.assertIn("conditions", trace[0]["detail"])
+        ok, _ = R.rule_matches({}, _member())
+        self.assertFalse(ok)
 
     def test_actions_expansion(self):
         rule = {"actions": [{"type": "promote", "times": 2}, {"type": "notify"}]}
         self.assertEqual(R._actions_of(rule), ["promote", "promote", "notify"])
 
-    def test_ignore_and_kick(self):
-        self.assertEqual(R._actions_of({"actions": [{"type": "ignore"}]}), ["ignore"])
+    def test_ignore_produces_no_action(self):
+        """ignore 的语义是"什么都不做"，不能产生动作（否则执行层拿它拼命令会崩）。"""
+        self.assertEqual(R._actions_of({"actions": [{"type": "ignore"}]}), [])
         self.assertEqual(R._actions_of({"actions": [{"type": "kick", "reason": "x"}]}), ["kick"])
+
+    def test_notify_is_kept_out_of_execution(self):
+        """notify 保留为动作标记，但执行层只认 promote/demote/kick。"""
+        from guild_auto.application.stages import EXECUTABLE_ACTIONS
+        self.assertIn("notify", R.ACTIONS)
+        self.assertNotIn("notify", EXECUTABLE_ACTIONS)
 
 
 class TestBuiltinSharesInterface(unittest.TestCase):
@@ -272,6 +286,43 @@ class TestStrategies(unittest.TestCase):
     def test_trace_records_matched_rules(self):
         _, _, traces = R.evaluate_rules(self._table(), _member(weekly_total=100), "all")
         self.assertEqual([t["rule_id"] for t in traces], ["a"])
+
+
+class TestValueTypeValidation(unittest.TestCase):
+    """条件 value 的类型校验（运行期崩溃与静默判反的根因）。"""
+
+    def _err(self, field, op, value):
+        return R._value_type_error(field, op, value)
+
+    def test_numeric(self):
+        self.assertIsNone(self._err("weekly_total", "<", 1000))
+        self.assertIsNotNone(self._err("weekly_total", "<", "1000"))
+        self.assertIsNotNone(self._err("weekly_total", "<", True))
+
+    def test_rank(self):
+        self.assertIsNone(self._err("rank", "in", ["low"]))
+        self.assertIsNone(self._err("rank", "==", "low"))
+        self.assertIsNotNone(self._err("rank", "in", "low"))
+        self.assertIsNotNone(self._err("rank", "in", [1]))
+        self.assertIsNotNone(self._err("rank", "==", 1))
+
+    def test_player(self):
+        self.assertIsNone(self._err("player", "matches", "测试*"))
+        self.assertIsNotNone(self._err("player", "==", 123))
+
+    def test_date(self):
+        self.assertIsNone(self._err("joined_at", "before", "2026-01-01"))
+        self.assertIsNotNone(self._err("joined_at", "before", "乱写"))
+
+    def test_unknown_field_returns_none(self):
+        self.assertIsNone(self._err("nope", "<", 1))
+
+    def test_validation_surfaces_value_errors(self):
+        errs = R.validate_rules([{
+            "id": "r", "conditions": [
+                {"field": "rank", "op": "in", "value": "low"}],
+            "actions": [{"type": "notify"}]}])
+        self.assertIn("conditions[0].value", {e["field"] for e in errs})
 
 
 class TestValidateRules(unittest.TestCase):
@@ -368,7 +419,8 @@ class TestDecideForPlayerIntegration(unittest.TestCase):
         cfg["rules_enabled"] = True
         cfg["blacklist"] = ["甲"]
         cfg["rules"] = [{"id": "r1", "enabled": True,
-                         "conditions": [], "actions": [{"type": "kick"}]}]
+                         "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                         "actions": [{"type": "kick"}]}]
         actions, trigger = decide_for_player("甲", "entry", 0, cfg)
         self.assertEqual((actions, trigger), ([], "blacklist"))
 
@@ -377,7 +429,8 @@ class TestDecideForPlayerIntegration(unittest.TestCase):
         cfg["rules_enabled"] = True
         cfg["whitelist_protected"] = ["甲"]
         cfg["rules"] = [{"id": "r1", "enabled": True, "stop": True,
-                         "conditions": [], "actions": [{"type": "kick"}]}]
+                         "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                         "actions": [{"type": "kick"}]}]
         actions, trigger = decide_for_player("甲", "entry", 0, cfg)
         self.assertEqual(actions, [])
         self.assertEqual(trigger, "whitelist_protected")

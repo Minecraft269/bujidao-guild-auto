@@ -210,6 +210,23 @@ class TestFieldSpecAndEdgeBranches(unittest.TestCase):
         self.assertIsNone(field_by_path(_cfg(), "不存在.的.键"))
 
 
+class TestNumericListFloatAndRulesGate(unittest.TestCase):
+    def test_float_elements_accepted(self):
+        cfg = _cfg()
+        cfg["自定义浮点列"] = [0.5, 1.5]
+        new, errors = apply_edits(cfg, {"自定义浮点列": "0.25, 2.5"})
+        self.assertEqual(errors, [])
+        self.assertEqual(new["自定义浮点列"], [0.25, 2.5])
+
+    def test_invalid_rules_block_form_save(self):
+        """规则面板之外的表单保存也要拦住非法规则（避免绕过校验）。"""
+        cfg = _cfg()
+        cfg["rules_enabled"] = True
+        cfg["rules"] = [{"id": "r1", "actions": [{"type": "kick"}]}]   # 缺 conditions
+        _, errors = apply_edits(cfg, {"admin": "X"})
+        self.assertTrue(any("规则 r1" in e["message"] for e in errors), errors)
+
+
 class TestDiffAgainstDefault(unittest.TestCase):
     def test_default_cfg_has_no_diff(self):
         self.assertEqual(diff_against_default(_cfg()), [])

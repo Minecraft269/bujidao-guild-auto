@@ -118,13 +118,26 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
             wait_if_paused()
             # 暂停恢复后重置窗口状态(与主执行循环一致)
             reset_window_state_after_pause(executor.hwnd, executor.detector)
-            console_fn(f"  执行 {it['player']}: {it['actions']}")
-            results = executor.execute_actions(it["player"], it["actions"])
+            # 续做同样受功能开关约束：本次关掉的开关不得因"上次遗留"而绕过。
+            sw = cfg.get("switches", {})
+            _SW = {"promote": "promote_enabled", "demote": "demote_enabled",
+                   "kick": "kick_enabled"}
+            allowed = [a for a in it["actions"]
+                       if a in _SW and sw.get(_SW[a], True)]
+            if not allowed:
+                dropped = "".join({"promote": "升职", "demote": "降职",
+                                   "kick": "踢出"}[a] for a in it["actions"] if a in _SW)
+                console_fn(f"    - {it['player']}: {dropped}开关已关闭,跳过(保留待下次)")
+                it["error"] = f"{dropped}开关已关闭"
+                remaining.append(it)
+                continue
+            console_fn(f"  执行 {it['player']}: {allowed}")
+            results = executor.execute_actions(it["player"], allowed)
             done = sum(1 for _, ok, _ in results if ok)
             if done == len(results):
                 console_fn(f"    ✓ {it['player']} 全部完成,已从待办移除")
                 continue  # 完成 → 不写回待办
-            it["actions"] = it["actions"][done:]  # 剩余动作保留,下次继续
+            it["actions"] = allowed[done:]  # 剩余动作保留,下次继续
             it["status"] = "failed"
             failed = next(((a, e) for a, ok, e in results if not ok), None)
             it["error"] = f"执行失败({failed[0]}): {failed[1]}" if failed else "未执行"
