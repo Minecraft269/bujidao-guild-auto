@@ -315,6 +315,34 @@ def stage_execute_async(rt, records, cfg):
     timeout = float(cfg.get("timeouts", {}).get("error_check_window", 4.0))
     retries = int(cfg.get("timeouts", {}).get("max_retries", 3))
 
+    # ---- 功能开关优先于任何判定结果（含自定义规则命中）----
+    # 串行路径在执行循环里逐条查开关；异步路径（本函数）此前**漏了这一步** ——
+    # 关掉 kick 后异步模式仍会踢人。这里统一过滤：被开关拦下的动作不提交，
+    # 并给 record 打 error（报告可见），与串行路径的文案保持一致。
+    _SWITCH_OF = {"promote": "promote_enabled", "demote": "demote_enabled",
+                  "kick": "kick_enabled"}
+    blocked_switches = {}
+    for r in records:
+        if not r.get("actions") or r.get("executed"):
+            continue
+        kept, off_names = [], []
+        for a in r["actions"]:
+            key = _SWITCH_OF.get(a)
+            if key and not sw.get(key, True):
+                blocked_switches[a] = True
+                off_names.append(a)
+            else:
+                kept.append(a)
+        if off_names:
+            r["actions"] = kept
+            if not kept:
+                r["executed"] = True
+                r["error"] = f"{'升职' if 'promote' in off_names else ''}"                              f"{'降职' if 'demote' in off_names else ''}"                              f"{'踢出' if 'kick' in off_names else ''}开关已关闭"
+                r["new_rank"] = r["rank"]
+                console(f"    - {r['player']}: {r['error']},不执行")
+    for a in blocked_switches:
+        logger.log_info(f"(异步)动作 {a} 被功能开关关闭,已跳过")
+
     # ---- 发送器:只发(暂停门在 execute_action 内部,这里不重复) ----
     def send_only(cmd, player, meta):
         rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)

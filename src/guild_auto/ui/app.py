@@ -81,6 +81,7 @@ class App(tk.Tk):
         tk.Button(bottom, text="重新加载（热重载）", command=self.hot_reload).pack(
             side="left", padx=6
         )
+        tk.Button(bottom, text="规则管理", command=self.open_rules).pack(side="left", padx=6)
         tk.Button(bottom, text="开始运行", command=self.start_run).pack(side="right", padx=6)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -147,6 +148,23 @@ class App(tk.Tk):
         self.panel._build()
         self.status.configure(text="已热重载配置")
         return True
+
+    def open_rules(self):
+        """打开规则管理窗口（阶段 4）。修改即写回 cfg，保存时一并落盘。"""
+        from guild_auto.ui.rules_panel import RulesPanel
+
+        win = tk.Toplevel(self)
+        win.title("规则管理 — 布吉岛公会管理脚本")
+        win.transient(self)
+        panel = RulesPanel(win, self.cfg, on_change=self._on_rules_changed)
+        panel.pack(fill="both", expand=True)
+        tk.Button(win, text="关闭", command=win.destroy).pack(pady=6)
+        return panel
+
+    def _on_rules_changed(self, cfg):
+        self.cfg = cfg
+        self._dirty = True
+        self.status.configure(text="规则已修改（记得点『保存配置』落盘）")
 
     # ---------------- 运行 ----------------
     def start_run(self):

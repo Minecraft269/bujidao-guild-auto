@@ -412,5 +412,120 @@ class TestAppMore(unittest.TestCase):
         self.app._on_close()   # 不应抛异常
 
 
+@unittest.skipUnless(TK_OK, "当前环境无可用 Tk 显示")
+class TestRulesPanel(unittest.TestCase):
+    """规则管理：增删/启停/排序/JSON 编辑校验/预览。"""
+
+    def setUp(self):
+        import tkinter as tk
+
+        from guild_auto.config import DEFAULT_CONFIG
+        from guild_auto.ui.rules_panel import RulesPanel
+
+        self.root = tk.Tk()
+        self.cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        self.cfg["rules"] = [
+            {"id": "a", "name": "A", "enabled": True, "priority": 10,
+             "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+             "actions": [{"type": "demote"}]},
+            {"id": "b", "name": "B", "enabled": True, "priority": 20,
+             "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+             "actions": [{"type": "kick"}]},
+        ]
+        self.changes = []
+        self.panel = RulesPanel(self.root, self.cfg, on_change=self.changes.append)
+
+    def tearDown(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def test_list_renders_rules(self):
+        self.assertEqual(len(self.panel.tree.get_children()), 2)
+
+    def test_add_rule(self):
+        self.panel.add_rule()
+        self.assertEqual(len(self.panel.rules), 3)
+        ids = [r["id"] for r in self.panel.rules]
+        self.assertEqual(len(ids), len(set(ids)), "新增规则 id 不能与已有冲突")
+
+    def test_delete_rule(self):
+        self.panel.tree.selection_set("0")
+        self.panel.delete_rule()
+        self.assertEqual([r["id"] for r in self.panel.rules], ["b"])
+
+    def test_toggle_enabled(self):
+        self.panel.tree.selection_set("0")
+        self.panel.toggle_enabled()
+        self.assertFalse(self.panel.rules[0]["enabled"])
+
+    def test_move_up_and_down(self):
+        self.panel.tree.selection_set("1")
+        self.panel.move(-1)
+        self.assertEqual([r["id"] for r in self.panel.rules], ["b", "a"])
+        self.panel.tree.selection_set("0")
+        self.panel.move(1)
+        self.assertEqual([r["id"] for r in self.panel.rules], ["a", "b"])
+
+    def test_move_out_of_range_is_noop(self):
+        self.panel.tree.selection_set("0")
+        self.panel.move(-1)
+        self.assertEqual([r["id"] for r in self.panel.rules], ["a", "b"])
+
+    def test_apply_json_rejects_invalid(self):
+        from unittest import mock
+
+        self.panel.tree.selection_set("0")
+        self.panel.editor.delete("1.0", "end")
+        self.panel.editor.insert("1.0", '{"id": "a", "actions": []}')
+        with mock.patch("guild_auto.ui.rules_panel.messagebox.showerror") as m_err:
+            self.assertFalse(self.panel.apply_json())
+        m_err.assert_called_once()
+        self.assertEqual(self.panel.rules[0]["actions"], [{"type": "demote"}],
+                         "校验失败不得写入")
+
+    def test_apply_json_accepts_valid(self):
+        self.panel.tree.selection_set("0")
+        self.panel.editor.delete("1.0", "end")
+        self.panel.editor.insert(
+            "1.0",
+            json.dumps({"id": "a", "enabled": True, "priority": 5,
+                        "conditions": [{"field": "weekly_total", "op": "<", "value": 1}],
+                        "actions": [{"type": "kick"}]}),
+        )
+        self.assertTrue(self.panel.apply_json())
+        self.assertEqual(self.panel.rules[0]["actions"], [{"type": "kick"}])
+
+    def test_apply_json_without_selection(self):
+        from unittest import mock
+
+        with mock.patch("guild_auto.ui.rules_panel.messagebox.showinfo") as m_info:
+            self.assertFalse(self.panel.apply_json())
+        m_info.assert_called_once()
+
+    def test_preview_hits_rule(self):
+        self.panel.var_weekly.set("100")
+        actions, hits = self.panel.preview()
+        self.assertEqual(hits, ["a"])
+        self.assertEqual(actions, ["demote"])
+        self.assertIn("命中", self.panel.var_result.get())
+
+    def test_preview_no_match(self):
+        self.panel.var_weekly.set("99999")
+        actions, hits = self.panel.preview()
+        self.assertEqual((actions, hits), ([], []))
+        self.assertIn("未命中", self.panel.var_result.get())
+
+    def test_preview_bad_weekly(self):
+        self.panel.var_weekly.set("abc")
+        self.assertIsNone(self.panel.preview())
+        self.assertIn("整数", self.panel.var_result.get())
+
+    def test_on_change_called(self):
+        self.panel.add_rule()
+        self.assertTrue(self.changes, "修改规则应通知 App")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -151,6 +151,19 @@ def validate_config(cfg):
                     f"应为 {VALID_NOTIFY_MODES} 之一",
                 )
             )
+    # ── 自定义规则(阶段 4)──
+    if "rules_enabled" in cfg:
+        check_bool(cfg, "rules_enabled", "")
+    if "rules_strategy" in cfg:
+        strat = cfg["rules_strategy"]
+        if strat not in ("first_match", "highest_priority", "all"):
+            issues.append((
+                "error",
+                f"配置项 rules_strategy 取值非法: {strat!r},"
+                f"应为 ('first_match', 'highest_priority', 'all') 之一",
+            ))
+    if "rules" in cfg and not isinstance(cfg["rules"], list):
+        issues.append(("error", f"配置项 rules 应为列表,当前: {cfg['rules']!r}"))
     check_bool(cfg, "kick_confirm", "")  # 顶层键:路径前缀为空
     # ── 名单(阶段 5)──
     for key in ("blacklist", "whitelist", "whitelist_protected"):

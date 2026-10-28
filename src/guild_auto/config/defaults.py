@@ -58,6 +58,11 @@ DEFAULT_CONFIG = {
     #   "query_attempt"  = 仍尝试查询(通常会超时并浪费重试,仅调试用)
     "blocked_name_policy": "skip",
     # ── UI 配置界面(阶段 3)──────────────────────────────────────────────
+    # ── 自定义规则(阶段 4)──────────────────────────────────────────────
+    "rules_enabled": False,
+    "rules_strategy": "first_match",
+    "rules": [],
+
     "ui": {
         "enabled": False,
         "start_mode": "normal",
@@ -279,6 +284,15 @@ CONFIG_COMMENTS = {
     "'query_attempt'=仍尝试查询(通常超时浪费重试,仅用于调试)",
     "ui": "UI 配置界面(阶段 3):是否允许图形入口、窗口初始形态、是否置顶、"
           "踢出二次确认方式与确认词。无 --ui 参数时全部不起作用",
+    "rules_enabled": "是否启用自定义规则引擎:false(默认)=只用内置阈值规则;"
+    "true=按 rules 列表判定,内置阈值规则作为其中一条默认规则参与(同一接口)",
+    "rules_strategy": "多规则命中时的策略:'first_match'=按列表顺序首个命中(默认);"
+    "'highest_priority'=命中里 priority 最大者;'all'=应用全部命中的规则",
+    "rules": "自定义规则列表(JSON 数组)。每条含 id/name/enabled/priority/stop/"
+    "conditions/actions。条件字段可用:weekly_total(数值比较) rank(== != in not_in) "
+    "online(== !=) player(== != matches) joined_at/last_online(before after)。"
+    "动作可用:promote(times) demote(times) kick(reason) notify ignore",
+
     "ui.enabled": "是否允许 UI 入口:true=启动时可加 --ui 打开图形配置界面;false=只走控制台流程。"
     "无 --ui 参数时默认走控制台,向后兼容",
     "ui.start_mode": "窗口初始形态:'normal'=窗口化 600x400(默认);'compact'=小窗 200x150"

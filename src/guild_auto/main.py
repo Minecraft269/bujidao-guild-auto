@@ -562,6 +562,15 @@ def prepare_config(args, console_fn=None, exit_fn=None):
             f"  [{'错误' if lvl == 'error' else '警告'}] {m}",
             level="error" if lvl == "error" else "warning",
         )
+    # 自定义规则语法校验（阶段 4）：启动即报错，禁止静默兜底
+    if cfg.get("rules_enabled"):
+        from guild_auto.domain.rules import validate_rules
+
+        for e in validate_rules(cfg.get("rules")):
+            msg = f"规则 {e['rule_id']} 的 {e['field']}: {e['message']}"
+            errors.append(msg)
+            console_fn(f"  [错误] {msg}", level="error")
+
     if errors:
         console_fn("配置校验失败,请修正后重试(参考 docs/《配置说明.md》)", level="error")
         exit_fn(1)
@@ -801,7 +810,15 @@ def main():
                 # 名单短路优先于阈值判定(阶段 5):
                 # blacklist/whitelist 命中即不处理,保护名单剥夺降职/踢出。
                 # 阈值矩阵本身零改动,仍由 decide_actions 决定。
-                actions, trigger = decide_for_player(r["player"], r["rank"], r["weekly_total"], cfg)
+                actions, trigger = decide_for_player(
+                    r["player"],
+                    r["rank"],
+                    r["weekly_total"],
+                    cfg,
+                    member_joined_at=r.get("joined_at"),
+                    member_last_online=r.get("last_online"),
+                    member_online=r.get("online"),
+                )
                 logger.log_debug(
                     f"判定输入: player={r['player']} rank={r['rank']} "
                     f"weekly={r['weekly_total']} → 输出 actions={actions} trigger={trigger}"
