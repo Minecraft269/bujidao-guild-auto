@@ -148,6 +148,14 @@ class TestSendAndCapture(_Base):
 
 
 class TestQueryGuildList(_Base):
+    def test_masked_name_sends_when_policy_is_query_attempt(self):
+        """blocked_name_policy=query_attempt 时串行路径也必须真的去查(验收 17)。"""
+        cfg = _cfg()
+        cfg["blocked_name_policy"] = "query_attempt"
+        with mock.patch.object(main_mod, "send_and_capture", return_value=(None, False)) as m_send:
+            main_mod.query_member(cfg, mock.Mock(), mock.Mock(), None, "*" * 8)
+        m_send.assert_called()
+
     def test_success_returns_info(self):
         cfg = _cfg(guild_name="演示公会")
         with (

@@ -142,6 +142,13 @@ class TestDecideForPlayer(unittest.TestCase):
         self.assertEqual(actions, [], "保护名单玩家不该被踢")
         self.assertEqual(trigger, "whitelist_protected")
 
+    def test_protected_player_keeps_demote(self):
+        """保护名单只免踢出,降职照常(plan 验收 16)。"""
+        cfg = self._cfg_with_th(whitelist_protected=["甲"])
+        actions, trigger = decide_for_player("甲", "high", 20000, cfg)
+        self.assertEqual(actions, ["demote"], "保护名单不该剥夺降职")
+        self.assertEqual(trigger, "high_demote")
+
     def test_unlisted_player_behaves_exactly_as_before(self):
         """名单为空时,判定必须与 decide_actions 逐字一致 —— 回归护栏。"""
         from guild_auto.domain.decisions import decide_actions
