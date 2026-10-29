@@ -606,14 +606,18 @@ def prepare_config(args, console_fn=None, exit_fn=None):
             errors.append(str(e))
             console_fn(f"  [错误] {e}", level="error")
 
-    # UI 识别模式的第二步:能力齐了还要主流程真接上。当前 main() 尚未分派 ui 模式,
-    # 只按能力放行会让 ui 配置静默走指令流程 —— 必须继续拦到接线完成。
+    # UI 识别模式的第二步:主流程已接线(ui_mode.py),但还必须有
+    # OCR 适配器。没有 OCR 就等到第一次截图才发现错误,用户会以为脚本在工作;
+    # 更糟的是静默退回指令模式 —— 所以这里启动即拦下。
     # 延迟 import:vision 是可选单元,导入失败不应影响不含它的构建。
     if cfg.get("operation_mode") == "ui" and capabilities_mod.has("vision"):
-        from guild_auto.vision.capabilities import has_vision_capability
+        from guild_auto.vision.adapters import has_configured_ocr
 
-        if not has_vision_capability():
-            msg = '当前构建含 vision 能力,但 UI 识别模式主流程尚未接线,operation_mode="ui" 无法执行'
+        if not has_configured_ocr(cfg):
+            msg = (
+                "UI 识别模式已接线,但未配置 OCR 适配器:请安装 pytesseract(需 tesseract 引擎)"
+                "或在 vision.ocr_command 配置外部 OCR 命令;不会静默降级回指令模式"
+            )
             errors.append(msg)
             console_fn(f"  [错误] {msg}", level="error")
 
@@ -752,7 +756,9 @@ def main():
         else:
             console("⚠ 未找到游戏窗口, 后续发送命令可能发往其他程序")
 
-        listener = start_pause_listener(cfg.get("pause_key", "u"))
+        # 传 cfg 同时启用 US-009 自动暂停(仅 operation_mode="ui" 生效;
+        # 指令模式不会挂鼠标钩子,不干扰用户操作其它程序)
+        listener = start_pause_listener(cfg.get("pause_key", "u"), cfg=cfg)
         console(f"暂停键: {runtime_mod.pause_key_name()}(随时按暂停/继续)")
 
         console("开始运行\n")
@@ -787,92 +793,119 @@ def main():
             )
             _stage_clock[0] = now
 
-        # 3. /guild list
-        console("\n[1/5] 查询公会列表 ...")
-        logger.log_info("阶段1: 查询公会列表开始")
+        # ---- 查询阶段:两种操作模式在这里分派 ----
+        # command: /guild list → 逐人 /guild member → 读日志解析
+        # ui     : 导航 → 扫掠 → OCR 解析,一次拿到全员记录(US-007)
+        operation_mode = str(cfg.get("operation_mode") or "command")
+        ui_mode = operation_mode == "ui"
+        ui_outcome = None
+        # debug 段在判定/通知/执行阶段还要用,必须在分派前定义(UI 模式不走 list 分支)
         debug = cfg.get("debug", {})
-        if debug.get("enabled") and "list" in debug.get("skip_stages", []):
-            # 仍发送指令，但忽略结果
-            try:
-                query_guild_list(cfg, watcher, human, hwnd, detector=detector, stop_check=is_paused)
-            except Exception as e:
-                console(f"Debug: list 发送指令（忽略失败）: {e}")
-            guild = _generate_debug_guild(cfg)
-            console(f"Debug: 使用模拟公会数据 {guild['guild_name']}")
+        if ui_mode:
+            from guild_auto.ui_mode import stage_query_ui
+
+            console("\n[1/5] UI 识别查询(登录→查询→报告)...")
+            logger.log_info("阶段1: UI 识别查询开始")
+            ui_outcome = stage_query_ui(rt, cfg)
+            guild = ui_outcome.guild
+            records = ui_outcome.records
+            failures = ui_outcome.failures
+            # targets 只用于报告里的"应查人数";UI 模式已在采集后按范围过滤
+            targets = [(r["rank"], r["player"]) for r in records]
+            gname = guild["guild_name"]
+            console(f"公会: {gname} | 界面成员总数 {guild['total']}")
+            for rk, ids in guild["groups"].items():
+                console(f"  {cfg['rank_names'].get(rk, rk)}: {len(ids)} 人")
         else:
-            guild = query_guild_list(
-                cfg, watcher, human, hwnd, detector=detector, stop_check=is_paused
-            )
-        gname = guild["guild_name"]
-        console(f"公会: {gname} | 成员总数 {guild['total']} | 在线 {guild['online']}")
-        for rk, ids in guild["groups"].items():
-            console(f"  {cfg['rank_names'].get(rk, rk)}: {len(ids)} 人")
-        _mark_stage("查询公会列表", ok=1)
-
-        # 4. 查询范围过滤 + 跨等级去重(见 build_targets docstring)
-        scope = cfg.get("query_scope", "all")
-        skip = set(cfg.get("skip_ranks", []))
-        targets, dup_dropped = build_targets(guild["groups"], scope=scope, skip_ranks=skip)
-        if dup_dropped:
-            logger.log_warning(
-                f"阶段2: 丢弃 {dup_dropped} 个跨等级重复玩家(同一名字出现在多个等级段,"
-                f"只保留首次出现的等级,避免重复执行升/降/踢)"
-            )
-            console(f"⚠ 有 {dup_dropped} 个玩家名字重复出现在多个等级,已按首次出现处理")
-        logger.log_info(
-            f"阶段2 起点: 逐人查询 targets={len(targets)} 范围={scope} 跳过={sorted(skip)}"
-        )
-        console(f"[2/5] 逐人查询: 共 {len(targets)} 名玩家(范围 {scope},跳过 {sorted(skip)})")
-
-        # 5. 逐人查询
-        failures = []  # 提前初始化，确保所有路径可用
-        if debug.get("enabled") and "member" in debug.get("skip_stages", []):
-            # 仍发送每个玩家的查询指令，但忽略结果
-            for idx, (rk, pid) in enumerate(targets, 1):
+            # 3. /guild list
+            console("\n[1/5] 查询公会列表 ...")
+            logger.log_info("阶段1: 查询公会列表开始")
+            if debug.get("enabled") and "list" in debug.get("skip_stages", []):
+                # 仍发送指令，但忽略结果
                 try:
-                    query_member(
-                        cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
+                    query_guild_list(
+                        cfg, watcher, human, hwnd, detector=detector, stop_check=is_paused
                     )
                 except Exception as e:
-                    pass  # 忽略错误
-            records = _generate_debug_records(
-                cfg, guild, targets, decide_skipped=("decide" in debug.get("skip_stages", []))
-            )
-        else:
-            records = []
-            if rt.async_enabled:
-                # 异步(后台)模式:主线程只发不验,验证全部交给后台系统
-                # (流程规格 B→D→E,见 stage_query_async docstring)
-                console("[2/5] 逐人查询(异步模式:主线程快速发送,后台验证)...")
-                records, async_failures = stage_query_async(rt, targets, cfg)
-                failures.extend(async_failures)
+                    console(f"Debug: list 发送指令（忽略失败）: {e}")
+                guild = _generate_debug_guild(cfg)
+                console(f"Debug: 使用模拟公会数据 {guild['guild_name']}")
             else:
-                # 默认串行模式:逐条发送 → 逐条读日志验证
+                guild = query_guild_list(
+                    cfg, watcher, human, hwnd, detector=detector, stop_check=is_paused
+                )
+            gname = guild["guild_name"]
+            console(f"公会: {gname} | 成员总数 {guild['total']} | 在线 {guild['online']}")
+            for rk, ids in guild["groups"].items():
+                console(f"  {cfg['rank_names'].get(rk, rk)}: {len(ids)} 人")
+            _mark_stage("查询公会列表", ok=1)
+
+            # 4. 查询范围过滤 + 跨等级去重(见 build_targets docstring)
+            scope = cfg.get("query_scope", "all")
+            skip = set(cfg.get("skip_ranks", []))
+            targets, dup_dropped = build_targets(guild["groups"], scope=scope, skip_ranks=skip)
+            if dup_dropped:
+                logger.log_warning(
+                    f"阶段2: 丢弃 {dup_dropped} 个跨等级重复玩家(同一名字出现在多个等级段,"
+                    f"只保留首次出现的等级,避免重复执行升/降/踢)"
+                )
+                console(f"⚠ 有 {dup_dropped} 个玩家名字重复出现在多个等级,已按首次出现处理")
+            logger.log_info(
+                f"阶段2 起点: 逐人查询 targets={len(targets)} 范围={scope} 跳过={sorted(skip)}"
+            )
+            console(f"[2/5] 逐人查询: 共 {len(targets)} 名玩家(范围 {scope},跳过 {sorted(skip)})")
+
+            # 5. 逐人查询
+            failures = []  # 提前初始化，确保所有路径可用
+            if debug.get("enabled") and "member" in debug.get("skip_stages", []):
+                # 仍发送每个玩家的查询指令，但忽略结果
                 for idx, (rk, pid) in enumerate(targets, 1):
-                    wait_if_paused()
-                    console(f"[{idx}/{len(targets)}] 查询 {pid} ({cfg['rank_names'].get(rk, rk)})")
-                    info = query_member(
-                        cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
-                    )
-                    if info is None:
-                        # 屏蔽词玩家:身份不可读,报真实原因而非"查询重试耗尽"
-                        # 否则报告里看不出是网易过滤还是网络抖动
-                        reason = (
-                            "查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
-                            if parsers.is_masked_name(pid)
-                            else "查询重试耗尽"
+                    try:
+                        query_member(
+                            cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
                         )
-                        failures.append({"player": pid, "rank": rk, "reason": reason})
-                        logger.log_error(
-                            f"查询失败({reason}): {pid} ({cfg['rank_names'].get(rk, rk)})"
-                        )
-                        continue
-                    info["rank"] = rk
-                    records.append(info)
-                    if sw.get("verbose_log", True):
+                    except Exception as e:
+                        pass  # 忽略错误
+                records = _generate_debug_records(
+                    cfg, guild, targets, decide_skipped=("decide" in debug.get("skip_stages", []))
+                )
+            else:
+                records = []
+                if rt.async_enabled:
+                    # 异步(后台)模式:主线程只发不验,验证全部交给后台系统
+                    # (流程规格 B→D→E,见 stage_query_async docstring)
+                    console("[2/5] 逐人查询(异步模式:主线程快速发送,后台验证)...")
+                    records, async_failures = stage_query_async(rt, targets, cfg)
+                    failures.extend(async_failures)
+                else:
+                    # 默认串行模式:逐条发送 → 逐条读日志验证
+                    for idx, (rk, pid) in enumerate(targets, 1):
+                        wait_if_paused()
                         console(
-                            f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} | 上次在线: {info['last_online']}"
+                            f"[{idx}/{len(targets)}] 查询 {pid} ({cfg['rank_names'].get(rk, rk)})"
                         )
+                        info = query_member(
+                            cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
+                        )
+                        if info is None:
+                            # 屏蔽词玩家:身份不可读,报真实原因而非"查询重试耗尽"
+                            # 否则报告里看不出是网易过滤还是网络抖动
+                            reason = (
+                                "查询失败: 玩家名被网易屏蔽词过滤(星号),无法确认身份,需人工确认"
+                                if parsers.is_masked_name(pid)
+                                else "查询重试耗尽"
+                            )
+                            failures.append({"player": pid, "rank": rk, "reason": reason})
+                            logger.log_error(
+                                f"查询失败({reason}): {pid} ({cfg['rank_names'].get(rk, rk)})"
+                            )
+                            continue
+                        info["rank"] = rk
+                        records.append(info)
+                        if sw.get("verbose_log", True):
+                            console(
+                                f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} | 上次在线: {info['last_online']}"
+                            )
 
         # 查询阶段的成败计数:屏蔽词不可查的人不算"失败"(它们根本没发指令),
         # 与第 0 节"查询失败 + 屏蔽词不可查"两栏的口径保持一致。
@@ -885,7 +918,7 @@ def main():
         _query_ok = len(records)
         _query_fail = len(_query_failures) - _blocked_queries
         _mark_stage(
-            "逐人查询",
+            "UI 识别查询" if ui_mode else "逐人查询",
             ok=_query_ok,
             fail=_query_fail,
             note=f"屏蔽词不可查 {_blocked_queries} 人" if _blocked_queries else "",
@@ -927,24 +960,29 @@ def main():
         # 7. 通知(/gc,查询完成后、执行前) —— 见 stage_notify
         # Debug 的 notify 跳过开关:debug.enabled 且 skip_stages 含 'notify' 时,
         # 通知阶段照常走流程但不真发广播(与 list/member/execute 的跳过语义一致)。
-        # ⚠ 这里此前是个未定义变量名,进通知阶段必抛 NameError —— 全流程第一次
-        # 真正跑通前它一直被 15% 的 main.py 覆盖率掩盖着。
         _debug_notify_skipped = bool(
             debug.get("enabled") and "notify" in debug.get("skip_stages", [])
         )
-        if _debug_notify_skipped:
-            console("Debug: 跳过通知发送(仅走流程,不实际广播)")
-        notify_failures = stage_notify(rt, records, cfg, _debug_notify_skipped)
-        failures.extend(notify_failures)
+        notify_failures = []
         _notify_attempted = 0
-        if not _debug_notify_skipped and sw.get("notify_enabled", True) and records:
-            _notify_attempted = (
-                len(records) if sw.get("notify_mode", "summary") == "per_player" else 1
-            )
+        if ui_mode:
+            # UI 模式仅实现 查询→报告:跳过必须明说并写进报告第六节,
+            # 不得静默假装已通知(用户会以为群里收到了公告)
+            console("[4/5] UI 模式本次跳过通知(仅 查询→报告)")
+        else:
+            if _debug_notify_skipped:
+                console("Debug: 跳过通知发送(仅走流程,不实际广播)")
+            notify_failures = stage_notify(rt, records, cfg, _debug_notify_skipped)
+            if not _debug_notify_skipped and sw.get("notify_enabled", True) and records:
+                _notify_attempted = (
+                    len(records) if sw.get("notify_mode", "summary") == "per_player" else 1
+                )
+        failures.extend(notify_failures)
         _mark_stage(
             "通知",
             ok=max(0, _notify_attempted - len(notify_failures)),
             fail=len(notify_failures),
+            note="UI 模式跳过" if ui_mode else "",
         )
 
         # 8. 执行(先询问是否执行)
@@ -953,7 +991,9 @@ def main():
         console("[5/5] 执行操作 ...")
         executed = []
         actionable = [r for r in records if r["actions"]]
-        if not actionable:
+        if ui_mode:
+            console("  UI 模式本次跳过执行(仅 查询→报告,不执行升/降/踢)")
+        elif not actionable:
             # 查询阶段无任何成功(records 为空),无可执行操作,显式提示后直接走报告
             console("  无玩家需要执行(查询阶段无成功结果),跳过执行阶段")
         elif sw["execution_enabled"] and actionable:
@@ -964,7 +1004,7 @@ def main():
         pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
 
         # ---- 执行循环前统一重置（只执行一次） ----
-        if sw["execution_enabled"]:
+        if not ui_mode and sw["execution_enabled"]:
             console("执行前重置界面状态...")
             if hwnd:
                 activate_window(hwnd)
@@ -979,14 +1019,31 @@ def main():
         # 统一动作门禁（功能开关 + 非执行类动作 notify/ignore），串行与异步共用。
         # 必须在确认之后、真正发送之前；被拦下的记录标 blocked_by_switch，
         # 写入待办时会被排除（否则下次续做会绕过开关）。
-        blocked_n = stage_apply_action_gates(records, cfg)
-        if blocked_n:
-            console(f"  {blocked_n} 名玩家的动作被功能开关关闭,本次不执行")
+        blocked_n = 0
+        if not ui_mode:
+            blocked_n = stage_apply_action_gates(records, cfg)
+            if blocked_n:
+                console(f"  {blocked_n} 名玩家的动作被功能开关关闭,本次不执行")
         # 两种模式只有"发送节奏"不同,验证语义完全一致:
         #   串行 — 逐条发送并立刻读日志验证
         #   异步 — 主线程只发不验,验证交给 async_system(与查询阶段同一套 B→D→E 闭环)
         execution_failures = []
-        if sw["execution_enabled"]:
+        if ui_mode:
+            # UI 模式只实现 查询→报告:逐条明确标"未执行",绝不假装执行。
+            # 标 skipped_by_mode 是为了**不写入待办** —— 否则下次启动会在指令模式
+            # 续做这些从未尝试过的升/降/踢,等于绕过本次的模式选择。
+            for r in records:
+                if r["actions"]:
+                    r["executed"] = False
+                    r["error"] = "UI 模式本次未执行"
+                    r["skipped_by_mode"] = True
+                    r["new_rank"] = new_rank_after(r["rank"], r["actions"])
+                executed.append(r)
+            executed.extend(
+                dict(f, new_rank=f.get("rank"), actions=[], error=f.get("reason") or "查询失败")
+                for f in failures
+            )
+        elif sw["execution_enabled"]:
             # 即使 debug 跳过执行,仍尝试发送(玩家不存在时 execute_action 会返回错误)
             if debug.get("enabled") and "execute" in debug.get("skip_stages", []):
                 console("Debug: 跳过执行(但会尝试发送指令,预期失败)")
@@ -1048,7 +1105,9 @@ def main():
                 1 for r in records if r.get("actions") and r.get("executed") and not r.get("error")
             ),
             fail=len(execution_failures),
-            note=f"升{_acts['promote']}/降{_acts['demote']}/踢{_acts['kick']}",
+            note="UI 模式跳过"
+            if ui_mode
+            else f"升{_acts['promote']}/降{_acts['demote']}/踢{_acts['kick']}",
         )
         logger.log_info("阶段9 起点: 输出报告")
         console("\n输出报告 ...")
@@ -1077,7 +1136,8 @@ def main():
             run_meta = {
                 "started_at": run_started,
                 "ended_at": datetime.now(),
-                "operation_mode": "command",
+                # 取配置真值(不再硬编码 command):报告第 0 节与第 6 节都据此分派
+                "operation_mode": operation_mode,
                 **capabilities_mod.variant_meta(),
                 "stage_timings": stage_timings,
                 "roster": roster,
@@ -1093,6 +1153,10 @@ def main():
                     "blocked_name": _blocked_queries,
                 },
             }
+            # 第六节「UI识别运行记录」的数据源(按键试探/OCR/导航/自动暂停)。
+            # command 模式不传该键,报告不会输出第六节。
+            if ui_mode and ui_outcome is not None:
+                run_meta["ui_sections"] = ui_outcome.stats.sections()
             p3 = write_analysis_report(cfg["report_dir"], gname, records, cfg, run_meta)
             if p3:
                 console(f"  分析报告: {os.path.abspath(p3)}")
@@ -1100,9 +1164,14 @@ def main():
         # 10. 未完成操作(跳过/失败)写入待办,供下次启动续做(与上次失败项合并)
         incomplete = []
         for r in records:
-            # 被功能开关拦下、或被 kick 二次确认跳过的记录不得写入待办 ——
-            # 否则下次启动续做会绕过开关/确认把不可逆操作补执行。
-            if r.get("blocked_by_switch") or r.get("skipped_by_confirm"):
+            # 被功能开关拦下、被 kick 二次确认跳过、或本次 UI 模式未执行的记录
+            # 不得写入待办 —— 否则下次启动会在指令模式续做这些从未尝试过的
+            # 升/降/踢,等于绕过本次的模式选择。
+            if (
+                r.get("blocked_by_switch")
+                or r.get("skipped_by_confirm")
+                or r.get("skipped_by_mode")
+            ):
                 continue
             if r.get("actions") and r.get("error"):
                 incomplete.append(

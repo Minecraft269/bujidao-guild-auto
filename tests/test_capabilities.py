@@ -185,19 +185,33 @@ class TestStartupGates(unittest.TestCase):
         self.assertIn("gui", printed)
         self.assertIn("--ui", printed)
 
-    def test_ui_mode_blocked_until_pipeline_wired(self):
-        """能力齐了但主流程未接线时仍须报错 —— 否则 ui 配置会静默走指令流程。
+    def test_ui_mode_requires_ocr_adapter(self):
+        """主流程已接线,但未配置 OCR → 启动即报错,不得静默降级回指令模式。
 
         与 tests/test_vision_config_capabilities.py 的启动门禁同一条护栏:
-        阶段 7 的能力矩阵放行只代表"构建含 vision",不代表 main() 已分派 ui 模式。
+        能力矩阵放行只代表"构建含 vision",不代表有可用的文字识别能力。
         """
         cfg = _cfg()
         cfg["operation_mode"] = "ui"
-        with caps_env(None):
+        with (
+            caps_env(None),
+            mock.patch("guild_auto.vision.adapters.has_configured_ocr", return_value=False),
+        ):
             exit_fn, printed, _ = self._run_prepare(cfg)
         exit_fn.assert_called_once_with(1)
         self.assertIn("UI 识别模式", printed)
-        self.assertIn("尚未接线", printed)
+        self.assertIn("OCR", printed)
+
+    def test_ui_mode_starts_when_ocr_configured(self):
+        """能力齐 + OCR 可用 → UI 模式不再被启动门禁拦下(允许进入主流程)。"""
+        cfg = _cfg()
+        cfg["operation_mode"] = "ui"
+        with (
+            caps_env(None),
+            mock.patch("guild_auto.vision.adapters.has_configured_ocr", return_value=True),
+        ):
+            exit_fn, _printed, _ = self._run_prepare(cfg)
+        exit_fn.assert_not_called()
 
     def test_banner_matches_variant_meta(self):
         with caps_env("core,async"):

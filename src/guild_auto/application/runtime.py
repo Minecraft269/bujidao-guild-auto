@@ -45,6 +45,115 @@ _force_stop = False  # Ctrl+C 标志:sig handler 置位,阻塞调用据此中断
 # 现在 on_press 仅设事件,主线程的阻塞调用通过 event.wait() 主动感知。
 _pause_event = threading.Event()
 
+# ---------------------------------------------------------------------------
+# 自动暂停(US-009):UI 模式执行中检测到用户键鼠活动
+# ---------------------------------------------------------------------------
+# 与暂停状态一样,这里的状态必须只有一份:监听线程(pynput)写、主流程读。
+# 判定条件全部由 runtime 持有,监听回调只问"现在该不该暂停",不自己拼条件 ——
+# 否则"确认等待时不触发 / 模拟输入不触发"这些边界会散落在回调里,越改越乱。
+_auto_pause_lock = threading.Lock()
+_auto_pause_mode = False  # 仅 operation_mode="ui" 且 pause.auto_on_user_input=true
+_auto_pause_grace_s = 0.3  # 模拟输入后的忽略窗口(秒),来自 pause.user_input_grace_ms
+_auto_pause_guard = False  # 有进行中的阶段任务时为 True;确认等待/空闲/报告输出为 False
+_auto_paused = False  # 本次暂停是否由自动暂停触发(用于恢复计数)
+_input_ignore_until = 0.0  # 模拟输入忽略截止时刻(monotonic 秒)
+_rescan_required = False  # 恢复后必须重新全扫(UI 模式)
+_auto_pause_count = 0
+_auto_pause_resume_count = 0
+
+
+def configure_auto_pause(*, operation_mode, enabled, grace_ms):
+    """按配置启用/关闭自动暂停。command 模式永远关闭(与用户开关无关)。"""
+    global _auto_pause_mode, _auto_pause_grace_s
+    with _auto_pause_lock:
+        _auto_pause_mode = operation_mode == "ui" and bool(enabled)
+        _auto_pause_grace_s = max(0, int(grace_ms)) / 1000.0
+
+
+def auto_pause_enabled():
+    """自动暂停是否生效(UI 模式 + 配置开关)。监听器据此决定是否挂鼠标钩子。"""
+    return _auto_pause_mode
+
+
+def set_auto_pause_guard(value):
+    """标记"是否有进行中的阶段任务"。等待确认/空闲/输出报告时必须为 False。"""
+    global _auto_pause_guard
+    with _auto_pause_lock:
+        _auto_pause_guard = bool(value)
+
+
+def auto_pause_guard():
+    """当前是否处于执行中(自动暂停的触发前提之一)。"""
+    return _auto_pause_guard
+
+
+def note_simulated_input():
+    """脚本自己模拟输入前调用:打开忽略窗口,使监听器不把自己的动作当用户输入。"""
+    global _input_ignore_until
+    with _auto_pause_lock:
+        _input_ignore_until = time.monotonic() + _auto_pause_grace_s
+
+
+def input_is_simulated():
+    """当前时刻是否落在脚本模拟输入的忽略窗口内。"""
+    with _auto_pause_lock:
+        return time.monotonic() < _input_ignore_until
+
+
+def request_auto_pause():
+    """检查是否应自动暂停;满足全部条件时置暂停状态并返回 True。
+
+    条件(缺一不可):UI 模式且开关打开、有进行中的阶段任务、当前未暂停、
+    不是脚本自己模拟的输入。**暂停键本身由 pause._on_press 提前分流**,
+    不会走到这里。
+    """
+    global _auto_pause_count, _auto_paused, _rescan_required
+    with _auto_pause_lock:
+        if not _auto_pause_mode or not _auto_pause_guard:
+            return False
+        if _paused or _force_stop:
+            return False
+        if time.monotonic() < _input_ignore_until:
+            return False
+        _auto_paused = True
+        _auto_pause_count += 1
+        _rescan_required = True
+    set_paused(True)
+    set_reset_needed(True)
+    _pause_event.set()
+    return True
+
+
+def note_resume():
+    """暂停键恢复后调用:窗口必须重置;UI 模式还要重新全扫确认界面。
+
+    任何暂停(手动或自动)在 UI 模式下恢复后都不能直接接着扫 ——
+    暂停期间界面可能已被用户操作改变,必须重来一遍。
+    """
+    global _auto_paused, _auto_pause_resume_count, _rescan_required
+    set_reset_needed(True)
+    with _auto_pause_lock:
+        if _auto_paused:
+            _auto_pause_resume_count += 1
+            _auto_paused = False
+        if _auto_pause_mode:
+            _rescan_required = True
+
+
+def consume_rescan_flag():
+    """读取并清除"恢复后需重新全扫"标志(UI 采集的门禁使用)。"""
+    global _rescan_required
+    with _auto_pause_lock:
+        value = _rescan_required
+        _rescan_required = False
+        return value
+
+
+def auto_pause_stats():
+    """自动暂停触发/恢复计数(写入第三份报告第六节)。"""
+    with _auto_pause_lock:
+        return {"triggers": _auto_pause_count, "resumes": _auto_pause_resume_count}
+
 
 def set_reset_needed(value):
     """设置"暂停恢复后需重置窗口"标志(由 _toggle_pause 调用)。"""
@@ -125,12 +234,27 @@ def reset_state():
     会立即卡在暂停门,表现为"选了继续但脚本不动"。
     """
     global _paused, _force_stop, _reset_needed
+    global _auto_pause_mode, _auto_pause_grace_s
+    global _auto_pause_guard, _auto_paused, _input_ignore_until, _rescan_required
+    global _auto_pause_count, _auto_pause_resume_count
     with _pause_lock:
         _paused = False
     with _reset_lock:
         _reset_needed = False
     _force_stop = False
     _pause_event.clear()
+    # 自动暂停的运行时状态同样要清:重启后残留 guard=True 会让"空闲"误触发暂停;
+    # mode/grace 也清空 —— 监听器重启时 start_pause_listener(cfg) 会重新配置,
+    # 而"没传 cfg 的监听器"(测试/旧调用点)不该继承上一轮的 UI 模式。
+    with _auto_pause_lock:
+        _auto_pause_mode = False
+        _auto_pause_grace_s = 0.0
+        _auto_pause_guard = False
+        _auto_paused = False
+        _input_ignore_until = 0.0
+        _rescan_required = False
+        _auto_pause_count = 0
+        _auto_pause_resume_count = 0
 
 
 class Runtime:

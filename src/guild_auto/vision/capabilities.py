@@ -5,9 +5,8 @@ vision/capabilities.py —— 最小能力判定(阶段 7 扩展为完整能力�
 配置强制要求某项能力、而当前构建没有时,**启动即明确报错**,禁止静默降级
 (plan.txt【阶段 7】第 3 条 / docs/流程与架构图.md §八)。
 
-阶段 6 只交付 vision 层本身,主流程仍走指令模式,因此本构建尚不能执行
-`operation_mode="ui"`。阶段 7 接线后,把判定改为查询能力注册表即可 ——
-本模块只负责"报错"这一个动作,不实现整个矩阵。
+US-007 已把 UI 识别模式接进主流程(ui_mode.py),本模块只负责
+"能力是否具备"的判定与报错,不实现具体流程。
 """
 
 from __future__ import annotations
@@ -17,10 +16,10 @@ import importlib.util
 CAPABILITY_ID = "vision"
 
 # 本构建是否已把 UI 识别模式接入主流程。
-# 阶段 6 仅交付 vision 层(导航/扫掠/验证/runner),主流程未接线 → False。
-# 若直接放行,用户会以为在跑 UI 模式,实际仍按指令模式发聊天命令 ——
-# 静默降级比报错危险,所以这里宁可启动失败。
-_UI_PIPELINE_WIRED = False
+# US-007 已接线:main() 在 operation_mode="ui" 时走 ui_mode.py
+# (导航 → 扫掠 → 解析 → 与指令模式同构的 records)。因此这里放行,
+# 构建裁剪掉 vision 模块时 find_spec 仍会失败,能力判定继续有效。
+_UI_PIPELINE_WIRED = True
 
 
 class CapabilityError(RuntimeError):

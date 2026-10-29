@@ -82,6 +82,7 @@ def validate_config(cfg):
         "state_check",
         "report",
         "vision",
+        "pause",
     ):
         if _path in cfg and not isinstance(cfg.get(_path), dict):
             issues.append(("error", f"配置项 {_path} 应为对象(dict),当前: {cfg.get(_path)!r}"))
@@ -283,8 +284,58 @@ def validate_config(cfg):
                         f"应为 {VALID_KICK_VERIFY} 之一",
                     )
                 )
+            ocr_command = vision.get("ocr_command")
+            if ocr_command is not None and not isinstance(ocr_command, str):
+                issues.append(
+                    ("error", f"配置项 vision.ocr_command 应为字符串,当前: {ocr_command!r}")
+                )
+            grid = vision.get("grid")
+            if "grid" in vision:
+                if not isinstance(grid, dict):
+                    issues.append(("error", f"配置项 vision.grid 应为对象(dict),当前: {grid!r}"))
+                else:
+                    # 原点允许 0;格子尺寸/行列必须 ≥1(0 或负数会生成空网格)
+                    for k in ("origin_x", "origin_y"):
+                        value = grid.get(k)
+                        if value is not None and (
+                            not isinstance(value, int) or isinstance(value, bool) or value < 0
+                        ):
+                            issues.append(
+                                (
+                                    "error",
+                                    f"配置项 vision.grid.{k} 应为 ≥0 的整数,当前: {value!r}",
+                                )
+                            )
+                    for k in ("cell_width", "cell_height", "columns", "rows", "expected_cells"):
+                        check_num(grid, k, "vision.grid", minimum=1)
+                    missing_ratio = grid.get("max_missing_ratio")
+                    if missing_ratio is not None and (
+                        not _is_num(missing_ratio) or not 0 <= missing_ratio <= 1
+                    ):
+                        issues.append(
+                            (
+                                "error",
+                                f"配置项 vision.grid.max_missing_ratio 必须在 [0, 1],"
+                                f"当前: {missing_ratio!r}",
+                            )
+                        )
     if "pause_key" in cfg and not isinstance(cfg["pause_key"], str):
         issues.append(("error", f"配置项 pause_key 应为字符串,当前: {cfg['pause_key']!r}"))
+    # ── 自动暂停(US-009)──
+    pause_cfg = section(cfg, "pause")
+    if "pause" in cfg and isinstance(cfg["pause"], dict):
+        if "auto_on_user_input" in pause_cfg:
+            check_bool(pause_cfg, "auto_on_user_input", "pause")
+        grace = pause_cfg.get("user_input_grace_ms")
+        if grace is not None and (
+            not isinstance(grace, int) or isinstance(grace, bool) or grace < 0
+        ):
+            issues.append(
+                (
+                    "error",
+                    f"配置项 pause.user_input_grace_ms 应为 ≥0 的整数(毫秒),当前: {grace!r}",
+                )
+            )
 
     for rank in cfg.get("skip_ranks", []):
         if rank not in section(cfg, "rank_names"):

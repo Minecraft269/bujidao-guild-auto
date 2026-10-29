@@ -19,7 +19,7 @@ runtime._paused 永远 False，rg.is_paused() 永远 False，暂停门形同虚�
 
 import time
 
-from pynput import keyboard
+from pynput import keyboard, mouse
 import pyautogui
 
 from guild_auto.infrastructure import logger
@@ -29,7 +29,6 @@ from guild_auto.infrastructure.game_state import prepare_chat_state
 from guild_auto.application.runtime import (
     _pause_event,
     consume_reset_flag,
-    set_reset_needed,
 )
 from guild_auto.infrastructure.window_input import activate_window
 
@@ -58,14 +57,31 @@ def _toggle_pause():
         _pause_event.set()  # 置位 → 所有阻塞中的 event.wait() 立即返回
     else:
         _pause_event.clear()  # 复位 → 下次 event.wait() 才会阻塞
-        set_reset_needed(True)  # 恢复后需要重置界面
+        # 恢复后必须重置窗口;UI 模式下还要重新全扫确认界面(见 runtime.note_resume)
+        runtime.note_resume()
     console(f">>> 脚本已{'暂停' if paused_now else '继续'}(按 {runtime.pause_key_name()} 切换) <<<")
+
+
+def _maybe_auto_pause(source):
+    """用户键鼠活动 → 满足全部条件时自动暂停(US-009)。
+
+    条件判定全部在 runtime.request_auto_pause 里:UI 模式 + 配置开关 +
+    有进行中的阶段任务 + 未暂停 + 非脚本模拟输入。这里只负责"触发后的提示"。
+    """
+    if not runtime.request_auto_pause():
+        return
+    logger.log_warning(f"自动暂停: 检测到用户键鼠活动({source}),已停止发送/点击")
+    console(
+        f">>> 检测到用户键鼠活动,脚本已自动暂停;"
+        f"按 {runtime.pause_key_name()} 继续(仅暂停键可解除) <<<"
+    )
 
 
 def _on_press(key):
     """pynput 全局按键回调:暂停键切换暂停;Ctrl+C 转成 SIGINT 走菜单。"""
     try:
         if key == runtime.pause_key():
+            # 暂停键本身只负责暂停/继续,绝不能再当成"用户活动"触发自动暂停
             _toggle_pause()
             return
         # 修复"Ctrl+C 被错误拦截":pynput on_press 里 raise KeyboardInterrupt 会被
@@ -94,18 +110,72 @@ def _on_press(key):
         except Exception:
             key_repr = str(key)
         logger.log_debug(f"[键盘] 按键: {key_repr!r}")
+        _maybe_auto_pause("键盘按键")
     except Exception as e:
         # 不静默吞——记录异常(防止 pynput 后台挂掉但日志无声)
         logger.log_debug(f"[键盘] _on_press 异常: {type(e).__name__}: {e}")
 
 
-def start_pause_listener(pause_key_cfg):
-    """启动暂停键监听(pynput)。支持单字符('u')或特殊键名('esc')。"""
+def _on_mouse_move(_x, _y):
+    """pynput 鼠标移动回调:UI 模式执行中即为"用户活动"。
+
+    脚本自己的 moveTo/click 由 runtime.note_simulated_input 打开的忽略窗口屏蔽,
+    因此这里不需要判断"是谁动的鼠标"。
+    """
+    try:
+        _maybe_auto_pause("鼠标移动")
+    except Exception as e:
+        logger.log_debug(f"[鼠标] _on_mouse_move 异常: {type(e).__name__}: {e}")
+
+
+def _on_mouse_click(_x, _y, _button, pressed):
+    """pynput 鼠标点击回调:只认按下(抬起是同一动作的尾巴,不重复触发)。"""
+    if not pressed:
+        return
+    try:
+        _maybe_auto_pause("鼠标点击")
+    except Exception as e:
+        logger.log_debug(f"[鼠标] _on_mouse_click 异常: {type(e).__name__}: {e}")
+
+
+class _CombinedListener:
+    """键盘 + 鼠标监听的组合句柄:主流程只认 stop()(与 pynput 监听器同接口)。"""
+
+    def __init__(self, *listeners):
+        self._listeners = [item for item in listeners if item is not None]
+
+    def stop(self):
+        """停止全部监听;单个失败只记日志,不影响其它监听器收尾。"""
+        for listener in self._listeners:
+            try:
+                listener.stop()
+            except Exception as e:
+                logger.log_warning(f"停止键鼠监听器异常: {e!r}")
+
+
+def start_pause_listener(pause_key_cfg, cfg=None):
+    """启动暂停键监听(pynput)。支持单字符('u')或特殊键名('esc')。
+
+    cfg 非空时同时配置自动暂停(US-009)。**只有 UI 模式自动暂停生效时才挂
+    全局鼠标钩子** —— 指令模式不检测用户键鼠,少一个钩子就少一份对用户
+    其它程序操作的干扰。
+    """
     runtime.set_pause_key_cfg(pause_key_cfg)
+    if cfg is not None:
+        runtime.configure_auto_pause(
+            operation_mode=str(cfg["operation_mode"]),
+            enabled=bool(cfg["pause"]["auto_on_user_input"]),
+            grace_ms=int(cfg["pause"]["user_input_grace_ms"]),
+        )
     listener = keyboard.Listener(on_press=_on_press)
     listener.daemon = True
     listener.start()
-    return listener
+    mouse_listener = None
+    if runtime.auto_pause_enabled():
+        mouse_listener = mouse.Listener(on_move=_on_mouse_move, on_click=_on_mouse_click)
+        mouse_listener.daemon = True
+        mouse_listener.start()
+    return _CombinedListener(listener, mouse_listener)
 
 
 def wait_if_paused():
@@ -264,7 +334,7 @@ def _signal_handler(_sig, _frame):
     main() 调用栈收到后冒泡到顶层 except KeyboardInterrupt 接住,走中断菜单。
     """
     runtime.set_paused(True)
-    set_reset_needed(True)
+    runtime.set_reset_needed(True)
     runtime.set_force_stop(True)
     logger.log_warning("收到 SIGINT(用户按 Ctrl+C),_paused=True + raise KeyboardInterrupt")
     raise KeyboardInterrupt

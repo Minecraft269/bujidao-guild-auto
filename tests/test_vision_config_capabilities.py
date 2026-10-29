@@ -5,7 +5,7 @@ test_vision_config_capabilities.py —— 阶段 6 配置项与构建能力门�
 覆盖:
   * 新增配置键的默认值与校验(stay_ms 下限、比例区间、枚举、1~9 槽位);
   * 非法值必须报 error 而不是崩;
-  * operation_mode="ui" 在当前(未接线)构建中启动即报错,禁止静默降级。
+  * operation_mode="ui" 在主流程已接线但缺 OCR 适配器时启动即报错,禁止静默降级。
 """
 
 import copy
@@ -119,11 +119,13 @@ class TestCapabilityGate(unittest.TestCase):
     def test_command_mode_always_supported(self):
         ensure_operation_mode_supported("command")
 
-    def test_ui_mode_rejected_without_capability(self):
-        """当前构建未接线 UI 主流程:必须启动即报错,而不是静默按指令模式跑。"""
-        self.assertFalse(has_vision_capability())
-        with self.assertRaises(CapabilityError):
-            ensure_operation_mode_supported("ui")
+    def test_ui_mode_supported_when_pipeline_wired(self):
+        """US-007 已接线:含 vision 的构建放行 ui 模式(启动门禁另有 OCR 检查)。"""
+        self.assertTrue(has_vision_capability())
+        ensure_operation_mode_supported("ui")
+
+    def test_ui_mode_rejected_when_build_lacks_vision(self):
+        """构建裁剪掉 vision 时仍须报错,不得静默按指令模式跑。"""
         with self.assertRaises(CapabilityError):
             ensure_operation_mode_supported("ui", vision=False)
 
@@ -136,9 +138,9 @@ class TestCapabilityGate(unittest.TestCase):
 
 
 class TestStartupGate(unittest.TestCase):
-    """真实入口串联:operation_mode="ui" 在无能力构建里启动即退出(exit 1)。"""
+    """真实入口串联:operation_mode="ui" 且没有 OCR 时启动即退出(exit 1)。"""
 
-    def test_ui_mode_blocks_startup_with_clear_error(self):
+    def _run(self, *, ocr_available):
         import guild_auto.main as main_mod
 
         tmp = tempfile.mkdtemp()
@@ -160,11 +162,22 @@ class TestStartupGate(unittest.TestCase):
         )
         exit_fn = mock.Mock()
         console_fn = mock.Mock()
-        main_mod.prepare_config(args, console_fn=console_fn, exit_fn=exit_fn)
-
-        exit_fn.assert_called_once_with(1)
+        with mock.patch(
+            "guild_auto.vision.adapters.has_configured_ocr", return_value=ocr_available
+        ):
+            main_mod.prepare_config(args, console_fn=console_fn, exit_fn=exit_fn)
         printed = " ".join(str(cargs.args[0]) for cargs in console_fn.call_args_list)
+        return exit_fn, printed
+
+    def test_ui_mode_without_ocr_blocks_startup_with_clear_error(self):
+        exit_fn, printed = self._run(ocr_available=False)
+        exit_fn.assert_called_once_with(1)
         self.assertIn("UI 识别模式", printed, f"启动报错未说明原因: {printed}")
+        self.assertIn("OCR", printed, f"启动报错未说明原因: {printed}")
+
+    def test_ui_mode_with_ocr_configured_starts(self):
+        exit_fn, _printed = self._run(ocr_available=True)
+        exit_fn.assert_not_called()
 
 
 if __name__ == "__main__":
