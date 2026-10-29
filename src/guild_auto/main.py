@@ -585,6 +585,16 @@ def prepare_config(args, console_fn=None, exit_fn=None):
             errors.append(msg)
             console_fn(f"  [错误] {msg}", level="error")
 
+    # UI 识别模式的构建能力门禁(阶段 6):配置要求 ui 而当前构建没有 vision 能力时
+    # 启动即报错 —— 静默降级成指令模式会让用户以为在跑界面模式,实际在发聊天命令。
+    from guild_auto.vision.capabilities import CapabilityError, ensure_operation_mode_supported
+
+    try:
+        ensure_operation_mode_supported(cfg.get("operation_mode", "command"))
+    except CapabilityError as e:
+        errors.append(str(e))
+        console_fn(f"  [错误] {e}", level="error")
+
     if errors:
         console_fn("配置校验失败,请修正后重试(参考 docs/《配置说明.md》)", level="error")
         exit_fn(1)

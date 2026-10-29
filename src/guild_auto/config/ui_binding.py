@@ -59,6 +59,7 @@ _ENUMS = {
     "log_encoding": ("auto", "utf-8", "gbk", "gb2312"),
     "blocked_name_policy": ("skip", "query_attempt"),
     "operation_mode": ("command", "ui"),
+    "vision.kick_verify": ("grid", "count", "time_window", "any"),
 }
 
 

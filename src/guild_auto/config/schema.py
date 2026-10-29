@@ -15,6 +15,12 @@ from guild_auto.config.defaults import DEFAULT_CONFIG
 
 VALID_SCOPES = ("all", "high", "mid", "low", "entry")
 VALID_NOTIFY_MODES = ("summary", "per_player")
+VALID_OPERATION_MODES = ("command", "ui")
+VALID_KICK_VERIFY = ("grid", "count", "time_window", "any")
+# 扫掠停留时长下限(docs/UI识别模式详解.md §八·五):低于 120ms tooltip 来不及渲染。
+# 与 vision/sweep.py 的 MIN_STAY_MS 同值;config 层不 import vision(依赖方向),
+# 故在此单独声明,改值时两处必须同步。
+VISION_MIN_STAY_MS = 120
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +81,7 @@ def validate_config(cfg):
         "rank_names",
         "state_check",
         "report",
+        "vision",
     ):
         if _path in cfg and not isinstance(cfg.get(_path), dict):
             issues.append(("error", f"配置项 {_path} 应为对象(dict),当前: {cfg.get(_path)!r}"))
@@ -221,6 +228,61 @@ def validate_config(cfg):
                     f"应为 ('skip', 'query_attempt') 之一",
                 )
             )
+    # ── 操作模式与 UI 识别(阶段 6)──
+    if "operation_mode" in cfg and cfg["operation_mode"] not in VALID_OPERATION_MODES:
+        issues.append(
+            (
+                "error",
+                f"配置项 operation_mode 取值非法: {cfg['operation_mode']!r},"
+                f"应为 {VALID_OPERATION_MODES} 之一",
+            )
+        )
+    if "vision" in cfg:
+        vision = cfg["vision"]
+        if not isinstance(vision, dict):
+            issues.append(("error", f"配置项 vision 应为对象(dict),当前: {vision!r}"))
+        else:
+            for k in ("hotbar_slot", "stay_ms", "max_misclick"):
+                check_num(vision, k, "vision", minimum=1)
+            slot = vision.get("hotbar_slot")
+            # 快捷栏只有 1~9;写成 0/10/小数都说明配置填错了
+            if _is_num(slot) and (slot < 1 or slot > 9 or slot != int(slot)):
+                issues.append(
+                    ("error", f"配置项 vision.hotbar_slot 应为 1~9 的整数,当前: {slot!r}")
+                )
+            stay = vision.get("stay_ms")
+            # 太短的停留会漏 tooltip —— 这是"看起来更快、实际漏数据"的典型坑
+            if _is_num(stay) and stay < VISION_MIN_STAY_MS:
+                issues.append(
+                    (
+                        "error",
+                        f"配置项 vision.stay_ms 不得小于 {VISION_MIN_STAY_MS}ms"
+                        f"(tooltip 来不及渲染会漏数据),当前: {stay!r}",
+                    )
+                )
+            ratio = vision.get("sweep_gap_ratio")
+            if not _is_num(ratio) or not 0 < ratio <= 1:
+                issues.append(
+                    (
+                        "error",
+                        f"配置项 vision.sweep_gap_ratio 必须在 (0, 1],当前: {ratio!r};"
+                        "大于 1 会留缝漏格",
+                    )
+                )
+            conf = vision.get("low_confidence")
+            if not _is_num(conf) or not 0 <= conf <= 1:
+                issues.append(
+                    ("error", f"配置项 vision.low_confidence 必须在 [0, 1],当前: {conf!r}")
+                )
+            kick_verify = vision.get("kick_verify")
+            if kick_verify not in VALID_KICK_VERIFY:
+                issues.append(
+                    (
+                        "error",
+                        f"配置项 vision.kick_verify 取值非法: {kick_verify!r},"
+                        f"应为 {VALID_KICK_VERIFY} 之一",
+                    )
+                )
     if "pause_key" in cfg and not isinstance(cfg["pause_key"], str):
         issues.append(("error", f"配置项 pause_key 应为字符串,当前: {cfg['pause_key']!r}"))
 
