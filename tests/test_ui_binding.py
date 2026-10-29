@@ -232,6 +232,26 @@ class TestNumericListFloatAndRulesGate(unittest.TestCase):
         _, errors = apply_edits(cfg, {"admin": "X"})
         self.assertTrue(any("规则 r1" in e["message"] for e in errors), errors)
 
+    def test_non_empty_rules_survive_form_save(self):
+        """非空规则必须原样保留：不得被压成字符串、不得丢字段。
+
+        CRITICAL 修复点 —— 旧实现把 rules 当普通字段渲染，保存后变成
+        "5 段字符串"，下次启动规则引擎直接失效。
+        """
+        cfg = _cfg()
+        cfg["rules_enabled"] = True
+        cfg["rules"] = [
+            {
+                "id": "r1",
+                "conditions": [{"field": "weekly_total", "op": "<", "value": 500}],
+                "actions": [{"type": "demote"}],
+            }
+        ]
+        new, errors = apply_edits(cfg, {"admin": "新管理员"})
+        self.assertEqual(errors, [])
+        self.assertIsInstance(new["rules"], list, f"rules 被压成 {type(new['rules'])}")
+        self.assertEqual(new["rules"], cfg["rules"], "UI 保存后规则结构被改动")
+
 
 class TestDiffAgainstDefault(unittest.TestCase):
     def test_default_cfg_has_no_diff(self):

@@ -192,6 +192,26 @@ class TestRunPending(_Base):
         ex.execute_actions.assert_not_called()
         self.assertEqual(len(rem), 1)
 
+    def test_disabled_switch_blocks_resume_of_that_action(self):
+        """续做不得绕过本次关闭的功能开关。
+
+        否则「这次关掉踢出」会变成「下次启动时补踢一条不可逆指令」——
+        CRITICAL 级修复点，必须有回归测试锁住。
+        """
+        self._write(_items("甲"))  # actions=["kick"]
+        ex = mock.Mock()
+        _, rem, _, console = self._run(
+            ["y", ""], executor=ex, sw={"execution_enabled": True, "kick_enabled": False}
+        )
+        ex.execute_actions.assert_not_called()
+        self.assertEqual(len(rem), 1, "被开关拦下的项必须保留待下次")
+        self.assertEqual(rem[0]["actions"], ["kick"])
+        self.assertIn("开关已关闭", rem[0]["error"])
+        self.assertTrue(
+            any("开关已关闭" in str(c) for c in console.call_args_list),
+            f"没有向用户说明被谁拦下: {console.call_args_list}",
+        )
+
     def test_continue_answer(self):
         self._write(_items("甲"))
         ex = mock.Mock()
