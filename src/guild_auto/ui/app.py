@@ -17,6 +17,7 @@ from tkinter import messagebox
 
 from guild_auto.config import load_config, save_config
 from guild_auto.config.ui_binding import diff_against_default
+from guild_auto.infrastructure import logger
 from guild_auto.ui.config_panel import ConfigPanel
 from guild_auto.ui.confirm_dialog import ask_confirm_text
 from guild_auto.ui.toolbar import Toolbar
@@ -45,12 +46,14 @@ def set_always_on_top(win, on_top):
             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE,
         )
         return
-    except Exception:
-        pass
+    except Exception as e:
+        # 置顶是增强项:win32 调用失败就退回 Tk 自带 -topmost(下面那段)。
+        # 不得静默 pass —— US-004 要求 catch 分支可检索。
+        logger.log_debug(f"win32 SetWindowPos 置顶失败,回退 Tk -topmost: {e!r}")
     try:
         win.attributes("-topmost", bool(on_top))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.log_warning(f"Tk -topmost 也失败,置顶功能不可用: {e!r}")
 
 
 class App(tk.Tk):

@@ -128,8 +128,10 @@ def auto_detect_admin(cfg):
                 m = re.search(r"--username\s*[,，]?\s*([^\s,，]+)", line)
                 if m:
                     return m.group(1)
-    except OSError:
-        pass
+    except OSError as e:
+        # 管理员探测是尽力而为:日志读不到就回退到配置文件里的值。
+        # 但不得静默 pass —— US-004 要求所有 catch 分支可检索。
+        logger.log_debug(f"探测管理员失败(日志不可读): {e!r}")
     return ""
 
 
@@ -534,6 +536,11 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     logger.log_info(
         f"脚本启动 (日志级别 {logger.current_level()}, {'启用' if logger.is_enabled() else '禁用'})"
     )
+    # US-004 要求 11 类关键事件均可检索:配置加载单独留一条带 "配置" 关键词的日志
+    logger.log_info(
+        f"配置: 已加载 {os.path.abspath(args.config)} "
+        f"(报告目录={cfg.get('report_dir')}, 查询范围={cfg.get('query_scope')})"
+    )
 
     # 合并 debug 配置(命令行覆盖)
     debug_cfg = cfg.get("debug", {})
@@ -807,7 +814,7 @@ def main():
                         )
 
         # 6. 判定(继承规则)
-        logger.log_info(f"阶段3 起点: 判定 records={len(records)}")
+        logger.log_info(f"阶段3 起点: 决策判定 records={len(records)}")
         logger.log_info(f"阶段1 完成: 查询+判定 解析={len(records)} records")
         console(f"[3/5] 判定: {len(records)} 名玩家")
         if not (debug.get("enabled") and "decide" in debug.get("skip_stages", [])):
@@ -1000,8 +1007,9 @@ def main():
                 ready, _, _ = select.select([sys.stdin], [], [], 5.0)
                 if ready:
                     sys.stdin.readline()
-        except (EOFError, ValueError, OSError):
-            pass
+        except (EOFError, ValueError, OSError) as e:
+            # 退出前等待回车是尽力而为:stdin 不可用(管道/已关闭)就直接走。
+            logger.log_debug(f"退出前等待按键不可用: {e!r}")
     finally:
         watcher.close()
         # 停止异步执行器(若已启动):失败/中断的任务真正写入 pending_actions.json(不丢失)
@@ -1060,8 +1068,9 @@ def main():
                 logger.log_error(f"停止异步系统异常: {e}")
         try:
             listener.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            # 监听器已在退出路径上,停不掉不应打断收尾;但必须留痕
+            logger.log_warning(f"停止暂停键监听器异常: {e!r}")
 
 
 # ---------------------------------------------------------------------------

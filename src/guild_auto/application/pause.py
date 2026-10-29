@@ -221,8 +221,9 @@ def _ctrlc_pause_menu():
         if _prev_handler is not None:
             try:
                 _sig.signal(_sig.SIGINT, _prev_handler)
-            except Exception:
-                pass
+            except Exception as e:
+                # 恢复原 handler 失败不该打断退出菜单,但要留痕(US-004)
+                logger.log_debug(f"恢复原 SIGINT handler 失败: {e!r}")
     if not buf:
         logger.log_info("中断菜单 5s 未按键,默认退出")
         return False
