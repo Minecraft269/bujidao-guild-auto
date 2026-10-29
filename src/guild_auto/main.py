@@ -145,36 +145,6 @@ def auto_detect_admin(cfg):
 # ---------------------------------------------------------------------------
 # 查询原语
 # ---------------------------------------------------------------------------
-def _join_with_progress(executor, label, expected_n=None, poll_interval=0.6):
-    """替代 async_executor.join():主线程在等后台完成期间每 0.6s 打印一次进度,
-    修复"主线程似乎仍在等待验证"——用户看到主线程在做事(虽然实际是轮询)。
-    退出条件:executor 内部 queue 已空 + 所有 player 事件已置位。"""
-    import time as _t
-
-    last_done = -1
-    last_print_ts = 0.0
-    # 直接轮询 _player_events + queue:当所有 player 事件已置位且 queue 空时退出
-    while True:
-        # 统计已完成数量:_player_results 大小
-        with executor._player_results_lock:
-            done_n = sum(1 for r in executor._player_results.values() if r is not None)
-        if done_n != last_done or _t.time() - last_print_ts > 2.0:
-            if expected_n is not None:
-                console(f"  [{label}] 后台进度: {done_n}/{expected_n} 已验证...")
-            else:
-                console(f"  [{label}] 后台进度: {done_n} 条已验证...")
-            last_done = done_n
-            last_print_ts = _t.time()
-        # 退出条件:queue 空 + 全部 player 事件已置位(用 _queue 状态判)
-        if executor._queue.qsize() == 0 and done_n >= (expected_n or 0):
-            # 再 wait 一次让 worker 把最后任务消费完
-            executor._queue.join()
-            break
-        _t.sleep(poll_interval)
-    # 最后一次打印
-    with executor._player_results_lock:
-        done_n = sum(1 for r in executor._player_results.values() if r is not None)
-    console(f"  [{label}] 后台验证全部完成(共 {done_n} 条)")
 
 
 def _pause_until_resume(cfg=None):
