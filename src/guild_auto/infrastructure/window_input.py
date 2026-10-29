@@ -265,8 +265,10 @@ class HumanInput:
                 if chat_open:
                     # 聊天栏已开,不按 chat_key(避免 Alt+L 误关)
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                # 状态探测失败时按"聊天栏未开"处理(下面照常按 chat_key),
+                # 但要留痕:探测反复失败说明窗口状态接口不可用
+                logger.log_debug(f"发送前探测聊天栏状态失败,按未开处理: {e!r}")
         pyautogui.press(self.chat_key)
         time.sleep(self._rand("min_chat_key_delay", "max_chat_key_delay"))
 

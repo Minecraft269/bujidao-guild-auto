@@ -431,8 +431,8 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
                 try:
                     in_menu, chat_open, _ = detector.detect()
                     menu_chat = f" menu={in_menu} chat_open={chat_open}"
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.log_debug(f"[{pid}] 超时诊断时读取界面状态失败: {e!r}")
             console(f"    [{pid}] 第{attempt}次超时{menu_chat}")
             attempt += 1
             continue
@@ -526,8 +526,9 @@ def prepare_config(args, console_fn=None, exit_fn=None):
         console_fn("详细说明见 docs/《配置说明.md》")
         try:
             input("按回车退出...")
-        except EOFError:
-            pass
+        except EOFError as e:
+            # 首次运行提示是尽力而为:stdin 不可用就直接关脚本,但留痕
+            logger.log_debug(f"首次运行等待回车不可用: {e!r}")
         exit_fn(0)
 
     cfg = config_mod.load_config(args.config)
@@ -581,8 +582,8 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     if cfg.get("rules_enabled"):
         from guild_auto.domain.rules import validate_rules
 
-        for e in validate_rules(cfg.get("rules")):
-            msg = f"规则 {e['rule_id']} 的 {e['field']}: {e['message']}"
+        for rule_err in validate_rules(cfg.get("rules")):
+            msg = f"规则 {rule_err['rule_id']} 的 {rule_err['field']}: {rule_err['message']}"
             errors.append(msg)
             console_fn(f"  [错误] {msg}", level="error")
 

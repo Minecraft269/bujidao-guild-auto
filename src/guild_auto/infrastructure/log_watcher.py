@@ -109,8 +109,9 @@ class LogWatcher:
         if self._fh:
             try:
                 self._fh.close()
-            except OSError:
-                pass
+            except OSError as e:
+                # 关闭失败不该阻断 close() 的语义,但必须可检索(US-004)
+                logger.log_debug(f"关闭日志文件句柄失败: {e!r}")
             self._fh = None
 
     def _open_existing(self, wait_seconds=30.0):
@@ -147,8 +148,9 @@ class LogWatcher:
             if self._fh is not None:
                 self._fh.close()
                 self._fh = None
-        except Exception:
-            pass
+        except Exception as e:
+            # 重开前关闭旧句柄失败:下面会重新 open,这里只留痕
+            logger.log_debug(f"轮转重开前关闭旧句柄失败: {e!r}")
         # 重新打开并 seek 到末尾(否则 read_new_lines 默认从 0 读会读到 launch 前所有内容)
         try:
             self._fh = open(self.path, "rb")
