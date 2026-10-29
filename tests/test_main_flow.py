@@ -98,6 +98,7 @@ class _MainCase(unittest.TestCase):
         async_enabled=False,
         pending_cont=True,
         confirm_answer=True,
+        confirm_fn=None,
         window=123,
         guild=None,
         records=None,
@@ -136,7 +137,7 @@ class _MainCase(unittest.TestCase):
             ]
         )
         rt = _FakeRuntime(async_enabled)
-        rt.ask_confirm = lambda p, d=False: confirm_answer
+        rt.ask_confirm = confirm_fn or (lambda p, d=False: confirm_answer)
 
         cfg = _base_cfg()
         cfg["async"]["enabled"] = async_enabled
@@ -216,6 +217,7 @@ class _MainCase(unittest.TestCase):
         return {
             "rt": rt,
             "listener": entered["start_pause_listener"],
+            "stage_notify": entered["stage_notify"],
             "stage_exec_async": entered["stage_execute_async"],
             "write_contrib": entered["write_contribution_report"],
             "write_action": entered["write_action_report"],
@@ -251,6 +253,39 @@ class TestAsyncMode(_MainCase):
                 {"player": "甲", "rank": "entry", "actions": ["promote"], "error": "超时"}
             ],
         )
+
+    def test_blocked_players_do_not_trip_failure_gate(self):
+        """屏蔽词玩家(blocked)不是"验证失败":身份不可读是客观事实,
+        计入失败会让任何有屏蔽词成员的公会每轮都停在中途(独立复查找出)。"""
+        mocks = self._run(
+            async_enabled=True,
+            query_failures=[{"player": "****", "blocked": True, "reason": "身份不可读"}],
+            confirm_fn=lambda prompt, default=False: "异步模式要求" not in str(prompt),
+        )
+        mocks["stage_notify"].assert_called_once()
+
+    def test_async_query_failure_gate_halts_when_user_declines(self):
+        """验收 14:异步查询重试耗尽仍有失败 → 用户未确认继续时,不得进入通知/执行。
+
+        残缺名单继续往下走会漏通知,甚至按错误数据踢人(不可逆)。
+        """
+        mocks = self._run(
+            async_enabled=True,
+            query_failures=[{"player": "甲", "reason": "查询验证超时"}],
+            # 只在"异步零失败门"这一问上回答否,其余确认点照常同意
+            confirm_fn=lambda prompt, default=False: "异步模式要求" not in str(prompt),
+        )
+        mocks["stage_notify"].assert_not_called()
+        mocks["stage_exec_async"].assert_not_called()
+
+    def test_async_query_failure_gate_continues_when_user_confirms(self):
+        """用户明确确认继续时照常走通知/执行(门只是不自动放行,不是硬阻断)。"""
+        mocks = self._run(
+            async_enabled=True,
+            query_failures=[{"player": "甲", "reason": "查询验证超时"}],
+            confirm_answer=True,
+        )
+        mocks["stage_notify"].assert_called_once()
 
 
 class TestEarlyReturns(_MainCase):

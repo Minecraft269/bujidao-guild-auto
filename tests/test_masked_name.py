@@ -789,5 +789,55 @@ class TestFailureReasonWiringInMain(unittest.TestCase):
         self.assertIn("被踢出（0人）", content)
 
 
+class TestDuplicatedPanelCopies(unittest.TestCase):
+    """一条 [CHAT] 消息里同一面板被重复写入多次 → 只能按最后一份解析。
+
+    真实事故(验收 25"全员名册零遗漏、对账差值 0"):网易版把 /guild list 面板在
+    同一条消息里写了 3 份,前两份的整行名字被遮成星号;合并解析时那行被当成额外
+    成员,名册 201 > 面板声明 200,报告直接判"对账差 1,报告缺陷"。
+    """
+
+    def test_three_copies_yield_one_roster_with_zero_difference(self):
+        """真实的"重复三份"形态:前两份整行名字被遮成星号、第三份才是真名。
+
+        注意不能三份逐字相同 —— 那样 dict.fromkeys 去重后本来就是 3 人,
+        这条用例就抓不到回归(独立复查指出)。必须让前两份的内容**不同**,
+        合并解析才会多出幻影成员(5 人 vs 声明 3 人)。
+        """
+        masked = "*" * 70
+        masked_block = _panel_block(
+            "演示公会", [("会长", [masked]), ("中等活跃成员", [masked])], total=3, online=1
+        )
+        real_block = _panel_block(
+            "演示公会", [("会长", ["甲"]), ("中等活跃成员", ["乙", "丙"])], total=3, online=1
+        )
+        tripled = masked_block + masked_block + real_block
+        r = parse_guild_list(tripled, RANK_NAMES)
+        names = [n for v in r["groups"].values() for n in v]
+        self.assertEqual(r["total"], 3)
+        self.assertEqual(len(names), 3, f"重复面板不得产生幻影成员(实际 {len(names)} 个): {names}")
+        self.assertEqual(sorted(names), ["丙", "乙", "甲"])
+
+    def test_unregistered_group_title_keeps_panel_totals(self):
+        """未登记职位标题下的成员无法归类,但「成员总数/在线成员数」是面板级元数据,
+        不能连着丢掉 —— 丢了对账永远算不出差值,报告会伪装成"无数据"。"""
+        lines = [
+            "演示公会",
+            "",
+            "-- 会长 --",
+            "甲 ●",
+            "",
+            "-- 未知职位 --",
+            "乙 ●",
+            "",
+            "成员总数: 9",
+            "在线成员数: 2",
+        ]
+        r = parse_guild_list(lines, RANK_NAMES)
+        self.assertEqual(r["groups"]["leader"], ["甲"])
+        self.assertEqual(r["total"], 9, "未登记职位不得连带丢掉成员总数")
+        self.assertEqual(r["online"], 2, "未登记职位不得连带丢掉在线成员数")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

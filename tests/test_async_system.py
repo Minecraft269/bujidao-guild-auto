@@ -359,6 +359,16 @@ class TestStopPreservesUnfinished(unittest.TestCase):
         for item in s.get_retry_queue():
             self.assertEqual(item["state"], STOPPED)
 
+    def test_is_stopped_reflects_stop(self):
+        """发送器靠它判断"本轮是否已收工":暂停恢复后若已收工就不许再发命令,
+        否则报告记失败、游戏里却真发了,下次启动从待办再发一次 = 重复执行。"""
+        s = AsyncVerifySystem(verify_fn=lambda *a: (True, None, None), poll_interval=0.02)
+        s.attach_sender(lambda c, p, m: None)
+        s.start()
+        self.assertFalse(s.is_stopped(), "启动后不应是已停止状态")
+        s.stop(timeout=1)
+        self.assertTrue(s.is_stopped(), "stop 后必须报告已停止")
+
     def test_stop_drains_unsent_queue(self):
         """发送队列里还没取走的任务,stop 时也要标记 stopped 而非悬挂。"""
 
@@ -686,6 +696,74 @@ class TestRunAsyncRoundRetryLoop(unittest.TestCase):
         self.assertEqual(len(ok), 2, f"成功数不对:{[o['player'] for o in ok]}")
         self.assertEqual(len(fail), 2, f"失败数不对:{[f['player'] for f in fail]}")
         self.assertEqual({f["player"] for f in fail}, {"坏1", "坏2"})
+
+
+class TestSendBeforeVerifyOrdering(unittest.TestCase):
+    """发送与验证的时序:验证只能在命令**真的发出去之后**开始。
+
+    反例(独立复查找出):先 mark_sent 再调 send_fn,而 send_fn 里要过暂停门 ——
+    验证线程立刻开始计时,命令还没发出 → 必然超时判失败 → 主线程重发 →
+    恢复瞬间原始发送与重发各发一次,升职/踢人被重复执行。
+    """
+
+    def test_verification_starts_only_after_send_returns(self):
+        events = []
+        state = {"sent": False}
+
+        def slow_send(cmd, p, m):
+            time.sleep(0.3)  # 模拟暂停门阻塞
+            state["sent"] = True
+
+        def verify(cmd, p, m):
+            events.append(state["sent"])
+            return True, None, None
+
+        s = AsyncVerifySystem(verify_fn=verify, poll_interval=0.02, task_timeout=10)
+        s.attach_sender(slow_send)
+        s.start()
+        try:
+            s.submit("/c", "A")
+            s.wait_all(timeout=5)
+        finally:
+            s.stop(timeout=1)
+        self.assertTrue(events, "应至少验证一次")
+        self.assertTrue(all(events), "验证不得早于发送完成(否则暂停期间必超时并被重发)")
+
+    def test_sender_returning_none_counts_as_sent(self):
+        """sender 返回 None 必须按"已发出"处理。
+
+        真实 send_chat_text 的历史实现成功时不 return(→ None),若用 bool() 判定,
+        每条成功发送都会被当成"取消"→ 判失败 → 重发满 max_retries(破坏性重复执行)。
+        """
+        s = AsyncVerifySystem(
+            verify_fn=lambda *a: (True, None, None), poll_interval=0.02, task_timeout=5
+        )
+        s.attach_sender(lambda c, p, m: None)  # 成功但无返回值
+        s.start()
+        try:
+            tid = s.submit("/c", "A")
+            s.wait_all(timeout=3)
+            ok = s.get_completed([tid])
+        finally:
+            s.stop(timeout=1)
+        self.assertEqual(len(ok), 1, "sender 返回 None 必须按已发送处理")
+
+    def test_send_returning_false_is_not_marked_sent(self):
+        """发送器返回 False = 没真发出去:任务必须直接判失败,不得进入验证计时。"""
+        s = AsyncVerifySystem(
+            verify_fn=lambda *a: (True, None, None), poll_interval=0.02, task_timeout=5
+        )
+        s.attach_sender(lambda c, p, m: False)
+        s.start()
+        try:
+            tid = s.submit("/c", "A")
+            s.wait_all(timeout=3)
+            # 必须在 stop() 之前取结果:stop 会把任务移出 _tasks(只留补做队列)
+            failed = s.get_failed([tid])
+        finally:
+            s.stop(timeout=1)
+        self.assertEqual(len(failed), 1, "未发出的任务应记失败,而不是被当成成功")
+        self.assertIn("发送已取消", failed[0]["error"])
 
 
 if __name__ == "__main__":

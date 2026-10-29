@@ -803,5 +803,44 @@ class TestRotationWindowRetry(unittest.TestCase):
         self.assertIsInstance(lines, list)
 
 
+class TestPartialLineBuffering(_Base):
+    """半行与多字节边界:增量读取只能产出完整行(不得丢字、不得把一行拆成两行)。
+
+    真实坑:游戏分两次写入同一物理行(或一次写入被 OS 切成两个 read)时,
+    旧实现每轮直接 decode+splitlines,会把 "hello world" 读成 "hello wor"+"ld" 两条;
+    更糟的是 UTF-8 三字节字符被切在两次读取之间,前半截 decode 成替换符后永久丢字。
+    """
+
+    def test_partial_tail_is_not_emitted_until_newline(self):
+        write(self.path, b"")
+        w = self.watcher()
+        w.open()
+        append(self.path, "hello wor")
+        self.assertEqual(w.read_new_lines(block=False), [], "未见到换行前不得产出半行")
+        append(self.path, "ld second\n")
+        self.assertEqual(w.read_new_lines(block=False), ["hello world second"])
+
+    def test_multibyte_split_across_reads_keeps_character(self):
+        write(self.path, b"")
+        w = self.watcher()
+        w.open()
+        append(self.path, b"A\xe4\xb8")  # '中' 的前两个字节
+        self.assertEqual(w.read_new_lines(block=False), [])
+        append(self.path, b"\xadB\n")  # 第三个字节 + 收尾换行
+        self.assertEqual(w.read_new_lines(block=False), ["A中B"], "多字节字符被切开时不得丢字")
+
+    def test_discard_buffer_clears_partial_tail(self):
+        write(self.path, b"")
+        w = self.watcher()
+        w.open()
+        append(self.path, "残留半行")
+        w.read_new_lines(block=False)
+        w.discard_buffer()
+        append(self.path, "新块\n")
+        self.assertEqual(
+            w.read_new_lines(block=False), ["新块"], "discard 后不得把旧半行拼到新内容前面"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

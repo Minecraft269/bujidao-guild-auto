@@ -281,6 +281,17 @@ def parse_guild_list(block_lines, rank_names):
         raise ParseError("guild list 输出为空:未捕获到公会面板内容")
     guild_name = next(r for r in rows if r is not None)
 
+    # 同一条 [CHAT] 消息里偶尔把**同一份面板重复写入多次**(实测网易版 3 份:
+    # 每份都以首个分组标题开头、以「成员总数: N」收尾;前两份整行名字被遮成星号)。
+    # 合并解析会把被遮的那行当成额外成员 → 名册 201 > 声明 200,违反验收 25
+    # 「名册条目数=成员总数、差值 0」。重复时以**最后一份**为准:同源面板取一份即可,
+    # 且最后一份通常是未被遮的真名。
+    if sum(1 for r in rows if r is not None and _TOTAL_RE.search(r)) > 1:
+        first_title = next((r for r in rows if r is not None and _GROUP_TITLE_RE.match(r)), None)
+        starts = [i for i, r in enumerate(rows) if r is not None and r == first_title]
+        if first_title is not None and starts:
+            rows = rows[starts[-1] :]
+
     title_to_key = {str(v).strip(): k for k, v in (rank_names or {}).items()}
 
     def is_structural(row):
@@ -302,6 +313,16 @@ def parse_guild_list(block_lines, rank_names):
             current = title_to_key.get(m.group(1).strip())  # 未登记的职位 → None
             continue
         if current is None:
+            # 未登记的职位标题:该段成员无法归类,但「成员总数/在线成员数」是面板级
+            # 元数据,不能跟着一起丢掉 —— 丢了对账就静默失效(差值永远算不出来)。
+            m = _TOTAL_RE.search(row)
+            if m:
+                total = int(m.group(1))
+                continue
+            m = _ONLINE_RE.search(row)
+            if m:
+                online = int(m.group(1))
+                continue
             continue
         m = _TOTAL_RE.search(row)
         if m:

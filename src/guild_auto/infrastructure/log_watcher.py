@@ -39,6 +39,9 @@ def _force_stop():
 # 编码检测
 # ---------------------------------------------------------------------------
 _ENCODING_CANDIDATES = ("utf-8", "gbk", "gb2312")
+# 末行缓冲上界(1 MiB):游戏日志单行实测最长 ~2KB,正常永远到不了这个量级;
+# 到不了说明对端一直不写换行,此时丢弃前半段比把内存吃满更安全。
+_MAX_TAIL_BYTES = 1 << 20
 
 
 def detect_encoding(path, preferred="auto"):
@@ -87,6 +90,10 @@ class LogWatcher:
         self.poll = poll_interval_ms / 1000.0
         self._fh = None
         self._size = 0
+        # 末尾未完成行的原始字节缓冲。read_new_lines 只产出"已见到换行"的完整行:
+        # 否则游戏分两次写入同一物理行时,会把一行拆成两条;更糟的是多字节字符
+        # 被切在两次读取之间,前半截已经 decode 成替换符,丢字无法挽回。
+        self._tail = b""
         self._skip_until_ts = 0  # first_command 等新回显时设 = time.time() + 1.0,读到的旧行跳
 
     # ---- 打开 ----
@@ -101,6 +108,7 @@ class LogWatcher:
             time.sleep(1.0)
         self.encoding = detect_encoding(self.path, self.encoding)
         self._fh = open(self.path, "rb")
+        self._tail = b""
         # 跳到末尾:只关心本次运行之后的新日志
         self._fh.seek(0, os.SEEK_END)
         self._size = self._fh.tell()
@@ -154,6 +162,9 @@ class LogWatcher:
         # 重新打开并 seek 到末尾(否则 read_new_lines 默认从 0 读会读到 launch 前所有内容)
         try:
             self._fh = open(self.path, "rb")
+            # discard 是"从现在开始只看新内容"的语义,缓冲里若还留着旧的半行,
+            # 会被拼到 discard 之后的首批新日志前面,造成串行污染。
+            self._tail = b""
             if os.path.getsize(self.path) > 0:
                 self._fh.seek(0, 2)  # SEEK_END
                 self._size = self._fh.tell()
@@ -203,8 +214,29 @@ class LogWatcher:
                 #    的 size 变小检测区分——真正的大文件全量重读已被该分支拦截。
                 self._fh.seek(0)
                 self._size = 0
+                self._tail = b""
             data = self._fh.read()
             self._size += len(data)
+            if self._tail or data:
+                buf = self._tail + data
+                # 只消费到最后一个换行符:末尾未完成的行(可能还含被切断的多字节字符)
+                # 原样留到下次读 —— 否则同一行会被拆成两条,多字节字符前半截还会
+                # 被 decode 成替换符而永久丢字。
+                cut = buf.rfind(b"\n")
+                if cut < 0:
+                    cut = buf.rfind(b"\r")
+                if cut < 0:
+                    data, tail = b"", buf
+                else:
+                    data, tail = buf[: cut + 1], buf[cut + 1 :]
+                if len(tail) > _MAX_TAIL_BYTES:
+                    # 极端情况(游戏一直不 flush 行尾):给缓冲一个上界,超出丢前半段并留痕。
+                    # 没有换行的内容本来也无法被 split_messages 正确切分。
+                    logger.log_warning(
+                        f"日志末行缓冲超过 {_MAX_TAIL_BYTES} 字节仍无换行,已截断丢弃前半段"
+                    )
+                    tail = tail[-_MAX_TAIL_BYTES:]
+                self._tail = tail
             if data:
                 text = data.decode(self.encoding, errors="replace")
                 new_lines = text.splitlines()

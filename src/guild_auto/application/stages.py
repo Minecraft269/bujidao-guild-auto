@@ -17,6 +17,8 @@ stages.py —— 流程阶段编排(双模式)
   * True  = 异步(后台):主线程只发不验,验证交给 async_system
 """
 
+import time
+
 from guild_auto.infrastructure import logger
 from guild_auto.domain.decisions import build_notification, build_summary_message
 from guild_auto.config import console
@@ -56,8 +58,11 @@ def stage_query_async(rt, targets, cfg):
         rt.pause_gate()
         if sw.get("verbose_log", True):
             console(f"  → {cmd}")
-        rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
+        sent = rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
         rt.human.wait_between_commands()
+        # 只有明确的 False 才算没发出去(成功路径返回 True/None):
+        # 被暂停取消的查询命令不该被标记已发送、白烧一次重试
+        return sent is not False
 
     # ---- 验证器:后台线程调用,负责读日志 + 解析 + 判定 ----
     def verify(cmd, player, meta):
@@ -248,18 +253,20 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
         # 异步通知:主线程只发,验证交给后台;但**必须在本阶段内收回结果** ——
         # 否则 notify_failures 恒为空,报告里的"通知 成功/失败"是假的,
         # 失败只能等到进程结束进待办(验收 14 要求等验证完成再进下一步)。
-        pending = []  # [(task_id, label)]
+        pending = []  # [(task_id, label, 业务 key, 原文)]
         if mode == "summary":
             rt.pause_gate()
             msg = build_summary_message(records, cfg)
             logger.log_info(f"/gc summary: {msg}")
-            pending.append((_notify_one_async(rt, msg, "summary", cfg), "summary"))
+            pending.append((_notify_one_async(rt, msg, "summary", cfg), "summary", "summary", msg))
         else:
             for r in records:
                 rt.pause_gate()
                 msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
                 label = f"{r['player']}[周贡献 {r['weekly_total']}]"
-                pending.append((_notify_one_async(rt, msg, r["player"], cfg), label))
+                pending.append(
+                    (_notify_one_async(rt, msg, r["player"], cfg), label, r["player"], msg)
+                )
                 rt.human.wait_between_commands()
         failures.extend(_collect_async_notifications(rt, pending, cfg))
     elif mode == "summary":
@@ -303,21 +310,59 @@ def _notify_one_async(rt, msg, player, cfg):
 
 
 def _collect_async_notifications(rt, pending, cfg):
-    """等后台验证完,把失败项转成通知失败清单(报告与统计要用)。"""
+    """等后台验证完,失败项按 max_retries 重发,再转成通知失败清单。
+
+    为什么要重试:串行路径调 gc_broadcast_with_retry(retries=max_retries),
+    异步路径若只提交一次,同一份配置下两种模式行为就不同(验收 1「双模式行为一致」
+    要求只差发送节奏);一次失败直接记失败会让报告低估重试后的成功率。
+    """
     if not pending:
         return []
     system = rt.async_system
-    timeout = float(cfg.get("timeouts", {}).get("response_wait", 12.0)) + 5.0
-    system.wait_all(timeout=timeout)
-    task_ids = [tid for tid, _label in pending]
-    failed = {str(s.get("task_id")): s for s in system.get_failed(task_ids)}
+    timeouts = cfg.get("timeouts", {})
+    timeout = float(timeouts.get("response_wait", 12.0)) + 5.0
+    max_retries = max(1, int(timeouts.get("max_retries", 3)))
+    # 重试间隔的唯一真源是 async.retry_delay(与异步执行同一个键)。
+    # 不要用 timeouts.get("retry_delay") —— 那个键在 DEFAULT_CONFIG 里根本不存在,
+    # 等于硬编码兜底,违反"配置单一真源"。
+    retry_delay = float((cfg.get("async") or {}).get("retry_delay", 1.0))
+
+    alive = list(pending)  # [(task_id, label, 业务 key, 原文)]
+    last_error = {}  # label -> None(成功) / 错误文本
+    for attempt in range(1, max_retries + 1):
+        system.wait_all(timeout=timeout)
+        ids = [tid for tid, _label, _key, _msg in alive]
+        done = {str(s.get("task_id")) for s in system.get_completed(ids)}
+        failed = {str(s.get("task_id")): s for s in system.get_failed(ids)}
+        retry = []
+        for tid, label, key, msg in alive:
+            tid_s = str(tid)
+            if tid_s in done:
+                last_error[label] = None
+                continue
+            snap = failed.get(tid_s)
+            if snap is None:
+                # 既不在成功集、也不在失败集 = wait_all 超时后仍在途。
+                # 绝不能记成成功(报告会出现假的"通知成功");也不重发,
+                # 重发可能让同一广播发两遍。
+                last_error[label] = "等待验证超时(后台未在时限内给出结论)"
+                continue
+            last_error[label] = snap.get("error") or "通知验证失败"
+            retry.append((label, key, msg))
+        if not retry or attempt >= max_retries:
+            break
+        logger.log_info(f"(异步)通知失败 {len(retry)} 条,第 {attempt} 次重发")
+        time.sleep(retry_delay)
+        alive = [
+            (_notify_one_async(rt, msg, key, cfg), label, key, msg) for label, key, msg in retry
+        ]
+
     out = []
-    for tid, label in pending:
-        snap = failed.get(str(tid))
-        if snap is None:
+    for _tid, label, _key, _msg in pending:
+        err = last_error.get(label)
+        if err is None:
             _report_notify(label, True, None)
             continue
-        err = snap.get("error") or "通知验证失败"
         _report_notify(label, False, err)
         out.append({"scope": label, "error": err})
     return out
@@ -357,10 +402,21 @@ def stage_execute_async(rt, records, cfg):
     # 串行与异步共用 apply_action_gates（见文件末尾），避免两模式行为不一致。
     apply_action_gates(records, cfg)
 
-    # ---- 发送器:只发(暂停门在 execute_action 内部,这里不重复) ----
+    # ---- 发送器:只发(暂停门在这一层,后台 sender 线程发送前也必须过)----
     def send_only(cmd, player, meta):
-        rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
+        # 与查询/通知、以及串行执行路径一致:暂停期间绝不发送,恢复后先重置窗口状态。
+        # 缺这道门时,sender 线程会在暂停中调用 send_chat_text(因 stop_check 直接返回
+        # False),而任务已被 mark_sent → 验证必然失败并烧光重试,最后误判成执行失败。
+        rt.pause_gate()
+        if system.is_stopped():
+            # 暂停阻塞期间主线程可能已判超时收工:此时再发,就是"报告记执行失败、
+            # 游戏里却真发了",下次启动会从待办再发一次 —— 踢人/升职被重复执行。
+            logger.log_warning("异步执行发送已取消(本轮已收工),跳过发送:" + str(cmd))
+            return False
+        sent = rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
         rt.human.wait_between_commands()
+        # 只有明确的 False 才算"没发出去"(成功路径返回 None)
+        return sent is not False
 
     # ---- 验证器:后台线程调用,委托 executor 单条执行(含重试/回显判定) ----
     executor = rt.executor

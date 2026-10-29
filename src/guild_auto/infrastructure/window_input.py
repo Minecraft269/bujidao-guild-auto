@@ -326,6 +326,7 @@ class HumanInput:
         logger.log_debug(
             f"[send_chat_text] 完成: 开栏={int((t1 - t0) * 1000)}ms 复制={int((t2 - t1) * 1000)}ms 粘贴回车={int((t3 - t2) * 1000)}ms 总={int((t3 - t0) * 1000)}ms"
         )
+        return True
 
     def paste_and_enter(self, text, stop_check=None):
         """试探式发送:直接粘贴 + 回车(不按 chat_key)。

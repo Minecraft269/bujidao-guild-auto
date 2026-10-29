@@ -298,6 +298,29 @@ class TestActionExecutorSuccessDetection(unittest.TestCase):
         self.assertFalse(ok, "把别人的踢出回显误判为本玩家成功")
 
     @patch("time.sleep", return_value=None)
+    def test_kick_echo_without_name_attributed_by_time_window(self, _s):
+        """真实回显只有「踢出成功」、不含玩家名(plan 5.2)。串行单踢时窗口内唯一一条可归因;
+        若只按名匹配,这种回显会被永远判失败并触发无意义重发。"""
+        ex = _make_executor(["[CHAT] 踢出成功"])
+        ok, err = ex.execute_action("kick", "演示甲", retries=1)
+        self.assertTrue(ok, f"不含玩家名的「踢出成功」应能按时间窗归因:{err}")
+
+    @patch("time.sleep", return_value=None)
+    def test_kick_echo_forged_by_player_chat_rejected(self, _s):
+        """玩家在频道里打「名字: 踢出成功」不得被判成功 —— 裸子串匹配可被任意聊天伪造
+        (独立复查找出:时间窗兜底最初扫的是原始 lines)。"""
+        ex = _make_executor(["[CHAT] <随机玩家> 随机玩家: 踢出成功"])
+        ok, _ = ex.execute_action("kick", "演示甲", retries=1)
+        self.assertFalse(ok, "聊天伪造的「踢出成功」不得当成功证据")
+
+    @patch("time.sleep", return_value=None)
+    def test_two_kick_echoes_are_not_attributable(self, _s):
+        """窗口内出现两条「踢出成功」→ 无法归因,必须判失败(不能把别人的踢出算到本次)。"""
+        ex = _make_executor(["[CHAT] 踢出成功", "[CHAT] 踢出成功"])
+        ok, _ = ex.execute_action("kick", "演示甲", retries=1)
+        self.assertFalse(ok, "两条踢出回显不得归因到单一玩家")
+
+    @patch("time.sleep", return_value=None)
     def test_public_chat_forgery_not_accepted(self, _s):
         """**公屏伪造不得当成成功回显** —— 独立审查 high 级发现。
 

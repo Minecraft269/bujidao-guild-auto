@@ -170,10 +170,36 @@ class ActionExecutor:
             if f"成功设置{player}的职位为" in text:
                 return True
         elif action == "kick":
-            # 匹配 "{player}被{admin}踢出{guild_name}公会！"
-            # 检查是否包含 f"{player}被" 和 "踢出" 和 "公会！"
+            # 强证据:公会面板内 "{player}被{admin}踢出{guild_name}公会！"(含玩家名)
             if f"{player}被" in text and "踢出" in text and "公会！" in text:
                 return True
+            # 兜底(规格 5.2 ③ 时间窗):真实回显常常只有「踢出成功」、**不含玩家名**,
+            # 按名匹配会永远判失败。串行执行下同一时刻只有一条踢出在途,因此窗口内
+            # 恰好一条「踢出成功」可归因于本次操作;两条及以上属于无法归因 ——
+            # 宁可判失败交人工确认,也不能把别人的踢出算到本次头上。
+            echoes = []
+            for ln in lines:
+                if "踢出成功" not in ln:
+                    continue
+                # 只接受**系统回显**(整行以它开头)。玩家在频道里打一句
+                # "某人: 踢出成功" 属于伪造,不能当成功证据 —— 与上面"只认公会面板"
+                # 同一个原则(独立复查找出:裸子串匹配可被任意聊天行伪造)。
+                if strip_chat_prefix(ln).strip().rstrip("！!").strip() == "踢出成功":
+                    echoes.append(ln)
+            if len(echoes) == 1:
+                logger.log_warning(
+                    "踢出回显不含玩家名,按时间窗归因(串行单踢,窗口内唯一一条):" + str(player)
+                )
+                return True
+            if len(echoes) > 1:
+                logger.log_warning(
+                    "窗口内出现 "
+                    + str(len(echoes))
+                    + " 条「踢出成功」,无法归因到 "
+                    + str(player)
+                    + ",判失败待人工确认"
+                )
+            return False
         return False
 
     def verify_action(self, action, player, timeout=None):

@@ -395,6 +395,15 @@ class AsyncVerifySystem:
             if self._pending_count > 0:
                 self._pending_count -= 1
 
+    def is_stopped(self):
+        """后台是否已停止(主线程已放弃本轮)。
+
+        发送器在**阻塞等待暂停恢复**之后必须再看一眼:排队期间若主线程已判超时
+        收工,此时再发就是"报告里记失败、游戏里却真发了" —— 破坏性命令(踢人)
+        会在下次启动从待办再发一次,等于重复执行。
+        """
+        return self._stop_event.is_set()
+
     def wait_all(self, timeout=None):
         """主线程**全部工作完成后**才调用:等待后台返回完成信号。
 
@@ -433,19 +442,27 @@ class AsyncVerifySystem:
                 self._send_q.task_done()
 
     def _send_one(self, task):
-        """发送单条指令并标记已发送。"""
+        """发送单条指令并标记已发送。
+
+        时序很关键:`mark_sent` 必须在 send_fn **成功返回之后**。
+        反例(独立复查找出):先 mark_sent 再调 send_fn,而 send_fn 里要过暂停门 ——
+        验证线程会立刻按 SENT 开始计时,命令其实还没发出去 → 4s 窗口必然超时判失败
+        → 主线程重发 → 恢复瞬间原始发送与重发**各发一次**,升职/踢人被重复执行。
+
+        send_fn 返回 False 表示"发送前被取消"(本轮已收工 / 暂停期间放弃),
+        这类任务不能标记已发送,直接判失败离开 SENT,避免为没发出去的命令计时。
+        """
         send_fn = self._send_fn
         if send_fn is None:
             # 未注入发送函数(如单测):只记账标记,不真发
             task.mark_sent()
             return
-        task.mark_sent()
         logger.log_trace(
             f"TRACE_VERIFY send | task_id={task.task_id} "
             f"player={task.player!r} cmd={task.command[:60]!r}"
         )
         try:
-            send_fn(task.command, task.player, task.meta)
+            emitted = send_fn(task.command, task.player, task.meta)
         except Exception as e:  # 发送异常 → 记失败,由主线程决定重试
             logger.log_error(f"(异步系统)发送异常 player={task.player}: {e!r}")
             task.mark_verified(False, error=f"send failed: {e!r}")
@@ -453,6 +470,15 @@ class AsyncVerifySystem:
             # 所以必须在此递减 pending —— 否则 _pending_count 只增不减,
             # wait_all 的「仍有 N 条未验证」告警永久虚高(独立审查指出)。
             self._dec_pending()
+            return
+        if emitted is False:
+            logger.log_warning(
+                f"(异步系统)发送已取消,任务不进入验证 player={task.player} cmd={task.command[:60]!r}"
+            )
+            task.mark_verified(False, error="发送已取消(未发出)")
+            self._dec_pending()
+            return
+        task.mark_sent()
 
     def attach_sender(self, send_fn):
         """注入实际发送函数 send_fn(cmd, player, meta)。"""
@@ -613,6 +639,15 @@ def run_async_round(system, commands, send_fn, max_retries=3):
 
     # 收尾兜底:本闭环内仍处于 FAILED(理论上末轮已全部收进 final_failed,
     # 这里防的是边界情况如 max_rounds=1)。按 task_id 去重,同一条失败不重复计入。
+    # 跨轮完成的成功项也要收:第 1 轮被暂停阻塞、第 2 轮才发出去的命令,
+    # 成功时不属于任何单轮的 round_ids,不补收就会被当成"执行失败"写进待办,
+    # 下次启动再执行一次(升职/踢人重复执行 —— 独立复查找出)。
+    ok_ids = {s["task_id"] for s in results_ok}
+    for s in system.get_completed(task_ids=all_round_ids):
+        if s["task_id"] not in ok_ids:
+            results_ok.append(s)
+            ok_ids.add(s["task_id"])
+
     seen_ids = {s["task_id"] for s in final_failed}
     for s in system.get_failed(task_ids=all_round_ids):
         if s["task_id"] not in seen_ids:

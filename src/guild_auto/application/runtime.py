@@ -409,9 +409,22 @@ class Runtime:
         return self.async_system.submit(command, player, meta or {})
 
     def _async_send_fn(self, command, player, meta):
-        """后台发送:把已提交的指令发出去(不读日志)。"""
-        self.human.send_chat_text(command, detector=self.detector, stop_check=self.is_paused)
+        """后台发送:把已提交的指令发出去(不读日志)。
+
+        必须与执行路径同一道暂停门:缺门时 sender 线程在暂停中调用 send_chat_text
+        会因 stop_check 直接返回 False,而任务已被 mark_sent → 验证必然失败并烧光重试
+        (通知阶段表现为"广播失败: 轮询超时",实际一条都没发出去)。
+        恢复后还要再确认本轮没被主线程放弃,否则就是"报告记失败、游戏里真发了"。
+        """
+        self.pause_gate()
+        if self.async_system is not None and self.async_system.is_stopped():
+            logger.log_warning("后台发送已取消(本轮已收工),跳过发送:" + str(command))
+            return False
+        sent = self.human.send_chat_text(command, detector=self.detector, stop_check=self.is_paused)
         self.human.wait_between_commands()
+        # 只有明确的 False 才算"没发出去";成功路径历史上返回 None,
+        # 用 bool() 会把每次成功发送都判成取消(独立复查找出的严重回归)。
+        return sent is not False
 
     def _async_verify_fn(self, command, player, meta):
         """后台验证:读日志 → 提取块 → 判定(按命令类型分流)。"""

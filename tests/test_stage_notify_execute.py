@@ -43,6 +43,10 @@ class _FakeRT:
         # 默认返回"全部成功",个别用例可改写 return_value 模拟失败。
         self.async_system = mock.Mock()
         self.async_system.get_failed.return_value = []
+        # 默认"全部成功":成功集要覆盖传入的 task_id,否则会被判成"在途/超时"
+        self.async_system.get_completed.side_effect = lambda ids: [
+            {"task_id": i, "state": "ok"} for i in ids
+        ]
 
     def pause_gate(self):
         self.pause_gate_calls += 1
@@ -142,6 +146,8 @@ class TestStageNotify(unittest.TestCase):
         rt.async_system.get_failed.return_value = [
             {"task_id": "task-summary", "state": "failed", "error": "广播超时"}
         ]
+        rt.async_system.get_completed.side_effect = None
+        rt.async_system.get_completed.return_value = []
         failures = stages_mod.stage_notify(rt, [_record(actions=["kick"])], self.cfg)
         self.assertEqual(len(failures), 1, f"通知失败未计入: {failures}")
         self.assertEqual(failures[0]["scope"], "summary")
@@ -243,6 +249,53 @@ class TestStageExecuteAsync(unittest.TestCase):
         self.assertEqual(rt.human.send_chat_text.call_count, 2, "两条动作应各发送一次,不能翻倍")
         self.assertEqual(rt.executor.verify_action.call_count, 2)
         rt.executor.execute_action.assert_not_called()
+
+
+class TestAsyncPauseGateAndNotifyRetry(unittest.TestCase):
+    """两条与本轮修复绑定的回归:异步执行必须过暂停门;异步通知必须重试。"""
+
+    def setUp(self):
+        self.cfg = _cfg()
+        self.cfg["timeouts"]["error_check_window"] = 0.1
+        self.cfg["timeouts"]["retry_delay"] = 0.0
+
+    def test_async_execute_sender_passes_pause_gate(self):
+        """发送器必须过暂停门:缺门时暂停中发送会返回 False,任务却已 mark_sent,
+        验证必然失败并烧光重试(最终误判成执行失败)。"""
+        rt = _FakeRT(async_enabled=True)
+        rt.executor.verify_action.return_value = (True, None)
+        stages_mod.stage_execute_async(rt, [_record("甲", ["promote"])], self.cfg)
+        self.assertGreaterEqual(
+            rt.pause_gate_calls, 1, "异步执行发送前必须过暂停门(暂停期间不得发出指令)"
+        )
+
+    def test_async_notify_in_flight_is_not_reported_as_success(self):
+        """wait_all 超时后仍在途的任务既不在成功集也不在失败集 —— 绝不能记成功,
+        否则报告里的"通知成功"是假的(独立复查找出)。"""
+        rt = _FakeRT(async_enabled=True)
+        self.cfg["timeouts"]["max_retries"] = 1
+        rt.async_system.wait_all.return_value = False
+        rt.async_system.get_completed.side_effect = None
+        rt.async_system.get_completed.return_value = []
+        rt.async_system.get_failed.return_value = []
+        failures = stages_mod.stage_notify(rt, [_record("甲", ["kick"])], self.cfg)
+        self.assertEqual(len(failures), 1, f"在途任务必须记失败: {failures}")
+        self.assertIn("超时", failures[0]["error"])
+
+    def test_async_notify_retries_until_max(self):
+        """异步通知失败必须按 max_retries 重发,与串行 gc_broadcast_with_retry 同语义。"""
+        rt = _FakeRT(async_enabled=True)
+        self.cfg["timeouts"]["max_retries"] = 3
+        rt.async_system.get_failed.side_effect = lambda ids: [
+            {"task_id": i, "state": "failed", "error": "广播超时"} for i in ids
+        ]
+        rt.async_system.get_completed.side_effect = None
+        rt.async_system.get_completed.return_value = []
+        failures = stages_mod.stage_notify(rt, [_record("甲", ["kick"])], self.cfg)
+        self.assertEqual(
+            len(rt.submitted), 3, f"应首发 1 次 + 重发 2 次,实际提交 {len(rt.submitted)} 次"
+        )
+        self.assertEqual(len(failures), 1, f"重试耗尽后仍失败要记 1 条: {failures}")
 
 
 if __name__ == "__main__":

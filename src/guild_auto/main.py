@@ -778,6 +778,9 @@ def main():
         operation_mode = str(cfg.get("operation_mode") or "command")
         ui_mode = operation_mode == "ui"
         ui_outcome = None
+        # 异步"零失败才进下一步"门(验收 14):所有路径(含 UI 模式)都要能读到,
+        # 所以在这里初始化;只有异步查询重试耗尽仍有失败、且用户未确认继续时才置 True。
+        _halt_after_async_query = False
         # debug 段在判定/通知/执行阶段还要用,必须在分派前定义(UI 模式不走 list 分支)
         debug = cfg.get("debug", {})
         if ui_mode:
@@ -863,6 +866,30 @@ def main():
                     console("[2/5] 逐人查询(异步模式:主线程快速发送,后台验证)...")
                     records, async_failures = stage_query_async(rt, targets, cfg)
                     failures.extend(async_failures)
+                    # 屏蔽词玩家(blocked)不是"验证失败":身份不可读是客观事实,
+                    # 计入失败会让任何有屏蔽词成员的公会每轮都停在半途。
+                    _real_failures = [f for f in async_failures if not f.get("blocked")]
+                    if _real_failures:
+                        # 验收 14:异步模式必须"等验证完成且没有失败(有重试上限)"才进下一步。
+                        # 重试耗尽仍有失败 → 停下来问,不静默带着残缺名单进入通知/执行
+                        # (名单不全会导致漏通知,甚至按错误数据踢人)。
+                        console(
+                            f"⚠ 异步查询验证失败 {len(_real_failures)} 条(重试已到上限),"
+                            f"按规格不自动进入后续阶段"
+                        )
+                        for _f in _real_failures[:5]:
+                            # stage_query_async 的失败字典用 reason(不是 error),
+                            # 只读 error 会让用户看到"甲: None",等于没给原因
+                            console(
+                                f"    - {_f.get('player')}: "
+                                f"{_f.get('error') or _f.get('reason') or '未知原因'}"
+                            )
+                        _halt_after_async_query = not rt.confirm(
+                            "异步模式要求「验证完成且无失败」才进下一步;仍继续通知/执行吗?",
+                            default=False,
+                        )
+                        if _halt_after_async_query:
+                            console("已中止后续阶段(报告仍会输出,失败项照实记录)")
                 else:
                     # 默认串行模式:逐条发送 → 逐条读日志验证
                     for idx, (rk, pid) in enumerate(targets, 1):
@@ -955,6 +982,10 @@ def main():
             # UI 模式仅实现 查询→报告:跳过必须明说并写进报告第六节,
             # 不得静默假装已通知(用户会以为群里收到了公告)
             console("[4/5] UI 模式本次跳过通知(仅 查询→报告)")
+        elif _halt_after_async_query:
+            # 验收 14:异步查询仍有失败且用户未确认继续 → 不进入后续阶段。
+            # 必须明说跳过,不能让报告看起来像"已通知"。
+            console("[4/5] 已中止:异步查询存在未消除的失败,本次跳过通知")
         else:
             if _debug_notify_skipped:
                 console("Debug: 跳过通知发送(仅走流程,不实际广播)")
@@ -968,7 +999,11 @@ def main():
             "通知",
             ok=max(0, _notify_attempted - len(notify_failures)),
             fail=len(notify_failures),
-            note="UI 模式跳过" if ui_mode else "",
+            note=(
+                "已中止(异步查询有失败)"
+                if _halt_after_async_query
+                else ("UI 模式跳过" if ui_mode else "")
+            ),
         )
 
         # 8. 执行(先询问是否执行)
@@ -979,6 +1014,8 @@ def main():
         actionable = [r for r in records if r["actions"]]
         if ui_mode:
             console("  UI 模式本次跳过执行(仅 查询→报告,不执行升/降/踢)")
+        elif _halt_after_async_query:
+            console("  已中止:异步查询存在未消除的失败,本次不执行任何升/降/踢")
         elif not actionable:
             # 查询阶段无任何成功(records 为空),无可执行操作,显式提示后直接走报告
             console("  无玩家需要执行(查询阶段无成功结果),跳过执行阶段")
@@ -990,7 +1027,7 @@ def main():
         pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
 
         # ---- 执行循环前统一重置（只执行一次） ----
-        if not ui_mode and sw["execution_enabled"]:
+        if not ui_mode and not _halt_after_async_query and sw["execution_enabled"]:
             console("执行前重置界面状态...")
             if hwnd:
                 activate_window(hwnd)
@@ -1014,14 +1051,19 @@ def main():
         #   串行 — 逐条发送并立刻读日志验证
         #   异步 — 主线程只发不验,验证交给 async_system(与查询阶段同一套 B→D→E 闭环)
         execution_failures = []
-        if ui_mode:
-            # UI 模式只实现 查询→报告:逐条明确标"未执行",绝不假装执行。
-            # 标 skipped_by_mode 是为了**不写入待办** —— 否则下次启动会在指令模式
-            # 续做这些从未尝试过的升/降/踢,等于绕过本次的模式选择。
+        _skip_exec_reason = (
+            "UI 模式本次未执行"
+            if ui_mode
+            else ("已中止:异步查询存在未消除的失败(验收 14)" if _halt_after_async_query else "")
+        )
+        if _skip_exec_reason:
+            # UI 模式只实现 查询→报告 / 异步"零失败"门中止:逐条明确标"未执行",
+            # 绝不假装执行。标 skipped_by_mode 是为了**不写入待办** —— 否则下次启动
+            # 会直接续做这些从未尝试过的升/降/踢,等于绕过本次的模式选择或中止决定。
             for r in records:
                 if r["actions"]:
                     r["executed"] = False
-                    r["error"] = "UI 模式本次未执行"
+                    r["error"] = _skip_exec_reason
                     r["skipped_by_mode"] = True
                     r["new_rank"] = new_rank_after(r["rank"], r["actions"])
                 executed.append(r)
@@ -1091,9 +1133,15 @@ def main():
                 1 for r in records if r.get("actions") and r.get("executed") and not r.get("error")
             ),
             fail=len(execution_failures),
-            note="UI 模式跳过"
-            if ui_mode
-            else f"升{_acts['promote']}/降{_acts['demote']}/踢{_acts['kick']}",
+            note=(
+                "已中止(异步查询有失败)"
+                if _halt_after_async_query
+                else (
+                    "UI 模式跳过"
+                    if ui_mode
+                    else f"升{_acts['promote']}/降{_acts['demote']}/踢{_acts['kick']}"
+                )
+            ),
         )
         logger.log_info("阶段9 起点: 输出报告")
         console("\n输出报告 ...")
