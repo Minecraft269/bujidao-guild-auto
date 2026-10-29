@@ -814,7 +814,12 @@ def main():
             # targets 只用于报告里的"应查人数";UI 模式已在采集后按范围过滤
             targets = [(r["rank"], r["player"]) for r in records]
             gname = guild["guild_name"]
-            console(f"公会: {gname} | 界面成员总数 {guild['total']}")
+            total_src = (
+                "公会详情 tooltip"
+                if guild.get("total_source") == "guild_detail_tooltip"
+                else "逐页累计"
+            )
+            console(f"公会: {gname} | 成员总数 {guild['total']}（来源: {total_src}）")
             for rk, ids in guild["groups"].items():
                 console(f"  {cfg['rank_names'].get(rk, rk)}: {len(ids)} 人")
         else:
@@ -866,8 +871,9 @@ def main():
                             cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
                         )
                     except Exception as e:
-                        # debug 跳过解析阶段时查询错误不影响流程,但必须可检索
-                        logger.log_debug(f"[{pid}] debug 跳过解析时查询失败: {e!r}")
+                        # debug 跳过解析阶段时查询错误不影响流程;用 warning 保证
+                        # 默认日志级别(INFO)下也落盘 —— 这种失败说明游戏侧异常。
+                        logger.log_warning(f"[{pid}] debug 跳过解析时查询失败: {e!r}")
                 records = _generate_debug_records(
                     cfg, guild, targets, decide_skipped=("decide" in debug.get("skip_stages", []))
                 )

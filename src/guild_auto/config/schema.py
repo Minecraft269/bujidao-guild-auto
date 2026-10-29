@@ -9,8 +9,8 @@ config/schema.py —— 配置结构契约(键名 / 枚举 / 校验规则)
 这样改校验规则不需要动 IO 代码,反之亦然。
 """
 
-import logging
 import os
+import sys
 
 from guild_auto.config.defaults import DEFAULT_CONFIG
 
@@ -454,8 +454,9 @@ def validate_config(cfg):
                         )
                     )
         except (OSError, ValueError) as exc:
-            # 路径解析失败不阻塞校验(后续打开日志时会自然报错),
-            # 但必须留痕:用标准库 logging,避免 config→infrastructure 的导入环
-            logging.getLogger(__name__).debug("game_log 路径解析失败: %r", exc)
+            # 路径解析失败不阻塞校验(后续打开日志时会自然报错)。
+            # 写 stderr 而不是调项目 logger:此处可能发生在 logger 初始化之前,
+            # 且 config 层不宜反向依赖 infrastructure。
+            sys.stderr.write(f"[schema] game_log 路径解析失败: {exc!r}\n")
 
     return issues

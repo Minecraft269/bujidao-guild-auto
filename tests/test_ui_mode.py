@@ -342,6 +342,9 @@ class TestMainWiresUiMode(_TempCase):
             guild={
                 "guild_name": "演示公会",
                 "total": 1,
+                # 真实采集没有公会详情 tooltip 时就是这个来源;测试桩必须带上,
+                # 否则 main→counts→report 的来源接线不会被真正验证。
+                "total_source": "ui_paging_accumulated",
                 "online": None,
                 "groups": {"entry": ["甲"]},
             },
@@ -378,6 +381,9 @@ class TestMainWiresUiMode(_TempCase):
         self.assertIn("--- 六、UI识别运行记录 ---", text)
         self.assertIn("操作模式: ui", text)
         self.assertIn("本次跳过通知/执行", text)
+        # 端到端锁死 main → counts → report 的接线:假采集没有公会详情 tooltip,
+        # 报告必须写「逐页翻页累计」而不是冒充面板/tooltip,更不能回落 len(roster)。
+        self.assertIn("逐页翻页累计", text, "UI 模式未读到公会详情时必须如实标注来源")
 
         # UI 模式不得偷偷发聊天指令(静默降级回指令模式的证据)
         rt.human.send_chat_text.assert_not_called()

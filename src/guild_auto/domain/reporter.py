@@ -453,8 +453,8 @@ def _render_timings(lines, run_meta):
         try:
             total += float(seconds)
         except (TypeError, ValueError) as e:
-            # 阶段没记到秒数时只影响合计,不影响其他行;但要留痕
-            logger.log_debug(f"阶段耗时非数值,不计入合计: {seconds!r} ({e!r})")
+            # 阶段没记到秒数时只影响合计;用 warning 保证默认级别下也落盘
+            logger.log_warning(f"阶段耗时非数值,不计入合计: {seconds!r} ({e!r})")
         lines.append(
             f"{str(stage.get('name') or _PLACEHOLDER):<14}"
             f"{_fmt_seconds(seconds):<10}"
@@ -696,9 +696,31 @@ def _render_roster(lines, records, cfg, run_meta):
     mode = str(run_meta.get("operation_mode") or "command")
     member_total = counts.get("member_total")
     rec_by_player = {str(r.get("player")): r for r in records or []}
+    # 来源必须来自运行侧的真实采集方式,不能按操作模式猜 ——
+    # UI 模式读不到公会详情时总数来自逐页累计,那种情况下差值为 0 没有证明力。
+    source_key = str(
+        counts.get("member_total_source") or ("guild_list_panel" if mode != "ui" else "")
+    )
+    source = _SOURCE_TEXT.get(source_key, "未知来源")
+    has_total = isinstance(member_total, int) and not isinstance(member_total, bool)
+    diff = (len(roster) - member_total) if has_total else None
+
+    # 标题里的结论必须与正文同源:只有"可信来源 + 差值为 0"才配写「无遗漏」。
+    # 否则标题会在报告最醒目的位置宣称一个尚未证明的事实。
+    if has_total and diff == 0:
+        title_tail = (
+            "无遗漏"
+            if source_key in ("guild_list_panel", "guild_detail_tooltip")
+            else "未证明无遗漏"
+        )
+    elif has_total:
+        title_tail = f"差值 {diff},见对账"
+    else:
+        title_tail = "无法对账"
 
     lines.append(
-        f"--- 七、全员名册(共 {len(roster)} 人 = 成员总数 {_num_text(member_total)},无遗漏)---"
+        f"--- 七、全员名册(共 {len(roster)} 人 = 成员总数 {_num_text(member_total)},"
+        f"{title_tail})---"
     )
     lines.append("列: 序号 | 玩家 | 周贡献 | 操作 | 状态")
     lines.append("状态: " + " / ".join(dict.fromkeys(_STATUS_TEXT.values())))
@@ -729,19 +751,18 @@ def _render_roster(lines, records, cfg, run_meta):
     lines.append("")
     lines.append("---对账---")
     lines.append(f"  名册条目合计: {len(roster)}")
-    # 来源必须来自运行侧的真实采集方式,不能按操作模式猜 ——
-    # UI 模式读不到公会详情时总数来自逐页累计,那种情况下差值为 0 没有证明力。
-    source_key = str(
-        counts.get("member_total_source") or ("guild_list_panel" if mode != "ui" else "")
-    )
-    source = _SOURCE_TEXT.get(source_key, "未知来源")
     lines.append(f"  成员总数(来源: {source}): {_num_text(member_total)}")
     lines.append(f"  在线成员数: {_online_text(counts, mode)}")
-    if isinstance(member_total, int) and not isinstance(member_total, bool):
-        diff = len(roster) - member_total
-        verdict = "✅ 无遗漏" if diff == 0 else "❌ 报告缺陷"
-        if source_key == "ui_paging_accumulated":
+    if has_total:
+        if diff != 0:
+            verdict = "❌ 报告缺陷"
+        elif source_key in ("guild_list_panel", "guild_detail_tooltip"):
+            verdict = "✅ 无遗漏"
+        elif source_key == "ui_paging_accumulated":
+            # 逐页累计的差值为 0 是结构性的,不能当成漏扫证明
             verdict = "⚠ 仅逐页累计,差值为 0 不构成漏扫证明"
+        else:
+            verdict = "⚠ 来源未知,差值为 0 不构成证明"
         lines.append(f"  差值: {diff} {verdict}")
     else:
         lines.append("  差值: - ❌ 报告缺陷(成员总数缺失,无法对账)")

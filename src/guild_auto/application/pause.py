@@ -17,6 +17,7 @@ pause.py —— 暂停机制与 Ctrl+C 中断菜单
 runtime._paused 永远 False，rg.is_paused() 永远 False，暂停门形同虚设）。
 """
 
+import sys
 import time
 
 from pynput import keyboard, mouse
@@ -353,8 +354,9 @@ def install_signal_handlers():
             prev[name] = _sig.signal(signum, _signal_handler)
         except (ValueError, OSError, RuntimeError) as e:
             # 非主线程注册会 ValueError;某些环境无控制台信号会 OSError。
-            # 注册失败意味着该信号不会进暂停菜单,必须留痕才能排查。
-            logger.log_debug(f"注册 {name} 信号处理器失败: {e!r}")
+            # 这行在**模块导入期**执行,那时 logger 还没 init(会直接丢弃),
+            # 所以必须写 stderr —— 否则"注册失败"永远看不到痕迹。
+            sys.stderr.write(f"[pause] 注册 {name} 信号处理器失败: {e!r}\n")
     return prev
 
 

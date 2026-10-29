@@ -322,13 +322,31 @@ class TestMemberTotalSourceText(unittest.TestCase):
         self.assertIn("公会详情 tooltip", self._render("guild_detail_tooltip"))
 
     def test_paging_source_is_labelled_and_verdict_is_qualified(self):
-        text = self._render("ui_paging_accumulated")
+        text = self._render("ui_paging_accumulated", total=1)  # 与名册 1 人一致
         self.assertIn("逐页翻页累计", text)
         self.assertIn("不构成漏扫证明", text, "逐页累计时差值 0 不能被当成无遗漏的证明")
 
     def test_unknown_source_is_not_silently_guessed(self):
         """UI 模式又没给来源时必须写「未知来源」,不能猜成面板解析。"""
         self.assertIn("未知来源", self._render("", mode="ui"))
+
+    def test_title_claims_no_omission_only_with_trusted_source(self):
+        text = self._render("guild_detail_tooltip", total=1)
+        self.assertIn("成员总数 1,无遗漏)", text)
+
+    def test_title_is_qualified_for_paging_source(self):
+        text = self._render("ui_paging_accumulated", total=1)
+        self.assertIn("成员总数 1,未证明无遗漏)", text, "逐页累计不得在标题宣称无遗漏")
+
+    def test_title_says_cannot_reconcile_when_total_missing(self):
+        text = self._render("ui_paging_accumulated", total=None)
+        self.assertIn("无法对账)", text)
+        self.assertNotIn("无遗漏)", text.replace("未证明无遗漏", ""))
+
+    def test_paging_source_does_not_mask_nonzero_diff(self):
+        """差值非 0 时必须照常报缺陷,不能被"逐页累计"的降级文案盖掉。"""
+        text = self._render("ui_paging_accumulated", total=5)
+        self.assertIn("❌ 报告缺陷", text)
 
 
 if __name__ == "__main__":

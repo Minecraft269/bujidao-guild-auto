@@ -88,7 +88,10 @@ class VisionRunner:
             return None
         try:
             text = self._guild_detail_reader(element)
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError, KeyError) as e:
+            # 注意不能 catch 太宽:ui_mode 的 _RescanRequired 刻意不继承 RuntimeError,
+            # 必须穿过这里冒到重扫循环 —— 否则暂停恢复后的重扫信号会被吞掉,
+            # 用旧画面继续采集。
             logger.log_warning(f"vision.runner: 读取公会详情失败,总数改为逐页累计: {e!r}")
             return None
         if not text:
