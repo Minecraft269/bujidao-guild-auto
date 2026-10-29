@@ -147,7 +147,9 @@ jobs:
 `Lite-Async-Vision` / `Lite-Gui-Vision` / `Lite-Async-Gui-Vision`
 
 - 每个变体各产出一条 artifact，**文件名含变体拼接名**
-- 每个变体单独跑冒烟测试：能否启动、能力清单是否正确、禁用功能是否被正确拦截
+- `Full` 只是 `Lite-Async-Gui-Vision` 的别名（大小写不敏感，`capabilities.resolve_variant_alias()` 解析）；**拼接名才是权威标识**，artifact 名与横幅一律用拼接名，不得写 `Full`
+- 每个变体单独跑**横幅冒烟**：在源码树里 `PYTHONPATH=src python` 读打包期能力常量，比对「拼接名 + 能力清单」。
+- ⚠ CI **不运行** `dist/*.exe`：产物冷启动、以及"配置了不支持的功能时报错"这两项，由发布前的本地冒烟执行（见 `docs/验收证据.md` 第 19 条的冷启动记录）。
 - 构建矩阵由配置驱动（`pyproject.toml` extras 或构建脚本的能力表），**禁止把组合硬编码进工作流**
 
 ---
