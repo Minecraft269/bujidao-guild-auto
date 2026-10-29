@@ -194,5 +194,10 @@ def console(msg, level="info"):
         from guild_auto.infrastructure import logger as _logger_mod
 
         getattr(_logger_mod, f"log_{level}", _logger_mod.log_info)(str(msg))
-    except Exception:
-        pass  # 日志系统不可用时不影响控制台输出
+    except Exception as e:
+        # 走到这里说明 logger 自身不可用(导入失败或初始化异常)。
+        # 不能再调 logger(会递归/再抛),直接写 stderr 保证可检索。
+        try:
+            sys.stderr.write(f"[console] 日志系统不可用,仅输出到控制台: {e!r}\n")
+        except Exception:
+            return  # stderr 也写不了(如已关闭):此时无任何可用的输出通道

@@ -83,6 +83,51 @@ def make_runner(navigator, sweeper, **kwargs):
     return VisionRunner(navigator=navigator, sweeper=sweeper, **kwargs)
 
 
+class TestMemberTotalFromGuildDetail(unittest.TestCase):
+    """成员总数必须来自公会详情 tooltip,不能拿扫到的条数冒充。
+
+    这是终审指出的对账自证循环修复点:读不到就要如实返回 None,
+    让上层退回逐页累计并标注来源。
+    """
+
+    def _run(self, reader, elements=None):
+        elements = elements or [
+            element("member", MEMBER_TEXT),
+            element("guild_detail", "公会详情"),
+        ]
+        runner = make_runner(
+            FakeNavigator(),
+            FakeSweeper(sweep_result(elements, expected=len(elements))),
+            guild_detail_reader=reader,
+        )
+        return runner.collect()
+
+    def test_parses_member_total_from_tooltip(self):
+        result = self._run(lambda _e: "公会详情\n人数: [3/50]\n今日经验: 1,000")
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(result.member_total, 3)
+
+    def test_missing_detail_element_yields_none(self):
+        result = self._run(lambda _e: "人数: [3/50]", elements=[element("member", MEMBER_TEXT)])
+        self.assertIsNone(result.member_total, "没有公会详情物品时不得凭空得出总数")
+
+    def test_reader_failure_yields_none(self):
+        def boom(_e):
+            raise RuntimeError("OCR 挂了")
+
+        self.assertIsNone(self._run(boom).member_total)
+
+    def test_reader_without_total_line_yields_none(self):
+        self.assertIsNone(self._run(lambda _e: "公会详情\n名称: 演示公会").member_total)
+
+    def test_no_reader_configured_yields_none(self):
+        runner = make_runner(
+            FakeNavigator(),
+            FakeSweeper(sweep_result([element("member", MEMBER_TEXT)], expected=1)),
+        )
+        self.assertIsNone(runner.collect().member_total)
+
+
 class TestCollectSuccess(unittest.TestCase):
     def test_member_records_include_online(self):
         navigator = FakeNavigator()

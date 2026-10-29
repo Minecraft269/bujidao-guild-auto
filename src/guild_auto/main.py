@@ -866,7 +866,8 @@ def main():
                             cfg, watcher, human, hwnd, pid, detector=detector, stop_check=is_paused
                         )
                     except Exception as e:
-                        pass  # 忽略错误
+                        # debug 跳过解析阶段时查询错误不影响流程,但必须可检索
+                        logger.log_debug(f"[{pid}] debug 跳过解析时查询失败: {e!r}")
                 records = _generate_debug_records(
                     cfg, guild, targets, decide_skipped=("decide" in debug.get("skip_stages", []))
                 )
@@ -1143,9 +1144,11 @@ def main():
                 "stage_timings": stage_timings,
                 "roster": roster,
                 "counts": {
-                    "member_total": guild["total"]
-                    if guild.get("total") is not None
-                    else len(roster),
+                    # 不拿名册条数兜底:那样对账差值恒为 0,跨页漏扫永远发现不了。
+                    # 没有可信总数时传 None,报告据此如实写「无法对账」。
+                    "member_total": guild.get("total"),
+                    "member_total_source": guild.get("total_source")
+                    or ("guild_list_panel" if not ui_mode else "unknown"),
                     "online_total": guild.get("online"),
                     "queried": len(targets),
                     "decided": len(records),

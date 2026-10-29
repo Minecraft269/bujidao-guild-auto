@@ -135,6 +135,8 @@ class TestStageQueryUi(_TempCase):
         self.assertEqual(record["source"], "ui")
 
         self.assertEqual(outcome.guild["total"], 1)
+        # 没有公会详情 tooltip 时总数来自逐页累计,必须如实标注,不能冒充服务器人数
+        self.assertEqual(outcome.guild["total_source"], "ui_paging_accumulated")
         self.assertEqual(outcome.guild["groups"]["mid"], ["某某玩家"])
         self.assertEqual(outcome.failures, [])
 
@@ -382,6 +384,38 @@ class TestMainWiresUiMode(_TempCase):
         rt.human.send_command.assert_not_called()
         # UI 模式跳过的执行不得写进待办(否则下次会在指令模式续做)
         save_pending.assert_not_called()
+
+
+class TestMemberTotalSource(unittest.TestCase):
+    """成员总数来源必须可辨:tooltip 读数 vs 逐页累计,报告据此决定对账是否有证明力。"""
+
+    def _make(self, member_total):
+        from guild_auto.ui_mode import UiRunStats, _build_outcome
+
+        cfg = copy.deepcopy(DEFAULT_CONFIG)
+        records = [
+            {
+                "player": "甲",
+                "rank": "中等活跃成员",
+                "weekly_total": 10,
+                "joined_at": "2026-01-01 00:00:00",
+                "last_online": "2026-10-01 00:00:00",
+                "daily": [],
+                "online": True,
+                "source": "ui",
+            }
+        ]
+        return _build_outcome(cfg, records, UiRunStats(), member_total)
+
+    def test_tooltip_total_is_used_verbatim(self):
+        outcome = self._make(200)
+        self.assertEqual(outcome.guild["total"], 200)
+        self.assertEqual(outcome.guild["total_source"], "guild_detail_tooltip")
+
+    def test_missing_tooltip_falls_back_and_is_labelled(self):
+        outcome = self._make(None)
+        self.assertEqual(outcome.guild["total"], 1, "退回逐页累计:等于本次扫到的条数")
+        self.assertEqual(outcome.guild["total_source"], "ui_paging_accumulated")
 
 
 if __name__ == "__main__":

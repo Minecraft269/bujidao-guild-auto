@@ -18,7 +18,13 @@ from typing import TYPE_CHECKING
 
 from guild_auto.infrastructure import logger
 from guild_auto.vision.navigator import NavigationError
-from guild_auto.vision.tooltip import KIND_MEMBER, TITLE_GUILD, parse_member_tooltip
+from guild_auto.vision.tooltip import (
+    KIND_GUILD_DETAIL,
+    KIND_MEMBER,
+    TITLE_GUILD,
+    parse_guild_detail,
+    parse_member_tooltip,
+)
 
 if TYPE_CHECKING:  # 仅用于类型注解
     from collections.abc import Callable
@@ -37,6 +43,10 @@ class CollectionResult:
     reason: str = ""
     key_used: str = ""
     sweep: SweepResult | None = None
+    # 公会详情 tooltip 里的「人数: [N/M]」中的 N。
+    # None = 读不到(未注入读取器/界面上没找到公会详情物品/OCR 无该行)——
+    # 上层必须据此退回「逐页累计」并在报告注明来源,**不能**拿记录条数冒充。
+    member_total: int | None = None
 
 
 class VisionRunner:
@@ -50,6 +60,7 @@ class VisionRunner:
         open_guild: Callable[[], None] | None = None,
         online_sampler: Callable[[UIElement], bool | None] | None = None,
         member_parser: Callable[..., MemberData] = parse_member_tooltip,
+        guild_detail_reader: Callable[[UIElement], str | None] | None = None,
     ):
         self._navigator = navigator
         self._sweeper = sweeper
@@ -57,6 +68,37 @@ class VisionRunner:
         # 在线状态靠像素颜色采样;未注入时记 UNREADABLE,不猜离线
         self._online_sampler = online_sampler
         self._member_parser = member_parser
+        # 公会详情 tooltip 读取器(悬停 book → 截图 → OCR)。
+        # 未注入时成员总数不可知,上层退回逐页累计并注明来源。
+        self._guild_detail_reader = guild_detail_reader
+
+    def _read_member_total(self, sweep) -> int | None:
+        """从扫掠结果里找「公会详情」元素,悬停读 tooltip 并解析人数。
+
+        任何一步失败都返回 None(而不是拿扫到的记录条数充当总数)——
+        那会让报告的对账变成自证循环,跨页漏扫也发现不了。
+        """
+        if self._guild_detail_reader is None:
+            return None
+        element = next((e for e in sweep.elements if e.kind == KIND_GUILD_DETAIL), None)
+        if element is None:
+            logger.log_warning(
+                "vision.runner: 扫掠未找到公会详情物品,成员总数改为逐页累计(报告将注明来源)"
+            )
+            return None
+        try:
+            text = self._guild_detail_reader(element)
+        except Exception as e:
+            logger.log_warning(f"vision.runner: 读取公会详情失败,总数改为逐页累计: {e!r}")
+            return None
+        if not text:
+            return None
+        total = parse_guild_detail(text)
+        if total is None:
+            logger.log_warning(
+                "vision.runner: 公会详情 tooltip 无「人数: [N/M]」行,总数改为逐页累计"
+            )
+        return total
 
     def collect(self) -> CollectionResult:
         try:
@@ -99,8 +141,17 @@ class VisionRunner:
             member = self._member_parser(element.text, online=online)
             records.append(member.as_record())
 
+        member_total = self._read_member_total(sweep)
+
         logger.log_info(
             f"vision.runner: UI 采集完成 {len(records)} 人 "
-            f"(按键 {key},停留点 {len(sweep.points)},识别语义 {sweep.recognized_cells} 格)"
+            f"(按键 {key},停留点 {len(sweep.points)},识别语义 {sweep.recognized_cells} 格,"
+            f"成员总数来源={'公会详情 tooltip' if member_total is not None else '逐页累计'})"
         )
-        return CollectionResult(ok=True, records=tuple(records), key_used=key, sweep=sweep)
+        return CollectionResult(
+            ok=True,
+            records=tuple(records),
+            key_used=key,
+            sweep=sweep,
+            member_total=member_total,
+        )

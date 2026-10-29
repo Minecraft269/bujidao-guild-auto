@@ -33,6 +33,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 import time as _time
 import traceback as _tb
@@ -215,12 +216,15 @@ def _log(level, msg):
         return
     try:
         _logger.log(level, msg)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
         # 日志目录被外部删除时(典型:某测试 tearDown 删了临时目录,而 logger 单例
         # 仍持有指向它的 FileHandler),handler.emit 会抛 FileNotFoundError。
-        # 日志写不进去**不该**把业务代码带崩 —— 降级为静默让流程继续。
-        # 生产上同理:静默丢日志好过中断一次清人。
-        pass
+        # 日志写不进去不该把业务代码带崩,但也不能静默:写 stderr 留痕。
+        # 不能用 logger 自身记录(会递归到本函数)。
+        try:
+            sys.stderr.write(f"[logger] 写日志失败: {e!r}\n")
+        except Exception:
+            return  # stderr 也不可用:这是唯一允许的"无处可写"分支
 
 
 # ---------------------------------------------------------------------------

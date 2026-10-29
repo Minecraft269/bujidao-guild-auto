@@ -211,6 +211,14 @@ _STATUS_LEDGER = [
 ]
 _PLACEHOLDER = "——"
 
+# 成员总数来源 → 报告文案。由运行侧通过 counts.member_total_source 传入,
+# 报告不再按操作模式猜测来源(那会把"逐页累计"误写成"公会详情 tooltip")。
+_SOURCE_TEXT = {
+    "guild_list_panel": "指令模式=/guild list 面板末行",
+    "guild_detail_tooltip": "UI模式=公会详情 tooltip「人数: [N/M]」",
+    "ui_paging_accumulated": "UI模式=逐页翻页累计(未读到公会详情 tooltip)",
+}
+
 
 def _num_text(value):
     """数值字段的展示文本:缺失用占位符,而不是误导性的 0。"""
@@ -444,8 +452,9 @@ def _render_timings(lines, run_meta):
         seconds = stage.get("seconds")
         try:
             total += float(seconds)
-        except (TypeError, ValueError):
-            pass  # 阶段没记到秒数时只影响合计,不影响其他行
+        except (TypeError, ValueError) as e:
+            # 阶段没记到秒数时只影响合计,不影响其他行;但要留痕
+            logger.log_debug(f"阶段耗时非数值,不计入合计: {seconds!r} ({e!r})")
         lines.append(
             f"{str(stage.get('name') or _PLACEHOLDER):<14}"
             f"{_fmt_seconds(seconds):<10}"
@@ -720,16 +729,19 @@ def _render_roster(lines, records, cfg, run_meta):
     lines.append("")
     lines.append("---对账---")
     lines.append(f"  名册条目合计: {len(roster)}")
-    source = (
-        "UI模式=公会详情 tooltip「人数: [N/M]」"
-        if mode == "ui"
-        else "指令模式=/guild list 面板末行"
+    # 来源必须来自运行侧的真实采集方式,不能按操作模式猜 ——
+    # UI 模式读不到公会详情时总数来自逐页累计,那种情况下差值为 0 没有证明力。
+    source_key = str(
+        counts.get("member_total_source") or ("guild_list_panel" if mode != "ui" else "")
     )
+    source = _SOURCE_TEXT.get(source_key, "未知来源")
     lines.append(f"  成员总数(来源: {source}): {_num_text(member_total)}")
     lines.append(f"  在线成员数: {_online_text(counts, mode)}")
     if isinstance(member_total, int) and not isinstance(member_total, bool):
         diff = len(roster) - member_total
         verdict = "✅ 无遗漏" if diff == 0 else "❌ 报告缺陷"
+        if source_key == "ui_paging_accumulated":
+            verdict = "⚠ 仅逐页累计,差值为 0 不构成漏扫证明"
         lines.append(f"  差值: {diff} {verdict}")
     else:
         lines.append("  差值: - ❌ 报告缺陷(成员总数缺失,无法对账)")

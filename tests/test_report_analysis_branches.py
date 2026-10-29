@@ -297,5 +297,39 @@ class TestRenderOptions(unittest.TestCase):
         self.assertTrue(os.path.basename(path).endswith("运行分析报告.txt"))
 
 
+class TestMemberTotalSourceText(unittest.TestCase):
+    """对账来源必须如实标注 —— 逐页累计的差值为 0 不具备漏扫证明力。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="analysis_src_")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def _render(self, source, total=2, mode="command"):
+        meta = _meta(
+            roster=[{"player": "甲", "rank": "high", "status": "processed"}],
+            operation_mode=mode,
+        )
+        meta["counts"]["member_total"] = total
+        meta["counts"]["member_total_source"] = source
+        path = R.write_analysis_report(self.tmp, "演示公会", [], _cfg(), meta)
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_command_source_says_panel(self):
+        self.assertIn("指令模式=/guild list 面板末行", self._render("guild_list_panel"))
+
+    def test_tooltip_source_says_tooltip(self):
+        self.assertIn("公会详情 tooltip", self._render("guild_detail_tooltip"))
+
+    def test_paging_source_is_labelled_and_verdict_is_qualified(self):
+        text = self._render("ui_paging_accumulated")
+        self.assertIn("逐页翻页累计", text)
+        self.assertIn("不构成漏扫证明", text, "逐页累计时差值 0 不能被当成无遗漏的证明")
+
+    def test_unknown_source_is_not_silently_guessed(self):
+        """UI 模式又没给来源时必须写「未知来源」,不能猜成面板解析。"""
+        self.assertIn("未知来源", self._render("", mode="ui"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

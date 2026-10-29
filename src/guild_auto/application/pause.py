@@ -351,9 +351,10 @@ def install_signal_handlers():
             continue
         try:
             prev[name] = _sig.signal(signum, _signal_handler)
-        except (ValueError, OSError, RuntimeError):
-            # 非主线程注册会 ValueError;某些环境无控制台信号会 OSError
-            pass
+        except (ValueError, OSError, RuntimeError) as e:
+            # 非主线程注册会 ValueError;某些环境无控制台信号会 OSError。
+            # 注册失败意味着该信号不会进暂停菜单,必须留痕才能排查。
+            logger.log_debug(f"注册 {name} 信号处理器失败: {e!r}")
     return prev
 
 

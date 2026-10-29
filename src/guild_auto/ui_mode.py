@@ -211,6 +211,18 @@ def build_pipeline(cfg, adapters, stats: UiRunStats, gate) -> VisionRunner:
             "在「装扮与个人设定」界面未找到公会入口(未识别到「公会详情」tooltip),不盲点"
         )
 
+    def _read_guild_detail(element):
+        """悬停「公会详情」物品 → 等 tooltip 渲染 → 截图 → OCR,返回 tooltip 文本。
+
+        这是成员总数**唯一可信来源**(「人数: [N/M]」)。读不到时返回 None,
+        由 runner 记 warning,上层退回逐页累计并在报告注明来源 ——
+        绝不能拿扫到的记录条数冒充总数,那会让对账变成自证循环。
+        """
+        _hover(element.rect.center)
+        adapters.sleep(int(vision_cfg["stay_ms"]) / 1000.0)
+        text, _confidence = _ocr(_capture())
+        return text
+
     navigator = Navigator(
         first_key=hotbar_key(cfg["game_options"], int(vision_cfg["hotbar_slot"])),
         press=_press,
@@ -223,6 +235,7 @@ def build_pipeline(cfg, adapters, stats: UiRunStats, gate) -> VisionRunner:
         navigator=navigator,
         sweeper=_make_sweeper(),
         open_guild=_open_guild,
+        guild_detail_reader=_read_guild_detail,
     )
 
 
@@ -258,8 +271,14 @@ def _collect_with_rescan(runner, adapters, stats: UiRunStats):
     raise UiCollectionError(f"自动暂停/恢复过于频繁:连续重扫 {MAX_RESCANS} 次仍未完成 UI 查询")
 
 
-def _build_outcome(cfg, ui_records, stats: UiRunStats) -> UiQueryOutcome:
-    """把 UI 采集记录转成与指令模式同构的 records + 名册 + 失败项。"""
+def _build_outcome(
+    cfg, ui_records, stats: UiRunStats, member_total: int | None = None
+) -> UiQueryOutcome:
+    """把 UI 采集记录转成与指令模式同构的 records + 名册 + 失败项。
+
+    member_total 必须是**外部可验证**的来源:公会详情 tooltip 的「人数: [N/M]」。
+    读不到(None)时才退回逐页累计,并如实标注来源 —— 报告据此判断对账是否可信。
+    """
     rank_names = cfg["rank_names"]
     display_to_rank = {str(display): rank for rank, display in rank_names.items()}
     skip_ranks = set(cfg["skip_ranks"])
@@ -320,9 +339,18 @@ def _build_outcome(cfg, ui_records, stats: UiRunStats) -> UiQueryOutcome:
         records.append(record)
 
     guild_name = str(cfg.get("guild_name") or "").strip() or UI_GUILD_NAME_UNKNOWN
+    if member_total is None:
+        # 退回逐页累计:数值等于本次扫到的成员条数,对账因此不能发现跨页漏扫,
+        # 报告必须把这个事实写出来(来源标注),而不是假装是服务器人数。
+        total = len(ui_records)
+        total_source = "ui_paging_accumulated"
+    else:
+        total = member_total
+        total_source = "guild_detail_tooltip"
     guild = {
         "guild_name": guild_name,
-        "total": len(ui_records),
+        "total": total,
+        "total_source": total_source,
         "online": online_total if online_sampled else None,
         "groups": groups,
     }
@@ -353,4 +381,4 @@ def stage_query_ui(rt, cfg, *, adapters=None, runner=None) -> UiQueryOutcome:
         raise UiCollectionError(f"UI 识别查询失败:{result.reason}")
     stats.key_used = result.key_used
     console(f"UI 识别查询完成: {len(result.records)} 条成员记录")
-    return _build_outcome(cfg, result.records, stats)
+    return _build_outcome(cfg, result.records, stats, result.member_total)

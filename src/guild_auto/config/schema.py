@@ -9,6 +9,7 @@ config/schema.py —— 配置结构契约(键名 / 枚举 / 校验规则)
 这样改校验规则不需要动 IO 代码,反之亦然。
 """
 
+import logging
 import os
 
 from guild_auto.config.defaults import DEFAULT_CONFIG
@@ -452,7 +453,9 @@ def validate_config(cfg):
                             "(如 C:\\Path\\To\\Minecraft\\logs\\latest.log)",
                         )
                     )
-        except (OSError, ValueError):
-            pass  # 路径解析失败不阻塞校验(后续打开日志时会自然报错)
+        except (OSError, ValueError) as exc:
+            # 路径解析失败不阻塞校验(后续打开日志时会自然报错),
+            # 但必须留痕:用标准库 logging,避免 config→infrastructure 的导入环
+            logging.getLogger(__name__).debug("game_log 路径解析失败: %r", exc)
 
     return issues
