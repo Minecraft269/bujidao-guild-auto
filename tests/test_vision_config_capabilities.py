@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-test_vision_config_capabilities.py —— 阶段 6 配置项与构建能力门禁
-=================================================================
+test_vision_config_capabilities.py —— 阶段 6 配置项校验
+=======================================================
 覆盖:
   * 新增配置键的默认值与校验(stay_ms 下限、比例区间、枚举、1~9 槽位);
   * 非法值必须报 error 而不是崩;
   * operation_mode="ui" 在主流程已接线但缺 OCR 适配器时启动即报错,禁止静默降级。
+
+构建能力门禁本身（require/has/CapabilityError）由 tests/test_capabilities.py 覆盖 ——
+原先 vision 层另有一套同义实现，属于重复抽象，已删除并统一到 guild_auto.capabilities。
 """
 
 import copy
@@ -17,11 +20,6 @@ import unittest
 from unittest import mock
 
 from guild_auto.config import CONFIG_COMMENTS, DEFAULT_CONFIG, validate_config
-from guild_auto.vision.capabilities import (
-    CapabilityError,
-    ensure_operation_mode_supported,
-    has_vision_capability,
-)
 
 
 def _cfg():
@@ -113,28 +111,6 @@ class TestVisionValidation(unittest.TestCase):
                 any("vision" in m for m in _errors(validate_config(cfg))),
                 f"vision={bad!r} 未报错",
             )
-
-
-class TestCapabilityGate(unittest.TestCase):
-    def test_command_mode_always_supported(self):
-        ensure_operation_mode_supported("command")
-
-    def test_ui_mode_supported_when_pipeline_wired(self):
-        """US-007 已接线:含 vision 的构建放行 ui 模式(启动门禁另有 OCR 检查)。"""
-        self.assertTrue(has_vision_capability())
-        ensure_operation_mode_supported("ui")
-
-    def test_ui_mode_rejected_when_build_lacks_vision(self):
-        """构建裁剪掉 vision 时仍须报错,不得静默按指令模式跑。"""
-        with self.assertRaises(CapabilityError):
-            ensure_operation_mode_supported("ui", vision=False)
-
-    def test_ui_mode_allowed_when_capability_injected(self):
-        ensure_operation_mode_supported("ui", vision=True)
-
-    def test_invalid_mode_rejected(self):
-        with self.assertRaises(CapabilityError):
-            ensure_operation_mode_supported("ui-ish")
 
 
 class TestStartupGate(unittest.TestCase):
