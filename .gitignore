@@ -7,6 +7,9 @@ __pycache__/
 build/
 dist/
 *.spec
+# 打包期能力常量(scripts/build-variants.py 生成):提交进来会让本地源码运行
+# 悄悄锁定成某一个变体的能力清单,而不是"源码运行=全能力"。
+src/guild_auto/_build_capabilities.py
 
 # ── 运行期产物(日志 / 报告 / 用户配置)────────────────────────
 logs/

@@ -35,14 +35,49 @@ permissions:
   contents: read
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # 变体矩阵由能力注册表推导,workflow 里不出现任何一个变体名。
+  # 新增能力时只改 src/guild_auto/capabilities.py,这里与 build 任务均无需改动
+  # (plan.txt【阶段 7】1.4:禁止把 8 种组合逐个硬写到 CI)。
+  # ---------------------------------------------------------------------------
+  variants:
+    name: Build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Generate matrix from capability registry
+        id: matrix
+        shell: bash
+        run: |
+          matrix=$(python scripts/build-variants.py --list)
+          # GITHUB_OUTPUT 每个 key 只吃单行,脚本已输出紧凑 JSON。
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "构建矩阵: $matrix" >> "$GITHUB_STEP_SUMMARY"
+
   build:
-    name: PyInstaller (onefile + UPX)
+    # 每个变体一条独立产物:构建期写入能力常量,运行时据此打印代号并拦截缺失功能。
+    name: PyInstaller ${{ matrix.variant }}
+    needs: variants
     runs-on: windows-latest
     permissions:
-      # 仅 tag 构建需要写权限创建 Release；PR 构建用不到。
+      # 仅 tag 构建需要写权限创建 Release;PR 构建用不到。
       contents: write
+    strategy:
+      # 某个变体构建失败时不要取消其余变体 —— 需要看到"哪个变体坏了"。
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.variants.outputs.matrix) }}
     env:
       APP_NAME: '布吉岛公会管理脚本'
+      # 同时作为构建输入(写入常量)与本地冒烟运行时读取的能力清单。
+      GUILD_AUTO_CAPABILITIES: ${{ matrix.capabilities }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,17 +116,33 @@ jobs:
           python -m pip install -r requirements.txt pyinstaller
 
       - name: Build
-        # 参数逐条复刻 布吉岛公会管理脚本.spec + build.bat 的 CLI 等价物。
-        # 原因：.gitignore 含 *.spec，该 spec 未纳入版本控制，CI 全新检出拿不到它。
-        # excludes = 原有 8 项 + 本次新增 6 项，均已逐一验证无用（见 notes）。
+        # 能力清单先写成打包期常量:exe 运行时读不到 CI 的 env,
+        # 靠这份常量才能打印自己的变体名(与 --list 同源,不会漂移)。
+        #
+        # 可选单元按能力裁剪:无 gui → 排除 tkinter;无 vision → 排除 winsdk,
+        # 这样每个变体只带自己需要的依赖。
+        #
+        # 参数逐条复刻 build.bat 的 CLI 等价物。
+        # 原因:.gitignore 含 *.spec,该 spec 未纳入版本控制,CI 全新检出拿不到它。
         run: |
-          # 用数组传参而不是反引号续行：APP_NAME 含中文，反引号 + 嵌套引号
-          # 在 PowerShell 里容易踩转义坑，数组由运行时自行分词，最稳。
+          python scripts/build-variants.py --write-const src/guild_auto/_build_capabilities.py
+          $caps = $env:GUILD_AUTO_CAPABILITIES.Split(',')
+
           $pyinstaller_args = @(
             "--onefile", "--clean", "--noconfirm",
-            "--name", $env:APP_NAME,
-            "--collect-all", "winsdk",
-            "--exclude-module", "tkinter",
+            "--name", "$env:APP_NAME-${{ matrix.variant }}",
+            "--paths", "src"
+          )
+          if ($caps -contains 'vision') {
+            $pyinstaller_args += @("--collect-all", "winsdk")
+          } else {
+            $pyinstaller_args += @("--exclude-module", "winsdk")
+          }
+          if ($caps -notcontains 'gui') {
+            $pyinstaller_args += @("--exclude-module", "tkinter")
+          }
+          # 以下为体积优化,与能力无关。
+          $pyinstaller_args += @(
             "--exclude-module", "cv2",
             "--exclude-module", "numpy",
             "--exclude-module", "PyQt5",
@@ -106,17 +157,31 @@ jobs:
             "--exclude-module", "pythoncom",
             "--exclude-module", "pywintypes",
             "--exclude-module", "pytest",
-            "--paths", "src",
             "src/guild_auto/main.py"
           )
           pyinstaller @pyinstaller_args
+
+      - name: Smoke test variant banner
+        # 冒烟:清掉环境变量,强制读刚写入的打包期常量 —— 这才能证明
+        # "产物脱离 env 也能报出自己的变体名"。期望值来自矩阵本身,
+        # 不是手抄的变体名,新增能力时无需改这段。
+        env:
+          PYTHONPATH: src
+        run: |
+          $env:GUILD_AUTO_CAPABILITIES = $null
+          $actual = python -c "from guild_auto import capabilities as c; print(c.build_banner())"
+          Write-Host $actual
+          $expected = "构建变体: ${{ matrix.variant }}    已启用能力: ${{ matrix.capabilities }}"
+          if ($actual -ne $expected) {
+            throw "变体横幅不符: 期望 [$expected],实际 [$actual]"
+          }
 
       - name: Report size
         run: |
           $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
           if (-not $exe) { throw 'dist/ 下没有 .exe，构建未产出' }
           $mb = [math]::Round($exe.Length / 1MB, 2)
-          "### Build artifact" >> $env:GITHUB_STEP_SUMMARY
+          "### Build artifact (${{ matrix.variant }})" >> $env:GITHUB_STEP_SUMMARY
           "" >> $env:GITHUB_STEP_SUMMARY
           "| File | Size |" >> $env:GITHUB_STEP_SUMMARY
           "| --- | --- |" >> $env:GITHUB_STEP_SUMMARY
@@ -126,13 +191,14 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ github.run_number }}
+          # artifact 名含变体代号,8 个变体互不覆盖。
+          name: dist-${{ matrix.variant }}-${{ github.run_number }}
           path: dist/
           retention-days: 7
           if-no-files-found: error
 
       - name: Publish release
-        # 只在打 tag 时发 Release；普通分支 push / PR / 手动触发只留 artifact。
+        # 只在打 tag 时发 Release;普通分支 push / PR / 手动触发只留 artifact。
         if: "${{ startsWith(github.ref, 'refs/tags/') }}"
         uses: softprops/action-gh-release@v2
         with:

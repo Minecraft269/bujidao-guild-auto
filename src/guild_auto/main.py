@@ -20,6 +20,7 @@ from datetime import datetime
 from pynput import keyboard
 import pyautogui
 
+from guild_auto import capabilities as capabilities_mod
 import guild_auto.config as config_mod
 from guild_auto.domain.decisions import (
     build_notification,
@@ -585,15 +586,36 @@ def prepare_config(args, console_fn=None, exit_fn=None):
             errors.append(msg)
             console_fn(f"  [错误] {msg}", level="error")
 
-    # UI 识别模式的构建能力门禁(阶段 6):配置要求 ui 而当前构建没有 vision 能力时
-    # 启动即报错 —— 静默降级成指令模式会让用户以为在跑界面模式,实际在发聊天命令。
-    from guild_auto.vision.capabilities import CapabilityError, ensure_operation_mode_supported
+    # 构建能力门禁(阶段 7):配置要求了当前构建未包含的能力时启动即报错。
+    # 静默降级比启动失败危险 —— 用户会以为在跑 UI 识别/异步模式,实际走的是
+    # 指令串行流程,且不会收到任何提示。
+    for cap, feature, requested in (
+        ("gui", "图形配置界面(--ui)", bool(getattr(args, "ui", False))),
+        ("vision", 'UI 识别模式(operation_mode="ui")', cfg.get("operation_mode") == "ui"),
+        (
+            "async",
+            "异步模式(async.enabled=true)",
+            bool((cfg.get("async") or {}).get("enabled", False)),
+        ),
+    ):
+        if not requested:
+            continue
+        try:
+            capabilities_mod.require(cap, feature)
+        except capabilities_mod.CapabilityError as e:
+            errors.append(str(e))
+            console_fn(f"  [错误] {e}", level="error")
 
-    try:
-        ensure_operation_mode_supported(cfg.get("operation_mode", "command"))
-    except CapabilityError as e:
-        errors.append(str(e))
-        console_fn(f"  [错误] {e}", level="error")
+    # UI 识别模式的第二步:能力齐了还要主流程真接上。当前 main() 尚未分派 ui 模式,
+    # 只按能力放行会让 ui 配置静默走指令流程 —— 必须继续拦到接线完成。
+    # 延迟 import:vision 是可选单元,导入失败不应影响不含它的构建。
+    if cfg.get("operation_mode") == "ui" and capabilities_mod.has("vision"):
+        from guild_auto.vision.capabilities import has_vision_capability
+
+        if not has_vision_capability():
+            msg = '当前构建含 vision 能力,但 UI 识别模式主流程尚未接线,operation_mode="ui" 无法执行'
+            errors.append(msg)
+            console_fn(f"  [错误] {msg}", level="error")
 
     if errors:
         console_fn("配置校验失败,请修正后重试(参考 docs/《配置说明.md》)", level="error")
@@ -602,6 +624,7 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     sw = cfg["switches"]
     console_fn("=" * 56)
     console_fn("布吉岛公会管理脚本(全自动版)")
+    console_fn(capabilities_mod.build_banner())
     console_fn(f"  管理员: {cfg.get('admin') or '(未设置,建议 --admin 或配置)'}")
     console_fn(f"  公会群: {cfg.get('guild_qq')}")
     console_fn(
@@ -1049,22 +1072,13 @@ def main():
         p3 = None
         if analysis_enabled:
             roster = build_roster(guild["groups"], records, failures, cfg)
-            # 能力清单来自本次运行实际启用的功能(本构建没有独立的能力注册表),
-            # 构建变体只有"源码运行"一种,缺省不臆造版本号。
-            capabilities = ["core"]
-            if cfg["async"]["enabled"]:
-                capabilities.append("async")
-            if (cfg.get("ui") or {}).get("enabled"):
-                capabilities.append("gui")
-            if (cfg.get("state_check") or {}).get("enabled"):
-                capabilities.append("vision")
+            # 构建变体与能力清单取真实值(阶段 7):与启动横幅同源,
+            # 由 capabilities.variant_meta() 统一生成,避免报告与横幅两处漂移。
             run_meta = {
                 "started_at": run_started,
                 "ended_at": datetime.now(),
-                # 本构建只实现了指令模式;UI 识别模式尚未接线,故固定 command。
                 "operation_mode": "command",
-                "build_variant": "source",
-                "capabilities": capabilities,
+                **capabilities_mod.variant_meta(),
                 "stage_timings": stage_timings,
                 "roster": roster,
                 "counts": {
