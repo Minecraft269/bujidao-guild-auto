@@ -40,6 +40,10 @@
 | [更改声明.md](更改声明.md) | 2026-08 历史变更记录 |
 | [流程与架构图.md](流程与架构图.md) | **架构真源**：分层依赖、双模式流程、UI 识别模式、构建变体矩阵 |
 | [业务规则继承清单.md](业务规则继承清单.md) | **业务规则真源**：阈值矩阵/命令格式/通知文案(零改动) |
+| [UI识别模式详解.md](UI识别模式详解.md) | **UI 模式真源**：界面层级、tooltip 六字段、踢出交叉验证、扫掠与按键试探 |
+| [详细报告规范.md](详细报告规范.md) | **第三份报告真源**：七节结构、数据来源按模式区分、名册对账口径 |
+| [验收证据.md](验收证据.md) | **25 条硬性验收**逐条证据（命令 + 输出摘录） |
+| [审查记录.md](审查记录.md) / [审查记录-复审.md](审查记录-复审.md) / [审查记录-复审2.md](审查记录-复审2.md) | 独立审查（审查与实现分离）三轮记录：REJECT → REJECT → APPROVE |
 
 > 首次运行会自动生成带中文注释的 `config.json`,照着注释填即可。
 
@@ -202,14 +206,21 @@ guild_auto_v2/
 │   ├── __main__.py           #   python -m guild_auto 入口
 │   ├── config/               #   配置层:defaults(默认值) schema(校验) loader(读写)
 │   ├── domain/               #   领域层:decisions(判定/文案/命令) parsers reporter
-│   ├── application/          #   应用层:stages(runtime(状态) pause pending debug_data
+│   ├── application/          #   应用层:stages runtime(状态) pause pending debug_data
 │   ├── infrastructure/       #   基础设施:window_input game_state log_watcher
 │   │                         #             logger action_executor
 │   ├── concurrency/          #   并发层:async_system async_executor
-│   └── ui/                   #   UI 层(阶段 3 填充)
-├── tests/                    # 单元测试(924 个)
+│   ├── vision/               #   UI 识别层(阶段 6):bindings tooltip sweep navigator
+│   │                         #             runner verifier adapters models
+│   ├── ui/                   #   UI 层(阶段 3):app config_panel confirm_dialog
+│   │                         #             toolbar rules_panel
+│   ├── capabilities.py       #   能力注册表 + 构建变体拼接名(阶段 7)
+│   └── ui_mode.py            #   UI 模式查询阶段(导航→扫掠→同构 records)
+├── scripts/build-variants.py # 生成 CI 构建矩阵 / 写入打包期能力常量
+├── tests/                    # 单元测试(1300+ 个)
 ├── docs/                     # 文档:README/流程与架构图/使用说明/配置说明/
-│                             #       业务规则继承清单/覆盖率报告/变更声明
+│                             #       业务规则继承清单/UI识别模式详解/详细报告规范/
+│                             #       验收证据/审查记录/覆盖率报告/变更声明
 ├── config.json               # 配置文件(首次运行自动生成,已 gitignore)
 ├── logs/  reports/           # 运行期产物(已 gitignore)
 └── .github/workflows/        # CI
