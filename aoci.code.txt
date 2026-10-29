@@ -1,1 +1,114 @@
 #AOCI-CODE-VOLUME: 1
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/===
+.coveragerc[FC5T]: F:总体覆盖率门禁的唯一配置源：source=guild_auto，排除 tests 与点目录 | R:code:pyproject.toml,code:.github/workflows/test.yml | A:- | S:只被 Gate 2（--cov-fail-under=92）通过 COVERAGE_RCFILE 读取；核心层门禁用显式 --cov 包名、不读本文件，避免 exclude 规则削弱核心 98% 门禁
+.gitattributes[FC4T]: F:统一换行符为 LF（* text=auto eol=lf） | R:code:aoci.txt | A:- | S:AOCI 基线按原始字节比对，Windows 默认 autocrlf 会把整棵树标记为 stale，因此必须强制 eol=lf
+.gitignore[FC4T]: F:忽略构建产物、缓存、运行期产物、本地配置与打包期能力常量 | R:code:src/guild_auto/_build_capabilities.py,code:config.json | A:- | S:_build_capabilities.py 必须忽略：一旦提交，本地源码运行会被锁成某个变体的能力清单，而不是源码运行=全能力
+.markdown-lint.yml[FC4T]: F:markdownlint 配置：关闭中文不友好的 MD013/MD033/MD024/MD041 | R:code:.github/workflows/super-linter.yml | A:- | S:中文文档按字符计宽，强制 80 列断行反而降低可读性
+AGENTS.md[SG5S]: F:aoci 生成的仓库认知入口（跨工具通用约定） | R:code:aoci.txt,code:CLAUDE.md | A:- | S:由 aoci 托管生成，手工修改会在下次生成时被覆盖；super-linter 已排除该文件
+CLAUDE.md[SZ6T]: F:项目纪律：零硬编码、配置键必须有描述、业务规则零改动、结论需证据、审查与实现分离 | R:code:docs/业务规则继承清单.md,code:pyproject.toml | A:- | S:本文件优先级高于习惯做法；新增 DEFAULT_CONFIG 键必须同时注册 CONFIG_COMMENTS，否则 tests/test_config_jsonc_guards.py 失败
+build.bat[XV5T]: F:Windows 一键打包 PyInstaller onefile + UPX | R:code:src/guild_auto/main.py,code:pyproject.toml | A:- | S:*.spec 被 .gitignore 忽略，构建必须用 CLI 参数复刻 spec，不能依赖仓库里的 .spec 文件
+pyproject.toml[FV7T]: F:项目元数据、console 入口 guild-auto、依赖与 ruff/pytest/coverage 配置 | R:code:src/guild_auto/main.py,code:requirements.txt,code:.coveragerc | A:- | S:ruff 必须锁 0.16.10；src-layout 用 package-dir=src；coverage 的 omit 只能写在 .coveragerc，pytest-cov 无 --cov-omit
+requirements.txt[FV6T]: F:运行期依赖清单（pynput/pyautogui/pyperclip 等） | R:code:pyproject.toml,code:.github/workflows/security.yml | A:- | S:-
+vulture_whitelist.py[FQ3T]: F:vulture 白名单：声明被框架或入口动态引用的符号 | R:code:pyproject.toml | A:- | S:-
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/.github/===
+dependabot.yml[FV6T]: F:每周检查 pip 与 github-actions 两个 ecosystem，并按组分组升级 | R:code:.github/workflows/dependabot-auto-merge.yml,code:pyproject.toml | A:- | S:actions 升级必然改动 .github/workflows/**，用 gh API 合并会被 workflow scope 拒绝；git push 路径可以
+release-drafter.yml[FV5T]: F:Release Drafter 的分类规则与草稿模板 | R:code:.github/workflows/release-drafter.yml | A:- | S:-
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/.github/workflows/===
+build.yml[OV7M]: F:按能力矩阵构建 8 个变体（Lite…Lite-Async-Gui-Vision），每变体独立产物并冒烟校验横幅 | R:code:scripts/build-variants.py,code:src/guild_auto/capabilities.py,code:.github/workflows/test.yml | A:- | S:变体列表必须由 scripts/build-variants.py --list 生成，禁止把 8 种硬写进 workflow；冒烟比较要把期望值传进 Python（Windows stdout 是 cp1252，直接打印中文横幅会 UnicodeEncodeError）；Install UPX 必须显式 shell: bash
+codecov.yml[OV6T]: F:把 pytest 覆盖率上传到 Codecov（main push / PR） | R:code:.coveragerc,code:.github/workflows/test.yml | A:- | S:-
+dependabot-auto-merge.yml[OW6T]: F:轮询 check-runs，全部通过后 squash 合并 Dependabot PR | R:code:.github/dependabot.yml | A:- | S:不能用 gh pr checks --watch——本 job 自身的检查也在列表里，会一直等自己而死锁；必须轮询 commits/{sha}/check-runs 并排除名为 Auto-merge 的检查。不做 checkout 时 gh 需要 job 级 GH_REPO，否则报 fatal: not a git repository
+format.yml[OQ6T]: F:ruff format --check 全仓阻塞门禁 | R:code:pyproject.toml,code:.github/workflows/lint.yml | A:- | S:必须锁 ruff==0.16.10：跨版本的格式化规则不同，升级会让已格式化仓库突然变红
+lint.yml[OQ6T]: F:ruff check 静态检查（阻塞） | R:code:pyproject.toml,code:.github/workflows/format.yml | A:- | S:格式化检查已独立到 format.yml，这里不得重复执行，否则同一次推送跑两遍 format
+mutmut.yml[OQ5T]: F:每周一定时 / 手动跑 mutmut 变异测试，不阻塞 PR | R:code:pyproject.toml,code:src/guild_auto/domain | A:- | S:-
+mypy.yml[OQ6T]: F:对 src/guild_auto 做 mypy 类型检查 | R:code:pyproject.toml | A:- | S:PYTHONIOENCODING/PYTHONUTF8 必须设置：Windows runner 的 cp1252 stdout 遇到中文类型错误会崩
+release-drafter.yml[OV5T]: F:在 main push 与 PR 事件上维护 Release 草稿 | R:code:.github/release-drafter.yml | A:- | S:-
+security.yml[OS7S]: F:CodeQL 扫描 + PR 依赖审查 + pip-audit 漏洞审计 | R:code:requirements.txt,code:pyproject.toml | A:- | S:dependency-review 在公开仓库不可用（需要 Dependency graph），continue-on-error 必须放在 step 级——job 级只让 workflow run 不变红，check conclusion 仍是 failure，会挡住合并；pip-audit 需要 PYTHONIOENCODING/PYTHONUTF8，否则中文漏洞描述在 cp1252 管道下崩
+stale.yml[OW5T]: F:定时关闭长期无活动的 issue 与 PR | R:- | A:- | S:-
+super-linter.yml[OQ5T]: F:校验 docs / YAML / JSON（Python 交给 ruff） | R:code:.markdown-lint.yml,code:AGENTS.md,code:CLAUDE.md | A:- | S:必须用 FILTER_REGEX_EXCLUDE 排除 AGENTS.md 与 CLAUDE.md：前者由 aoci 生成、后者纪律段由 project-init 托管，手工断行会被下次生成覆盖
+test.yml[OQ7S]: F:Python 3.10/3.11/3.12 矩阵跑全量测试 + 双档覆盖率门禁（核心 98% / 总体 92%） | R:code:.coveragerc,code:pyproject.toml,code:src/guild_auto | A:- | S:核心层门禁用显式 --cov=guild_auto.<层> 指定模块、不读 .coveragerc；总体门禁靠 COVERAGE_RCFILE 指向 .coveragerc（pytest-cov 没有 --cov-omit）；两档任一失败 job 即失败
+vulture.yml[OQ5T]: F:扫描死代码（vulture） | R:code:src/guild_auto | A:- | S:-
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/docs/===
+CI与Bot.md[SO5S]: F:CI 策略、Bot 配置与合并规范说明 | R:code:.github/workflows/build.yml,code:.github/dependabot.yml | A:- | S:-
+CI路径过滤验证.md[SO4T]: F:验证 paths-ignore / paths 白名单是否真的生效 | R:code:.github/workflows/lint.yml,code:.github/workflows/test.yml,code:.github/workflows/security.yml | A:- | S:Security 用 paths 白名单而非 ignore：三个 job 敏感面不同（CodeQL 看 .py、pip-audit 看依赖清单、dependency-review 需 PR diff）
+README.md[SO6M]: F:项目首页：定位、安装、CLI 参数、两种模式与文档索引 | R:code:docs/流程与架构图.md,code:docs/配置说明.md,code:docs/使用说明.md | A:- | S:README 放在 docs/ 下也能被 GitHub 识别为首页，不需要根目录副本
+UI识别模式详解.md[SH5M]: F:UI 识别模式真源：界面层级、tooltip 六字段、踢出交叉验证、鼠标扫掠与按键试探 | R:code:src/guild_auto/vision/runner.py,code:src/guild_auto/ui_mode.py,code:docs/流程与架构图.md | A:- | S:hotbar 键值必须运行时从 options.txt 读，禁止内置默认；踢出回显不含玩家名，必须交叉验证；图标模板匹配不可行（材质包改变外观）
+业务规则继承清单.md[SB7T]: F:业务规则唯一真源：阈值矩阵与边界、四条命令格式、四种通知文案、周贡献求和口径 | R:code:src/guild_auto/config/defaults.py,code:src/guild_auto/domain/decisions.py | A:- | S:逐字继承旧脚本，任何修正必须先经用户确认；判定是 if/elif 链，边界含与不含各自固定
+使用说明.md[SU6M]: F:面向使用者的操作手册：启动、两种模式、CLI 参数、Debug、日志排障、三份报告 | R:code:docs/配置说明.md,code:docs/流程与架构图.md | A:- | S:README 放在 docs/ 下即被 GitHub 识别为首页，不需要根目录副本
+审查记录-复审.md[SQ5T]: F:独立复审记录（第 2 轮）：标题仍无条件宣称无遗漏等 1 MAJOR + 4 MINOR | R:code:docs/审查记录.md,code:docs/审查记录-复审2.md | A:- | S:审查与实现分离，同一轮不得自审自批
+审查记录-复审2.md[SQ5T]: F:独立复审记录（第 3 轮）：5 项修复逐条通过，结论 APPROVE / CLEAR | R:code:docs/审查记录-复审.md,code:src/guild_auto/domain/reporter.py | A:- | S:-
+审查记录.md[SQ5T]: F:首轮独立终审记录：2 MAJOR（静默 pass 统计失真、对账自证循环），REJECT | R:code:docs/验收证据.md,code:src/guild_auto/domain/reporter.py | A:- | S:结论 REJECT 后必须逐条处置（已修/证伪/不修+理由），不得以能跑放行
+日志规范.md[SO5S]: F:日志 6 级语义、轮转与归档、11 类关键事件可检索、trace 覆盖范围 | R:code:src/guild_auto/infrastructure/logger.py,code:docs/流程与架构图.md | A:- | S:US-004 要求 catch 分支不得静默 pass；logger 内部失败写 stderr 避免递归
+更改声明.md[SZ4T]: F:2026-08 历史变更记录（保留作背景，非当前真源） | R:code:docs/本次变更声明.md | A:- | S:-
+本次变更声明.md[SZ5S]: F:2026-10-11 完全推倒重写轮次的变更声明与旧实现问题清单 | R:code:docs/更改声明.md,code:docs/流程与架构图.md | A:- | S:文中命令用的是旧包名（parsers/actions/config），src-layout 后已不适用，仅作历史依据
+流程与架构图.md[SG7L]: F:架构真源：分层依赖、双模式与 UI 模式流程、判定优先级、构建变体矩阵、配置结构 | R:code:src/guild_auto/main.py,code:src/guild_auto/capabilities.py,code:src/guild_auto/vision/runner.py,code:docs/配置说明.md | A:- | S:影响架构的改动必须同步更新本文件（项目纪律第 11 条）；文件路径以实际实现为准，禁止写不存在的模块名
+覆盖率报告.md[SQ5S]: F:分档覆盖率实测与 mock 策略：核心 ≥98% / 总体 ≥92%，含复跑命令 | R:code:.coveragerc,code:.github/workflows/test.yml | A:- | S:真实设备调用不计入分母；数字须来自可复跑命令，并写成多次实测区间避免单次波动
+详细报告规范.md[SO6M]: F:第三份运行分析报告真源：七节结构、数据来源按操作模式区分、全员名册对账口径 | R:code:src/guild_auto/domain/reporter.py,code:src/guild_auto/domain/report_stats.py | A:- | S:前两份报告格式零改动；对账来源必须可信（面板末行/公会详情 tooltip），逐页累计时差值为 0 不构成漏扫证明
+配置说明.md[SC6M]: F:逐个配置项的作用与可填值（含 operation_mode/vision/pause/report 四节） | R:code:src/guild_auto/config/defaults.py,code:src/guild_auto/config/schema.py | A:- | S:每个键必须在 CONFIG_COMMENTS 有注释，否则 tests/test_config_jsonc_guards.py 失败
+验收证据.md[SQ7L]: F:plan.txt 25 条硬性验收的逐条证据（命令+输出摘录，标注证据类型） | R:code:docs/流程与架构图.md,code:docs/审查记录.md,code:docs/审查记录-复审2.md | A:- | S:涉及真实游戏环境的条目只能标注入式验证；保留过程差错记录（如 except:pass 曾误报 0 处），不得事后美化
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/scripts/===
+build-variants.py[XV6T]: F:生成 CI 构建矩阵 JSON，或写入打包期能力常量 _build_capabilities.py | R:code:src/guild_auto/capabilities.py,code:.github/workflows/build.yml | A:- | S:8 种组合必须由能力注册表推导，不得硬编码；产物名拼接顺序固定 async→gui→vision
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/===
+__init__.py[CG5T]: F:guild_auto 包入口，暴露版本号 | R:code:src/guild_auto/__main__.py | A:- | S:-
+__main__.py[EG6T]: F:python -m guild_auto 入口，调用 main.run_cli() | R:code:src/guild_auto/main.py | A:- | S:必须走 run_cli 而不是 main()：否则 Ctrl+C 直接冒泡，拿不到回车退出/c 继续的中断菜单
+capabilities.py[CV7S]: F:能力注册表与构建变体拼接名；require() 在缺能力时启动即报错 | R:code:scripts/build-variants.py,code:src/guild_auto/main.py | A:- | S:拼接顺序固定 async→gui→vision；源码运行默认全能力，打包期常量优先于环境变量；缺能力必须报错，不得静默降级
+main.py[EG8L]: F:入口与主流程：参数解析、配置准备、查询/判定/通知/执行/报告编排、run_cli 中断菜单循环 | R:code:src/guild_auto/application/stages.py,code:src/guild_auto/capabilities.py,code:src/guild_auto/application/runtime.py | A:- | S:run_cli 必须被三个入口共用（python -m / guild-auto / exe），否则 Ctrl+C 拿不到菜单；能力门禁在 prepare_config 后启动即报错
+ui_mode.py[AW7M]: F:UI 模式查询阶段：导航→扫掠→解析→产出与指令模式同构 records，暂停恢复后强制重扫 | R:code:src/guild_auto/vision/runner.py,code:src/guild_auto/main.py,code:src/guild_auto/application/runtime.py | A:- | S:成员总数优先取公会详情 tooltip，读不到退回逐页累计并记 total_source；_RescanRequired 不得被吞（基类刻意不是 RuntimeError）；未配置 OCR 必须报错不降级
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/application/===
+debug_data.py[AG4S]: F:Debug 模式模拟数据生成，产出与 parse_guild_list 同键结构 | R:code:src/guild_auto/domain/parsers.py,code:src/guild_auto/main.py | A:- | S:模拟数据不得发进真实公会频道（debug 模式必须跳过通知）
+pause.py[AW7M]: F:暂停门、Ctrl+C 中断菜单、暂停键监听、UI 模式自动暂停（键鼠活动检测） | R:code:src/guild_auto/application/runtime.py,code:src/guild_auto/main.py | A:- | S:暂停状态唯一所有者是 runtime，不得用 from runtime import _paused 拿值副本；信号注册在导入期执行，失败必须写 stderr（此时 logger 未初始化）
+pending.py[AR6S]: F:待办持久化与断点续做：加载校验玩家名、按开关过滤、执行并保留未完成项 | R:code:src/guild_auto/application/runtime.py,code:src/guild_auto/domain/parsers.py | A:- | S:待办文件可被手改，玩家名必须过 validate_player_name 防命令注入；被开关或确认拦下的项不得写回待办，否则下次会补执行不可逆操作
+runtime.py[AW8L]: F:运行时依赖容器与全局状态唯一所有者：暂停/强制停止/自动暂停守卫/模拟输入窗口/异步系统 | R:code:src/guild_auto/application/pause.py,code:src/guild_auto/concurrency/async_system.py | A:- | S:全局状态写入口必须收敛到本模块（set_paused/reset_state/note_resume），模块外 import 值副本会静默失效；逐字匹配确认用 ask_text，不能用布尔化 ask
+stages.py[AW8L]: F:流程阶段编排：异步查询、执行前确认、通知、异步执行；串行与异步共用动作门禁 | R:code:src/guild_auto/application/runtime.py,code:src/guild_auto/infrastructure/action_executor.py,code:src/guild_auto/domain/decisions.py | A:- | S:异步模式主线程只发不验，验证者必须用 executor.verify_action（只读日志）——用 execute_action 会把同一命令发第二遍；通知阶段必须 wait_all+get_failed 收回结果
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/concurrency/===
+async_executor.py[CP6M]: F:旧线程池执行器：提交任务、后台验证、失败进重试队列 | R:code:src/guild_auto/concurrency/async_system.py,code:src/guild_auto/main.py | A:- | S:主流程已改用 async_system（主线程只发不验），本模块仅保留旧串行辅助路径
+async_system.py[CR8L]: F:异步验证状态机：提交/发送/后台验证/有界重试/结果回收，run_async_round 封装一轮闭环 | R:code:src/guild_auto/application/stages.py,code:src/guild_auto/application/runtime.py | A:- | S:wait_all 必须带超时防死锁；失败任务不能静默丢失（get_stranded 兜底）；去重键用 meta.key，否则 promote×2 会折叠成一条
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/config/===
+__init__.py[CC5T]: F:config 包入口，re-export DEFAULT_CONFIG/validate_config/load_config/save_config/console | R:code:src/guild_auto/config/defaults.py,code:src/guild_auto/config/loader.py | A:- | S:-
+defaults.py[FC8L]: F:配置默认值与注释真源：DEFAULT_CONFIG + CONFIG_COMMENTS（每键作用与可填值） | R:code:src/guild_auto/config/schema.py,code:docs/配置说明.md | A:- | S:新增任何键必须同时注册 CONFIG_COMMENTS，否则 tests/test_config_jsonc_guards.py 失败；本文件是业务数据唯一真源，禁止在业务代码写第二份
+loader.py[CC7M]: F:JSONC 加载/保存/缺键深合并/命令行覆盖/控制台输出 | R:code:src/guild_auto/config/defaults.py,code:src/guild_auto/config/schema.py | A:- | S:注释剥离必须字符串感知（路径里的 // 不是注释）；保存要写 JSONC 且每键上方有 // 注释；console 调 logger 失败只能写 stderr（不能递归）
+schema.py[CC8L]: F:配置结构契约：必需键、类型、枚举、跨字段一致性（阈值倒置/延时区间/路径防呆） | R:code:src/guild_auto/config/defaults.py,code:src/guild_auto/config/ui_binding.py | A:- | S:子段不是 dict 时必须报错而非遍历时抛异常；阈值倒置会让某区间静默跳过；game_log 不得指向脚本自身 logs 目录（自读自写死循环）
+ui_binding.py[CU6M]: F:配置项与 UI 表单绑定：摊平字段、严格类型转换、结构化字段保护、保存前重校验 | R:code:src/guild_auto/config/schema.py,code:src/guild_auto/ui/config_panel.py | A:- | S:rules 必须走 STRUCTURED_PATHS 原值保留，压成字符串会让规则引擎失效；数值列表往返要保持 int/float 不被转成 str
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/domain/===
+decisions.py[DB9M]: F:决策引擎：名单短路→自定义规则（first/highest/all）→内置阈值兜底；保护名单只剥夺 kick | R:code:src/guild_auto/domain/rules.py,code:src/guild_auto/config/defaults.py | A:- | S:内置阈值必须表达为规则表里的一条规则（同一接口），不得另写一套判定；保护名单只免踢出，升降职照常
+parsers.py[DB9M]: F:日志面板解析：公会列表分组/成员详情/周贡献与每日明细/玩家名校验/屏蔽词识别 | R:code:src/guild_auto/infrastructure/log_watcher.py,code:src/guild_auto/domain/decisions.py | A:- | S:玩家名必须过 validate_player_name（防命令注入与文件名穿越）；字段缺失要抛 ParseError 而不是当 0
+report_stats.py[DA5S]: F:报告统计纯函数：分位数、贡献分布、等级迁移矩阵、操作计数（零 IO） | R:code:src/guild_auto/domain/reporter.py | A:- | S:空列表、单元素、非数值输入都不得抛异常
+reporter.py[DO8L]: F:三份报告生成：贡献报告、群公告、运行分析报告（七节含全员名册对账） | R:code:src/guild_auto/domain/report_stats.py,code:src/guild_auto/main.py,code:docs/详细报告规范.md | A:- | S:前两份格式零改动（golden 逐字节）；对账来源必须取 counts.member_total_source，不得按模式猜；标题结论只能与对账同源（可信来源+diff 0 才写无遗漏）
+rules.py[DB8L]: F:规则引擎：条件求值、动作展开、三种优先级策略、启动期语法校验 | R:code:src/guild_auto/domain/decisions.py,code:src/guild_auto/ui/rules_panel.py | A:- | S:空或缺失 conditions 必须判否并在校验时报错（否则 kick 规则命中全员）；ignore 不产生动作，notify 不得进执行层
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/infrastructure/===
+action_executor.py[IH7M]: F:动作执行：发送锁+暂停门、回显验证、verify_action 只读验证、广播重试 | R:code:src/guild_auto/infrastructure/window_input.py,code:src/guild_auto/infrastructure/log_watcher.py,code:src/guild_auto/application/stages.py | A:- | S:只认公会面板内的回显（公屏任意聊天行可被伪造）；异步路径必须用 verify_action，用 execute_action 会重复发送
+game_state.py[IH5S]: F:界面状态检测：截图 OCR 判断是否在菜单、聊天栏是否打开，带缓存 | R:code:src/guild_auto/infrastructure/window_input.py | A:- | S:OCR 不可用时降级为试探式发送，不得阻断主流程
+log_watcher.py[IO7L]: F:游戏日志增量读取：编码检测、轮转/截断重开、等待聊天块 | R:code:src/guild_auto/domain/parsers.py,code:src/guild_auto/infrastructure/logger.py | A:- | S:多采样检测编码防开头纯 ASCII 误判 utf-8；文件被重建或截断必须重新打开并 seek 到末尾
+logger.py[RO8L]: F:6 级分级日志、按天 gzip 归档（同日序号递增）、trace 事件（调用链/文件/线程/队列） | R:code:src/guild_auto/config/defaults.py,code:docs/日志规范.md | A:- | S:handler 写失败只能写 stderr（不能递归回本函数）；级别 5=DEBUG 6=TRACE，默认 4=INFO 时 debug 级不落盘
+window_input.py[IH7M]: F:窗口查找/置前、键名映射、模拟输入（含发送锁与暂停门）、剪贴板粘贴 | R:code:src/guild_auto/infrastructure/game_state.py,code:src/guild_auto/application/runtime.py | A:- | S:模拟输入期间必须屏蔽自动暂停监听（否则自己触发暂停）；聊天栏已开时不得再按 chat_key
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/ui/===
+app.py[ZU6M]: F:tkinter 主窗口：600x400 与 200x150 切换、置顶、配置保存、热重载、首次运行限制 | R:code:src/guild_auto/ui/config_panel.py,code:src/guild_auto/ui/toolbar.py,code:src/guild_auto/config/ui_binding.py | A:- | S:置顶优先 win32 SetWindowPos，失败回退 Tk -topmost；Tk 运行时损坏时测试应 skip
+config_panel.py[ZU6S]: F:配置表单：按字段规格渲染控件、收集编辑、校验标红 | R:code:src/guild_auto/config/ui_binding.py | A:- | S:-
+confirm_dialog.py[ZU4T]: F:踢出二次确认弹窗：逐字匹配确认词，不提供内置默认值 | R:code:src/guild_auto/config/defaults.py | A:- | S:确认词不得硬编码默认，必须由 ui.kick_confirm_text 提供
+rules_panel.py[ZU6M]: F:规则管理面板：列表/增删/启停/排序/JSON 编辑/实时预览 | R:code:src/guild_auto/domain/rules.py,code:src/guild_auto/ui/app.py | A:- | S:保存前必须跑 validate_rules，非法规则不得写回配置
+toolbar.py[ZU4T]: F:工具栏：大小窗切换箭头与置顶图钉按钮 | R:code:src/guild_auto/ui/app.py | A:- | S:-
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/src/guild_auto/vision/===
+__init__.py[CH4T]: F:vision 包入口与模块说明（不做模板匹配） | R:code:src/guild_auto/vision/runner.py | A:- | S:-
+adapters.py[IH6M]: F:默认可注入适配器：截图、输入原语、外部 OCR 命令/pytesseract、模拟输入标记 | R:code:src/guild_auto/vision/runner.py,code:src/guild_auto/infrastructure/window_input.py | A:- | S:未配置 OCR 时必须抛 AdapterError（明确报错），不得静默降级回指令模式；外部命令用 {image} 占位
+bindings.py[IH5S]: F:从 options.txt 解析 key_key.hotbar.<N> 的运行时绑定 | R:code:src/guild_auto/vision/navigator.py,code:src/guild_auto/config/defaults.py | A:- | S:禁止任何内置默认键值：解析不到返回 None，由上层失败；玩家改键是常态
+models.py[CH4S]: F:UIElement/Rect/MemberData 等数据结构，缺失字段用不可读哨兵 | R:code:src/guild_auto/vision/tooltip.py | A:- | S:缺失字段必须用不可读哨兵，不得当 0（防数据缺失伪装零贡献）
+navigator.py[IH6S]: F:按键试探进入公会界面、界面标题判定、失败换候选键、误按超阈值 Esc 回退 | R:code:src/guild_auto/vision/bindings.py,code:src/guild_auto/vision/tooltip.py | A:- | S:每次按键后必须截图确认，禁止假设生效；导航后必须重新全扫
+runner.py[AH7S]: F:把导航/扫掠/解析串成一次采集，产出同构 records，并读取公会详情人数 | R:code:src/guild_auto/vision/navigator.py,code:src/guild_auto/vision/sweep.py,code:src/guild_auto/vision/tooltip.py | A:- | S:任何一步失败返回 ok=False 且不继续点击（不盲点）；member_total 读不到必须返回 None，不得用记录条数冒充
+sweep.py[IH6S]: F:按格子坐标网格扫掠，每停留点等 tooltip 渲染后截图识别，并做完整性自检 | R:code:src/guild_auto/vision/tooltip.py,code:src/guild_auto/vision/models.py | A:- | S:停留时长不得小于 120ms（太短漏数据）；缺口超 max_missing_ratio 判不完整需重扫；不得依赖视觉形状
+tooltip.py[DH7M]: F:tooltip 文本解析：标题分类、元素语义分类、成员六字段、公会详情人数 | R:code:src/guild_auto/vision/models.py,code:src/guild_auto/vision/runner.py | A:- | S:元素语义按文字判定（组队钻石必须排除）；周贡献含千分位；今天行必须在列
+verifier.py[DH6S]: F:操作结果验证：升/降按回显匹配，踢出用格位消失/人数对账/时间窗交叉验证 | R:code:src/guild_auto/vision/runner.py | A:- | S:不得单凭踢出成功归因（回显不含玩家名）；都不成立时标执行结果待确认
+
+===D:/Test/Dev/wyz-cjjmjj-dev/guild_auto_v2/tools/===
+scan_assertless_tests.py[XQ4S]: F:扫描测试文件中无断言的用例（质量保障工具） | R:code:pyproject.toml | A:- | S:-
