@@ -189,8 +189,12 @@ def stage_confirm_execution(rt, records, cfg):
         console(
             f"⚠ 即将踢出 {len(pending_kicks)} 人(不可逆): {[r['player'] for r in pending_kicks]}"
         )
-        ans = rt.ask("确认执行踢出?输入 kick-confirm 后回车执行,其他输入跳过踢出", default=False)
-        if not ans:
+        # 必须逐字匹配确认词:legacy 就是 ans != "kick-confirm" 才跳过。
+        # 早先误用布尔化 ask()(只认 y/yes),导致"按提示输入 kick-confirm 反而跳过、
+        # 凭习惯敲 y 反而真踢"——语义完全反转,是不可逆操作上的严重回归。
+        expected = str(cfg.get("kick_confirm_text") or "").strip()
+        ans = rt.ask_text(f"确认执行踢出?输入 {expected} 后回车执行,其他输入跳过踢出: ")
+        if ans != expected:
             console("已跳过全部踢出(其他操作照常执行)")
             for r in pending_kicks:
                 r["executed"] = True  # 标记已处理,防止执行循环再次执行(不可逆操作)
@@ -240,29 +244,41 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
     console("[4/5] 发送 /gc 通知 ...")
 
     mode = sw.get("notify_mode", "summary")
-    if mode == "summary":
+    if rt.async_enabled:
+        # 异步通知:主线程只发,验证交给后台;但**必须在本阶段内收回结果** ——
+        # 否则 notify_failures 恒为空,报告里的"通知 成功/失败"是假的,
+        # 失败只能等到进程结束进待办(验收 14 要求等验证完成再进下一步)。
+        pending = []  # [(task_id, label)]
+        if mode == "summary":
+            rt.pause_gate()
+            msg = build_summary_message(records, cfg)
+            logger.log_info(f"/gc summary: {msg}")
+            pending.append((_notify_one_async(rt, msg, "summary", cfg), "summary"))
+        else:
+            for r in records:
+                rt.pause_gate()
+                msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
+                label = f"{r['player']}[周贡献 {r['weekly_total']}]"
+                pending.append((_notify_one_async(rt, msg, r["player"], cfg), label))
+                rt.human.wait_between_commands()
+        failures.extend(_collect_async_notifications(rt, pending, cfg))
+    elif mode == "summary":
         rt.pause_gate()
         msg = build_summary_message(records, cfg)
         logger.log_info(f"/gc summary: {msg}")
-        if rt.async_enabled:
-            _notify_one_async(rt, msg, "summary", cfg)
-        else:
-            ok, err = _notify_one_sync(rt, msg, cfg)
-            _report_notify(msg, ok, err)
-            if not ok:
-                failures.append({"scope": "summary", "error": err})
+        ok, err = _notify_one_sync(rt, msg, cfg)
+        _report_notify(msg, ok, err)
+        if not ok:
+            failures.append({"scope": "summary", "error": err})
     else:
         # per_player:逐条通知(含无操作玩家)
         for r in records:
             rt.pause_gate()
             msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
-            if rt.async_enabled:
-                _notify_one_async(rt, msg, r["player"], cfg)
-            else:
-                ok, err = _notify_one_sync(rt, msg, cfg)
-                _report_notify(f"{r['player']}[周贡献 {r['weekly_total']}]", ok, err)
-                if not ok:
-                    failures.append({"scope": r["player"], "error": err})
+            ok, err = _notify_one_sync(rt, msg, cfg)
+            _report_notify(f"{r['player']}[周贡献 {r['weekly_total']}]", ok, err)
+            if not ok:
+                failures.append({"scope": r["player"], "error": err})
             rt.human.wait_between_commands()
 
     logger.log_info("阶段4 完成: /gc 通知完成")
@@ -278,12 +294,33 @@ def _notify_one_sync(rt, msg, cfg):
 
 
 def _notify_one_async(rt, msg, player, cfg):
-    """异步模式:提交广播指令(主线程不读日志、不验证)。
+    """异步模式:提交广播指令(主线程不读日志、不验证),返回 task_id。
 
-    验证由后台系统承担(后台 verify_fn 读日志判定);主线程提交后立即返回,
-    结果由调用方在"全部工作完成后"统一收回(见 run_async_round)。
+    结果由 `_collect_async_notifications` 在本阶段内收回 —— 只提交不回收,
+    失败会静默漏到进程结束。
     """
-    rt.async_verify_submit(f"/gc {msg}", player, msg=msg)
+    return rt.async_verify_submit(f"/gc {msg}", player, msg=msg)
+
+
+def _collect_async_notifications(rt, pending, cfg):
+    """等后台验证完,把失败项转成通知失败清单(报告与统计要用)。"""
+    if not pending:
+        return []
+    system = rt.async_system
+    timeout = float(cfg.get("timeouts", {}).get("response_wait", 12.0)) + 5.0
+    system.wait_all(timeout=timeout)
+    task_ids = [tid for tid, _label in pending]
+    failed = {str(s.get("task_id")): s for s in system.get_failed(task_ids)}
+    out = []
+    for tid, label in pending:
+        snap = failed.get(str(tid))
+        if snap is None:
+            _report_notify(label, True, None)
+            continue
+        err = snap.get("error") or "通知验证失败"
+        _report_notify(label, False, err)
+        out.append({"scope": label, "error": err})
+    return out
 
 
 def stage_execute_async(rt, records, cfg):
@@ -349,7 +386,9 @@ def stage_execute_async(rt, records, cfg):
         action = (meta or {}).get("action")
         if not action:
             return False, "meta 缺少 action(内部错误)", None
-        ok, err = executor.execute_action(action, player)
+        # 只验证,不再发送:命令已由 send_only 发出,这里再 execute_action
+        # 会重复发送(实测 promote×2 升 4 级、踢出重复踢)。
+        ok, err = executor.verify_action(action, player)
         return (ok, None if ok else (err or "执行失败"), None)
 
     system = AsyncVerifySystem(verify_fn=verify, task_timeout=timeout * retries + 10.0)

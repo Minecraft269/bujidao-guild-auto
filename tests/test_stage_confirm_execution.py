@@ -50,8 +50,8 @@ def _cfg():
     return cfg
 
 
-def _rt(answer=True, log_answers=None):
-    """构造 Runtime;ask_confirm 固定返回 answer(可记录提问顺序)。"""
+def _rt(answer=True, log_answers=None, kick_text="kick-confirm"):
+    """构造 Runtime;ask_confirm 固定返回 answer,ask_text 固定返回 kick_text。"""
 
     def _ask(p, d=False):
         if log_answers is not None:
@@ -66,13 +66,28 @@ def _rt(answer=True, log_answers=None):
         detector=None,
         hwnd=None,
         ask_confirm=_ask,
+        ask_text_fn=_ask_text(log_answers, kick_text),
         sleep=lambda s: None,
         stop_check=lambda: False,
     )
 
 
+def _ask_text(log_answers, text="kick-confirm"):
+    """ask_text_fn:记录提问并把固定文本作为"用户输入"返回。"""
+
+    def _impl(prompt):
+        if log_answers is not None:
+            log_answers.append(prompt)
+        return text
+
+    return _impl
+
+
 def _rt_seq(answers):
-    """构造按序列依次返回答案的 Runtime(用于两道确认)。"""
+    """构造按序列依次返回答案的 Runtime(用于两道确认)。
+
+    序列里 bool 给总确认(ask),str 给 kick 二次确认(ask_text)。
+    """
     it = iter(answers)
     return Runtime(
         cfg=_cfg(),
@@ -82,6 +97,7 @@ def _rt_seq(answers):
         detector=None,
         hwnd=None,
         ask_confirm=lambda p, d=False: next(it),
+        ask_text_fn=lambda p: next(it),
         sleep=lambda s: None,
         stop_check=lambda: False,
     )
@@ -151,14 +167,14 @@ class TestKickDoubleConfirm(unittest.TestCase):
 
     def test_kick_requires_explicit_confirm(self):
         """总确认通过但 kick 二次确认未过 → skipped_kicks=True。"""
-        rt = _rt_seq([True, False])
+        rt = _rt_seq([True, "nope"])
         enabled, skipped = stage_confirm_execution(rt, [_rec("甲", ["kick"])], _cfg())
         self.assertTrue(enabled, "总确认已通过")
         self.assertTrue(skipped, "kick 未被二次确认却放行 —— 不可逆操作会误踢")
 
     def test_skipped_kicks_marked_not_executed(self):
         """被跳过的 kick 必须打标,否则执行循环可能补刀(不可逆)。"""
-        rt = _rt_seq([True, False])
+        rt = _rt_seq([True, "nope"])
         records = [_rec("甲", ["kick"])]
         _, skipped = stage_confirm_execution(rt, records, _cfg())
         self.assertTrue(skipped)
@@ -171,7 +187,7 @@ class TestKickDoubleConfirm(unittest.TestCase):
 
     def test_kick_confirm_ok_allows_execution(self):
         """两道确认都过 → 不跳过,记录不被预标记。"""
-        rt = _rt_seq([True, True])
+        rt = _rt_seq([True, "kick-confirm"])
         records = [_rec("甲", ["kick"])]
         enabled, skipped = stage_confirm_execution(rt, records, _cfg())
         self.assertTrue(enabled)
@@ -207,6 +223,29 @@ class TestNonKickActions(unittest.TestCase):
         self.assertTrue(enabled)
         self.assertFalse(skipped)
         self.assertEqual(len(asked), 1, "kick_confirm=False 时不该追问")
+
+    def test_habitual_y_does_not_confirm_kick(self):
+        """只认逐字确认词:单敲 y(习惯动作)绝不能被当成确认。
+
+        回归锁定:曾用布尔化 ask()(只认 y/yes),导致"输入 kick-confirm 被跳过、
+        敲 y 反而真踢"——不可逆操作上的语义反转。
+        """
+        rt = _rt_seq([True, "y"])
+        _, skipped = stage_confirm_execution(rt, [_rec("甲", ["kick"])], _cfg())
+        self.assertTrue(skipped, "单敲 y 不是确认词,必须跳过踢出")
+
+    def test_confirm_text_is_case_sensitive(self):
+        rt = _rt_seq([True, "KICK-CONFIRM"])
+        _, skipped = stage_confirm_execution(rt, [_rec("甲", ["kick"])], _cfg())
+        self.assertTrue(skipped, "确认词大小写敏感")
+
+    def test_confirm_text_comes_from_config(self):
+        """确认词由配置驱动,换一个词也应生效(零硬编码)。"""
+        cfg = _cfg()
+        cfg["kick_confirm_text"] = "确认踢出"
+        rt = _rt_seq([True, "确认踢出"])
+        _, skipped = stage_confirm_execution(rt, [_rec("甲", ["kick"])], cfg)
+        self.assertFalse(skipped, "配置的确认词必须被接受")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ DEFAULT_CONFIG = {
     "query_scope": "all",
     # 踢出确认:true=执行踢出前在控制台列出清单,输入 kick-confirm 才执行(踢出不可逆,建议保持 true)
     "kick_confirm": True,
+    "kick_confirm_text": "kick-confirm",
     # 跳过职位:默认跳过 会长/副会长/管理员(不查询不操作,与原脚本 skip_groups 一致);
     # 如需查询某职位,将其从列表移除即可
     "skip_ranks": ["leader", "vice_leader", "admin"],
@@ -330,7 +331,8 @@ CONFIG_COMMENTS = {
     "query_scope": "逐人查询范围:'all'=全员(会长/管理员除外);或仅查指定等级:"
     "'high'(高活跃)/'mid'(中等活跃)/'low'(低活跃)/'entry'(入门)",
     "skip_ranks": "跳过的职位(不查询不操作):'leader'(会长)/'vice_leader'(副会长)/'admin'(管理员);如需查询请从列表移除",
-    "kick_confirm": "踢出确认:true=执行踢出前在控制台列出清单,输入 kick-confirm 才执行(踢出不可逆,建议保持 true)",
+    "kick_confirm": "踢出确认:true=执行踢出前在控制台列出清单,输入 kick_confirm_text 指定的确认词才执行(踢出不可逆,建议保持 true)",
+    "kick_confirm_text": "踢出二次确认的确认词(控制台):必须**逐字**输入该字样才执行踢出,大小写敏感、前后空格忽略。仅在 kick_confirm=true 时生效;GUI 弹窗用的是 ui.kick_confirm_text(可分别设置)",
     "blacklist": '黑名单:名单内的玩家**完全不处理**(不查询/不通知/不升降踢)。可填玩家名列表,如 ["捣乱玩家"];'
     '大小写不敏感,match_wildcard=true 时支持 * 通配(如 ["测试*"])。优先级最高(仅次于功能开关)',
     "whitelist": "白名单:非空时**只有**名单内的玩家参与升降踢判定,其余玩家一律不处理。"

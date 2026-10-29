@@ -39,6 +39,10 @@ class _FakeRT:
         self.hwnd = 123
         self.pause_gate_calls = 0
         self.submitted = []
+        # 异步通知会在本阶段内 wait_all + get_failed 收回结果:
+        # 默认返回"全部成功",个别用例可改写 return_value 模拟失败。
+        self.async_system = mock.Mock()
+        self.async_system.get_failed.return_value = []
 
     def pause_gate(self):
         self.pause_gate_calls += 1
@@ -128,6 +132,21 @@ class TestStageNotify(unittest.TestCase):
             len(rt.submitted), 3, "per_player 模式必须每个查询成功的玩家都发一条(含无操作)"
         )
 
+    def test_async_notify_failure_is_collected_not_lost(self):
+        """异步通知必须在本阶段收回结果:失败要进 failures,不能静默漏到进程结束。
+
+        回归锁定:曾经只 submit 不 wait/get_failed,notify_failures 恒为空,
+        报告里「通知 成功/失败」是假的(验收 14:等验证完成再进下一步)。
+        """
+        rt = _FakeRT(async_enabled=True)
+        rt.async_system.get_failed.return_value = [
+            {"task_id": "task-summary", "state": "failed", "error": "广播超时"}
+        ]
+        failures = stages_mod.stage_notify(rt, [_record(actions=["kick"])], self.cfg)
+        self.assertEqual(len(failures), 1, f"通知失败未计入: {failures}")
+        self.assertEqual(failures[0]["scope"], "summary")
+        self.assertIn("广播超时", failures[0]["error"])
+
 
 class TestStageExecuteAsync(unittest.TestCase):
     def setUp(self):
@@ -145,11 +164,11 @@ class TestStageExecuteAsync(unittest.TestCase):
         rec = _record("甲", ["kick"])
         rec["executed"] = True
         self.assertEqual(stages_mod.stage_execute_async(rt, [rec], self.cfg), [])
-        rt.executor.execute_action.assert_not_called()
+        rt.executor.verify_action.assert_not_called()
 
     def test_all_success_marks_records(self):
         rt = _FakeRT(async_enabled=True)
-        rt.executor.execute_action.return_value = (True, None)
+        rt.executor.verify_action.return_value = (True, None)
         rec = _record("甲", ["promote"])
         failures = stages_mod.stage_execute_async(rt, [rec], self.cfg)
         self.assertEqual(failures, [])
@@ -159,7 +178,7 @@ class TestStageExecuteAsync(unittest.TestCase):
 
     def test_failure_is_recorded_and_rank_unchanged(self):
         rt = _FakeRT(async_enabled=True)
-        rt.executor.execute_action.return_value = (False, "超时")
+        rt.executor.verify_action.return_value = (False, "超时")
         rec = _record("甲", ["kick"])
         failures = stages_mod.stage_execute_async(rt, [rec], self.cfg)
         self.assertEqual(len(failures), 1)
@@ -171,7 +190,7 @@ class TestStageExecuteAsync(unittest.TestCase):
         """promote×2 只成功 1 条 → 只升 1 级。"""
         rt = _FakeRT(async_enabled=True)
         calls = iter([(True, None), (False, "超时")])
-        rt.executor.execute_action.side_effect = lambda a, p: next(calls)
+        rt.executor.verify_action.side_effect = lambda a, p: next(calls)
         rec = _record("甲", ["promote", "promote"])
         stages_mod.stage_execute_async(rt, [rec], self.cfg)
         self.assertEqual(rec["new_rank"], new_rank_after("entry", ["promote"]))
@@ -186,7 +205,7 @@ class TestStageExecuteAsync(unittest.TestCase):
         rt = _FakeRT(async_enabled=True)
         rec = _record("甲", ["kick"])
         failures = stages_mod.stage_execute_async(rt, [rec], cfg)
-        rt.executor.execute_action.assert_not_called()
+        rt.executor.verify_action.assert_not_called()
         self.assertEqual(rt.human.send_chat_text.call_count, 0, "关闭的开关不得发出指令")
         self.assertTrue(rec["executed"])
         self.assertIn("踢出开关已关闭", rec["error"])
@@ -196,19 +215,34 @@ class TestStageExecuteAsync(unittest.TestCase):
         cfg = json.loads(json.dumps(self.cfg))
         cfg["switches"]["promote_enabled"] = False
         rt = _FakeRT(async_enabled=True)
-        rt.executor.execute_action.return_value = (True, None)
+        rt.executor.verify_action.return_value = (True, None)
         rec = _record("甲", ["promote", "demote"])
         stages_mod.stage_execute_async(rt, [rec], cfg)
         self.assertEqual(rec["actions"], ["demote"], "只应保留开关开启的动作")
 
     def test_sender_uses_human_not_executor_in_main_thread(self):
-        """主线程只发:发送走 human.send_chat_text,而不是直接调 execute_action。"""
+        """主线程只发:发送走 human.send_chat_text;验证者只读日志,不再调 execute_action。"""
         rt = _FakeRT(async_enabled=True)
-        rt.executor.execute_action.return_value = (True, None)
+        rt.executor.verify_action.return_value = (True, None)
         rec = _record("甲", ["promote"])
         stages_mod.stage_execute_async(rt, [rec], self.cfg)
         rt.human.send_chat_text.assert_called()
         rt.human.wait_between_commands.assert_called()
+
+    def test_each_command_is_sent_exactly_once(self):
+        """异步模式每条命令只发一次:验证者不得重复发送。
+
+        回归锁定:曾经 verify 调 executor.execute_action,而它内部会
+        build_command + _send_with_gate 再发一遍 —— promote×2 实际升 4 级、
+        踢出重复踢(不可逆)。验证者必须走 verify_action(只读日志)。
+        """
+        rt = _FakeRT(async_enabled=True)
+        rt.executor.verify_action.return_value = (True, None)
+        rec = _record("甲", ["promote", "promote"])
+        stages_mod.stage_execute_async(rt, [rec], self.cfg)
+        self.assertEqual(rt.human.send_chat_text.call_count, 2, "两条动作应各发送一次,不能翻倍")
+        self.assertEqual(rt.executor.verify_action.call_count, 2)
+        rt.executor.execute_action.assert_not_called()
 
 
 if __name__ == "__main__":

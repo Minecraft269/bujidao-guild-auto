@@ -176,6 +176,28 @@ class ActionExecutor:
                 return True
         return False
 
+    def verify_action(self, action, player, timeout=None):
+        """**只读日志验证**已发送的动作,不发送任何指令。
+
+        为什么必须有这个原语:异步模式下主线程已经用 send_only 把命令发出去,
+        后台验证者若再调 `execute_action`,就会**把同一条命令发第二遍**
+        (实测 promote×2 真升 4 级、踢出重复踢)。execute_action 是
+        "发送+等待+判定"的串行语义,不能复用于"只判定"。
+        """
+        lines = self.watcher.read_until(
+            timeout=self.error_check_window if timeout is None else timeout
+        )
+        logger.trace_code_location("verify_action.received", f"lines={len(lines)}")
+        for line in lines:
+            if "[CHAT]" in line:
+                content = strip_chat_prefix(line)
+                err = self._find_error(content)
+                if err:
+                    return False, err
+        if self._find_success(action, player, lines):
+            return True, None
+        return False, "未收到成功回显"
+
     def execute_action(self, action, player, retries=None):
         """执行单条动作命令，支持重试。返回 (ok, error_text|None)。"""
         logger.trace_code_location("execute_action.start", f"action={action} player={player}")

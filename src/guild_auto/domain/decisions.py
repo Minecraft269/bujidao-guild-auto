@@ -379,15 +379,17 @@ def decide_for_player(
         )
         trigger = f"rule:{hits[0]}" if hits else None
         if actions and is_protected(player, cfg):
-            kept = [a for a in actions if a == "promote"]
+            # 保护名单只免「踢出」:升降职照常(plan.txt 验收 16)。
+            # 早先连 demote 一起剥夺,等于把保护名单变成了"冻结名单"。
+            kept = [a for a in actions if a in ("promote", "demote")]
             return (kept, trigger) if kept else ([], "whitelist_protected")
         return actions, trigger
 
     actions, trigger = decide_actions(rank, weekly, cfg["thresholds"])
 
     if actions and is_protected(player, cfg):
-        # 保护名单:只允许 promote,降职/踢出一律剥夺
-        kept = [a for a in actions if a == "promote"]
+        # 保护名单:只剥夺 kick,降职照常
+        kept = [a for a in actions if a in ("promote", "demote")]
         if not kept:
             return [], "whitelist_protected"
         return kept, trigger

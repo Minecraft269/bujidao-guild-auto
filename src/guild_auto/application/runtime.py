@@ -290,6 +290,7 @@ class Runtime:
         detector=None,
         hwnd=None,
         ask_confirm=None,
+        ask_text_fn=None,
         sleep=None,
         listener=None,
         async_executor=None,
@@ -313,6 +314,9 @@ class Runtime:
         self.async_enabled = bool(async_enabled)
         # 用户确认点:默认走终端 input();测试注入可控的假实现
         self.ask_confirm = ask_confirm if ask_confirm is not None else _default_confirm
+        # 「逐字匹配」类确认(kick 二次确认)必须拿原文,不能走 y/n 布尔化 ——
+        # 否则提示写"输入 kick-confirm",实际却把 kick-confirm 判成否。
+        self.ask_text_fn = ask_text_fn if ask_text_fn is not None else _default_ask_text
         # 时间源可注入,避免测试真的等 N 秒
         self.sleep = sleep if sleep is not None else time.sleep
         # 暂停查询:默认读本模块的 _paused(pynput 监听线程写、主线程/后台读);
@@ -352,7 +356,7 @@ class Runtime:
 
         与 confirm() 的区别:confirm 面向"阶段边界是否继续",语义是
         "默认同意、拒绝即停";ask 面向"要一个明确的是/否答案",
-        默认值由调用方给(kick 二次确认默认 False = 不输字样就不执行)。
+        默认值由调用方给。
 
         同样兜底 EOF/Ctrl+C → False(拒绝),绝不在状态不明时继续发命令。
         """
@@ -360,6 +364,18 @@ class Runtime:
             return bool(self.ask_confirm(prompt, default))
         except (EOFError, KeyboardInterrupt):
             return False
+
+    def ask_text(self, prompt):
+        """向用户要一段**原文**(如 kick 二次确认的确认词)。
+
+        与 ask() 的区别:ask 把输入布尔化(y/yes 才为真),用于"逐字匹配"
+        的确认会把正确输入判成否 —— 必须拿原文让调用方自己比对。
+        EOF/Ctrl+C 返回空串(= 未确认)。
+        """
+        try:
+            return str(self.ask_text_fn(prompt) or "").strip()
+        except (EOFError, KeyboardInterrupt):
+            return ""
 
     def pause_gate(self):
         """发送前的暂停门:暂停时阻塞等待,恢复后重置窗口状态。
@@ -448,6 +464,11 @@ def _default_confirm(prompt, default=False):
     if not ans:
         return default
     return ans in ("y", "yes", "是", "好", "确认")
+
+
+def _default_ask_text(prompt):
+    """默认的终端原文输入:原样返回(不 trim、不布尔化),由调用方逐字比对。"""
+    return input(prompt)
 
 
 def build_runtime(cfg, console_fn=None):

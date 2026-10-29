@@ -207,6 +207,9 @@ def validate_config(cfg):
     if "rules" in cfg and not isinstance(cfg["rules"], list):
         issues.append(("error", f"配置项 rules 应为列表,当前: {cfg['rules']!r}"))
     check_bool(cfg, "kick_confirm", "")  # 顶层键:路径前缀为空
+    kick_text = cfg.get("kick_confirm_text")
+    if kick_text is not None and (not isinstance(kick_text, str) or not kick_text.strip()):
+        issues.append(("error", f"配置项 kick_confirm_text 必须是非空字符串,当前: {kick_text!r}"))
     # ── 运行分析报告(第三份)──
     # 三个开关都必须是真布尔值:"false" 加引号会永远为真,与 switches 同一类坑。
     rep = section(cfg, "report")

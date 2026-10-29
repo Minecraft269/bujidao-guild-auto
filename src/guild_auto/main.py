@@ -395,7 +395,10 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
     不去 burn 重试次数,报告里留着"查询重试耗尽"会让人以为是网络抖动。
     """
     cmds = cfg["commands"]
-    if parsers.is_masked_name(pid):
+    # blocked_name_policy 必须在这里也生效:串行是默认模式,若只有异步路径认这个
+    # 策略,等于「两种策略均可生效」(验收 17)只有一种真的能用。
+    _policy = str(cfg.get("blocked_name_policy", "skip")).lower()
+    if parsers.is_masked_name(pid) and _policy != "query_attempt":
         logger.log_error(f"查询跳过(玩家名被网易屏蔽词替换为星号,身份不可读): {pid}")
         return None
     cmd = cmds["guild_member"].format(player=pid)
@@ -1287,19 +1290,20 @@ def main():
 
 
 # ---------------------------------------------------------------------------
-# 入口
-# ---------------------------------------------------------------------------
-# Ctrl+C 菜单(_ctrlc_pause_menu)与 signal handler 已迁至 pause.py,
-# 并在文件头 re-export;signal handler 由 pause.py 在导入时注册。
-
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 # Ctrl+C 菜单(_ctrlc_pause_menu / _ctrlc_pause_menu_fallback)与 signal handler
 # 已迁至 pause.py(文件头 re-export);signal handler 由 pause.py 在导入时注册。
 
-if __name__ == "__main__":
-    # 修复"Ctrl+C 静默退出日志未记录":注册全局 excepthook 捕获所有未处理异常
+
+def run_cli():
+    """命令行入口:安装 excepthook + Ctrl+C 中断菜单循环。
+
+    三个入口(python -m guild_auto / guild-auto 命令 / PyInstaller)必须共用
+    这一个函数。此前这段循环只写在 `if __name__ == "__main__"` 里,导致
+    `python -m` 启动时 Ctrl+C 直接冒泡、拿不到「回车退出 / c 继续」菜单。
+    """
     import sys as _sys_ex
 
     def _excepthook(exc_type, exc_value, exc_tb):
@@ -1337,3 +1341,7 @@ if __name__ == "__main__":
             # 意外关闭(非用户手动):记录致命级日志(级别1也可见)
             logger.log_exception(f"脚本意外关闭(非用户手动): {e}", e)
             sys.exit(1)
+
+
+if __name__ == "__main__":
+    run_cli()
