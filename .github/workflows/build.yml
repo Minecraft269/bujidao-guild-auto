@@ -165,16 +165,30 @@ jobs:
         # 冒烟:清掉环境变量,强制读刚写入的打包期常量 —— 这才能证明
         # "产物脱离 env 也能报出自己的变体名"。期望值来自矩阵本身,
         # 不是手抄的变体名,新增能力时无需改这段。
+        #
+        # 比较放在 Python 里做:Windows runner 的 stdout 是 cp1252 管道,
+        # 中文横幅直接 print 会抛 UnicodeEncodeError(实测 run 40816661358
+        # 8 个变体全部因此失败)。把期望值当参数传给 Python,由它比较并
+        # 用退出码表意,PowerShell 只负责看退出码,不参与字符串比对。
         env:
           PYTHONPATH: src
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        shell: bash
         run: |
-          $env:GUILD_AUTO_CAPABILITIES = $null
-          $actual = python -c "from guild_auto import capabilities as c; print(c.build_banner())"
-          Write-Host $actual
-          $expected = "构建变体: ${{ matrix.variant }}    已启用能力: ${{ matrix.capabilities }}"
-          if ($actual -ne $expected) {
-            throw "变体横幅不符: 期望 [$expected],实际 [$actual]"
-          }
+          unset GUILD_AUTO_CAPABILITIES
+          python - "${{ matrix.variant }}" "${{ matrix.capabilities }}" <<'PY'
+          import sys
+          from guild_auto import capabilities as c
+
+          expected_variant, expected_caps = sys.argv[1], sys.argv[2]
+          banner = c.build_banner()
+          expected = f"构建变体: {expected_variant}    已启用能力: {expected_caps}"
+          print(banner)
+          if banner != expected:
+              print(f"变体横幅不符: 期望 [{expected}] 实际 [{banner}]", file=sys.stderr)
+              sys.exit(1)
+          PY
 
       - name: Report size
         run: |
