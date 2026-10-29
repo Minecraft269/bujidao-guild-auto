@@ -127,6 +127,30 @@ class TestMemberTotalFromGuildDetail(unittest.TestCase):
         )
         self.assertIsNone(runner.collect().member_total)
 
+    def test_rescan_signal_propagates_out_of_collect(self):
+        """重扫信号必须穿透 _read_member_total。
+
+        `_RescanRequired` 刻意不继承 RuntimeError:暂停恢复后界面可能已变,
+        必须让整次采集作废重来。若被 reader 的 except 吞掉,就会拿旧画面继续。
+        """
+        from guild_auto.ui_mode import _RescanRequired
+
+        def reader(_e):
+            raise _RescanRequired
+
+        runner = make_runner(
+            FakeNavigator(),
+            FakeSweeper(
+                sweep_result(
+                    [element("member", MEMBER_TEXT), element("guild_detail", "公会详情")],
+                    expected=2,
+                )
+            ),
+            guild_detail_reader=reader,
+        )
+        with self.assertRaises(_RescanRequired):
+            runner.collect()
+
 
 class TestCollectSuccess(unittest.TestCase):
     def test_member_records_include_online(self):
