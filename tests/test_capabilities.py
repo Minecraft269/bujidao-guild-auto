@@ -309,5 +309,41 @@ class TestLayerIsolation(unittest.TestCase):
         )
 
 
+class TestVariantAliases(unittest.TestCase):
+    """别名是"人类可读入口",不是权威标识(plan.txt 阶段 7 第 1.3 条)。"""
+
+    def test_full_alias_resolves_to_all_capabilities_name(self):
+        self.assertEqual(cap_mod.resolve_variant_alias("full"), "Lite-Async-Gui-Vision")
+
+    def test_alias_is_case_insensitive_and_trimmed(self):
+        self.assertEqual(cap_mod.resolve_variant_alias("  FULL "), "Lite-Async-Gui-Vision")
+
+    def test_unknown_alias_raises_instead_of_returning_input(self):
+        """未登记别名必须报错:静默返回原值会把拼错的变体名带进产物。"""
+        with self.assertRaises(cap_mod.CapabilityError):
+            cap_mod.resolve_variant_alias("lite")
+
+    def test_aliases_table_maps_full(self):
+        self.assertEqual(cap_mod.aliases(), {"full": "Lite-Async-Gui-Vision"})
+
+    def test_canonical_variant_names_never_use_alias(self):
+        names = [name for name, _caps in cap_mod.iter_variants()]
+        self.assertEqual(len(names), 8)
+        for name in names:
+            self.assertNotIn("full", name.lower(), f"权威拼接名不应含别名: {name}")
+
+    def test_script_aliases_output_is_read_only(self):
+        out = subprocess.run(
+            [sys.executable, str(SCRIPT), "--aliases"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
+        data = json.loads(out)
+        self.assertEqual(data["aliases"], {"full": "Lite-Async-Gui-Vision"})
+        self.assertEqual(data["authoritative_field"], "variant")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -10,3 +10,7 @@ pyautogui>=0.9.54
 pynput>=1.7.6
 pyperclip>=1.8.2
 winsdk>=1.0.0b10
+
+#   * pytesseract / tesseract 引擎为【可选】:只有 operation_mode="ui"(UI 识别模式)
+#     才需要。vision 构建只含识别框架,不含 OCR 引擎 —— 未安装时启动会明确报错,
+#     不会静默降级。安装方式与替代方案(外部 OCR 命令)见 docs/使用说明.md §3.3。

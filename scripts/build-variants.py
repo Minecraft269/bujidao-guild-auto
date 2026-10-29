@@ -57,15 +57,27 @@ def _write_const(path: str, raw: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="生成多构建变体的能力矩阵 / 打包常量")
     ap.add_argument("--list", action="store_true", help="输出 GitHub Actions matrix JSON")
+    ap.add_argument(
+        "--aliases", action="store_true", help="输出别名 → 权威拼接名 JSON(只读,不含产物命名)"
+    )
     ap.add_argument("--write-const", metavar="PATH", help="写入构建期能力常量模块的路径")
     ap.add_argument("--capabilities", default=None, help="能力清单,如 core,async")
     args = ap.parse_args()
 
-    if not args.list and not args.write_const:
-        ap.error("至少指定 --list 或 --write-const")
+    if not args.list and not args.aliases and not args.write_const:
+        ap.error("至少指定 --list / --aliases / --write-const")
 
     if args.list:
         print(_matrix())
+    if args.aliases:
+        # 只读查询:别名不是权威标识,构建产物名仍取拼接名(--list 里的 variant)。
+        print(
+            json.dumps(
+                {"aliases": capabilities.aliases(), "authoritative_field": "variant"},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
     if args.write_const:
         raw = args.capabilities
         if raw is None:

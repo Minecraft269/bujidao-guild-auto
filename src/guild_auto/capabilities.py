@@ -130,6 +130,34 @@ def variant_meta() -> dict[str, object]:
     return {"build_variant": build_variant_name(caps), "capabilities": list(caps)}
 
 
+# ── 可选别名(plan.txt 阶段 7 第 1.3 条)────────────────────────────────
+# 别名只服务于"人类一眼看出哪个是全功能版",**不是权威标识**:
+# 产物名 / artifact / 启动横幅一律用拼接名。别名表在这里是逻辑别名而非
+# 写死的字符串——`full` 在调用时按当前注册表计算,新增能力后自动包含。
+_ALIASES = ("full",)
+
+
+def aliases() -> dict[str, str]:
+    """别名 → 权威拼接名(大小写不敏感)。供构建脚本/文档查询。"""
+    full_caps = tuple(_CAPABILITIES)
+    return {name: build_variant_name(full_caps) for name in _ALIASES}
+
+
+def resolve_variant_alias(name: str) -> str:
+    """把别名解析成权威拼接名。
+
+    未登记的别名**直接报错**,不得静默把原值返回 —— 否则 `--variant typo`
+    会一路带到构建产物名里,却没人发现变体名是错的。
+    """
+    key = str(name or "").strip().lower()
+    table = aliases()
+    if key in table:
+        return table[key]
+    raise CapabilityError(
+        f"未知变体别名: {name!r};已登记别名: {','.join(sorted(table))}(别名不是权威标识,拼接名才是)"
+    )
+
+
 def build_banner() -> str:
     """启动横幅:构建变体 + 已启用能力清单。"""
     caps = enabled_capabilities()

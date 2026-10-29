@@ -588,9 +588,14 @@ def prepare_config(args, console_fn=None, exit_fn=None):
         from guild_auto.vision.adapters import has_configured_ocr
 
         if not has_configured_ocr(cfg):
+            # 口径(plan 阶段 7 / R5.4):vision 变体只提供识别框架,OCR 引擎由用户自备。
+            # 报错必须指向安装说明,否则用户只知道"跑不了"却不知道要装什么。
             msg = (
-                "UI 识别模式已接线,但未配置 OCR 适配器:请安装 pytesseract(需 tesseract 引擎)"
-                "或在 vision.ocr_command 配置外部 OCR 命令;不会静默降级回指令模式"
+                "UI 识别模式需要 OCR 引擎,但当前未配置:"
+                "①安装 pytesseract 并提供 tesseract 可执行文件,或 "
+                "②在 vision.ocr_command 配置外部 OCR 命令(模板里用 {image} 占位)。"
+                "vision 构建只含识别框架,不含 OCR 引擎;不会静默降级回指令模式。"
+                "详见 docs/使用说明.md §3.3 与 docs/配置说明.md 的 vision 节"
             )
             errors.append(msg)
             console_fn(f"  [错误] {msg}", level="error")
