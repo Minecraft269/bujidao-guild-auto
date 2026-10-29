@@ -74,6 +74,7 @@ def validate_config(cfg):
         "async",
         "rank_names",
         "state_check",
+        "report",
     ):
         if _path in cfg and not isinstance(cfg.get(_path), dict):
             issues.append(("error", f"配置项 {_path} 应为对象(dict),当前: {cfg.get(_path)!r}"))
@@ -197,6 +198,11 @@ def validate_config(cfg):
     if "rules" in cfg and not isinstance(cfg["rules"], list):
         issues.append(("error", f"配置项 rules 应为列表,当前: {cfg['rules']!r}"))
     check_bool(cfg, "kick_confirm", "")  # 顶层键:路径前缀为空
+    # ── 运行分析报告(第三份)──
+    # 三个开关都必须是真布尔值:"false" 加引号会永远为真,与 switches 同一类坑。
+    rep = section(cfg, "report")
+    for k in ("analysis_enabled", "include_config_snapshot", "include_daily_detail"):
+        check_bool(rep, k, "report")
     # ── 名单(阶段 5)──
     for key in ("blacklist", "whitelist", "whitelist_protected"):
         if key in cfg:

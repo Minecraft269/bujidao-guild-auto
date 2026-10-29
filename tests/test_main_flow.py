@@ -169,6 +169,7 @@ class _MainCase(unittest.TestCase):
             ("stage_execute_async", exec_failures or []),
             ("write_contribution_report", os.path.join(self.tmp, "contrib.txt")),
             ("write_action_report", os.path.join(self.tmp, "action.txt")),
+            ("write_analysis_report", os.path.join(self.tmp, "analysis.txt")),
             ("load_pending", []),
             ("save_pending", NO_RET),
             ("input", input_value),
@@ -216,6 +217,9 @@ class _MainCase(unittest.TestCase):
             "rt": rt,
             "listener": entered["start_pause_listener"],
             "stage_exec_async": entered["stage_execute_async"],
+            "write_contrib": entered["write_contribution_report"],
+            "write_action": entered["write_action_report"],
+            "write_analysis": entered["write_analysis_report"],
             "cfg": cfg,
         }
 

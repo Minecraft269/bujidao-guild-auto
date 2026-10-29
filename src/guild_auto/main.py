@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime
 
 from pynput import keyboard
 import pyautogui
@@ -32,7 +33,12 @@ from guild_auto.infrastructure.game_state import GameStateDetector, prepare_chat
 from guild_auto.infrastructure.log_watcher import LogWatcher, detect_encoding
 from guild_auto.domain import parsers
 from guild_auto.domain.parsers import ParseError, parse_guild_list, parse_guild_member
-from guild_auto.domain.reporter import write_action_report, write_contribution_report
+from guild_auto.domain.reporter import (
+    build_roster,
+    write_action_report,
+    write_analysis_report,
+    write_contribution_report,
+)
 from guild_auto.application.stages import (
     apply_action_gates as stage_apply_action_gates,
     stage_confirm_execution,
@@ -727,6 +733,27 @@ def main():
         raise
 
     try:
+        # ---- 第三份报告(run_meta)采集:只记录,不改动任何业务分支 ----
+        # 报告要写"这次跑得怎么样",所以阶段边界的耗时/成败从这里开始记;
+        # 真正的排版与统计在 domain/reporter.py,main 只负责提供原始素材。
+        run_started = datetime.now()
+        stage_timings = []
+        _stage_clock = [time.monotonic()]
+
+        def _mark_stage(name, ok=0, fail=0, note=""):
+            """记录一个阶段的耗时与成败计数(单位秒,保留毫秒)。"""
+            now = time.monotonic()
+            stage_timings.append(
+                {
+                    "name": name,
+                    "seconds": round(now - _stage_clock[0], 3),
+                    "ok": ok,
+                    "fail": fail,
+                    "note": note,
+                }
+            )
+            _stage_clock[0] = now
+
         # 3. /guild list
         console("\n[1/5] 查询公会列表 ...")
         logger.log_info("阶段1: 查询公会列表开始")
@@ -747,6 +774,7 @@ def main():
         console(f"公会: {gname} | 成员总数 {guild['total']} | 在线 {guild['online']}")
         for rk, ids in guild["groups"].items():
             console(f"  {cfg['rank_names'].get(rk, rk)}: {len(ids)} 人")
+        _mark_stage("查询公会列表", ok=1)
 
         # 4. 查询范围过滤 + 跨等级去重(见 build_targets docstring)
         scope = cfg.get("query_scope", "all")
@@ -813,6 +841,23 @@ def main():
                             f"    周贡献: {info['weekly_total']} | 加入: {info['joined_at']} | 上次在线: {info['last_online']}"
                         )
 
+        # 查询阶段的成败计数:屏蔽词不可查的人不算"失败"(它们根本没发指令),
+        # 与第 0 节"查询失败 + 屏蔽词不可查"两栏的口径保持一致。
+        _query_failures = [f for f in failures if f.get("reason")]
+        _blocked_queries = sum(
+            1
+            for f in _query_failures
+            if f.get("blocked") or parsers.is_masked_name(f.get("player") or "")
+        )
+        _query_ok = len(records)
+        _query_fail = len(_query_failures) - _blocked_queries
+        _mark_stage(
+            "逐人查询",
+            ok=_query_ok,
+            fail=_query_fail,
+            note=f"屏蔽词不可查 {_blocked_queries} 人" if _blocked_queries else "",
+        )
+
         # 6. 判定(继承规则)
         logger.log_info(f"阶段3 起点: 决策判定 records={len(records)}")
         logger.log_info(f"阶段1 完成: 查询+判定 解析={len(records)} records")
@@ -858,6 +903,16 @@ def main():
             console("Debug: 跳过通知发送(仅走流程,不实际广播)")
         notify_failures = stage_notify(rt, records, cfg, _debug_notify_skipped)
         failures.extend(notify_failures)
+        _notify_attempted = 0
+        if not _debug_notify_skipped and sw.get("notify_enabled", True) and records:
+            _notify_attempted = (
+                len(records) if sw.get("notify_mode", "summary") == "per_player" else 1
+            )
+        _mark_stage(
+            "通知",
+            ok=max(0, _notify_attempted - len(notify_failures)),
+            fail=len(notify_failures),
+        )
 
         # 8. 执行(先询问是否执行)
         logger.log_info("阶段5 起点: 执行操作")
@@ -951,6 +1006,17 @@ def main():
             )
 
         logger.log_info("阶段5 完成: 执行操作完成")
+        # 执行阶段计数:成功=真正执行且无报错的动作记录;失败=执行失败清单;
+        # 备注里的升/降/踢按判定结果统计(含 dry-run 未执行的),便于对照第 4 节。
+        _acts = count_actions(records)
+        _mark_stage(
+            "执行操作",
+            ok=sum(
+                1 for r in records if r.get("actions") and r.get("executed") and not r.get("error")
+            ),
+            fail=len(execution_failures),
+            note=f"升{_acts['promote']}/降{_acts['demote']}/踢{_acts['kick']}",
+        )
         logger.log_info("阶段9 起点: 输出报告")
         console("\n输出报告 ...")
         p1 = write_contribution_report(cfg["report_dir"], gname, records, cfg.get("admin", ""))
@@ -962,6 +1028,50 @@ def main():
         p2 = write_action_report(cfg["report_dir"], gname, action_records, cfg)
         console(f"  贡献报告: {os.path.abspath(p1)}")
         console(f"  公告文件: {os.path.abspath(p2)}")
+
+        # ---- 第三份报告:运行分析报告(只增不改,前两份格式零改动)----
+        # 名册直接取 /guild list 的分组原貌(未经查询范围过滤),第 7 节才能
+        # 与"成员总数"对账;报告本身失败只记 warning,不影响本次运行。
+        analysis_enabled = bool(cfg["report"]["analysis_enabled"])
+        # 本阶段耗时只计到前两份写完(报告无法测量自己写完的时刻),
+        # 成功数按本次应产出的份数计;分析报告写入失败会由 reporter 记 warning。
+        _mark_stage("输出报告", ok=2 + (1 if analysis_enabled else 0), fail=0)
+        p3 = None
+        if analysis_enabled:
+            roster = build_roster(guild["groups"], records, failures, cfg)
+            # 能力清单来自本次运行实际启用的功能(本构建没有独立的能力注册表),
+            # 构建变体只有"源码运行"一种,缺省不臆造版本号。
+            capabilities = ["core"]
+            if cfg["async"]["enabled"]:
+                capabilities.append("async")
+            if (cfg.get("ui") or {}).get("enabled"):
+                capabilities.append("gui")
+            if (cfg.get("state_check") or {}).get("enabled"):
+                capabilities.append("vision")
+            run_meta = {
+                "started_at": run_started,
+                "ended_at": datetime.now(),
+                # 本构建只实现了指令模式;UI 识别模式尚未接线,故固定 command。
+                "operation_mode": "command",
+                "build_variant": "source",
+                "capabilities": capabilities,
+                "stage_timings": stage_timings,
+                "roster": roster,
+                "counts": {
+                    "member_total": guild["total"]
+                    if guild.get("total") is not None
+                    else len(roster),
+                    "online_total": guild.get("online"),
+                    "queried": len(targets),
+                    "decided": len(records),
+                    "query_ok": _query_ok,
+                    "query_fail": _query_fail,
+                    "blocked_name": _blocked_queries,
+                },
+            }
+            p3 = write_analysis_report(cfg["report_dir"], gname, records, cfg, run_meta)
+            if p3:
+                console(f"  分析报告: {os.path.abspath(p3)}")
 
         # 10. 未完成操作(跳过/失败)写入待办,供下次启动续做(与上次失败项合并)
         incomplete = []
