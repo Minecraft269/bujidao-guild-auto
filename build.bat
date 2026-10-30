@@ -23,6 +23,7 @@ if exist "%APP_NAME%.spec" del /f /q "%APP_NAME%.spec"
 echo === [3/4] 开始打包(单文件;排除未使用的重模块 cv2/PyQt5/numpy/tkinter) ===
 pyinstaller --onefile --clean --noconfirm ^
   --name "%APP_NAME%" ^
+  --icon gui\src-tauri\icons\icon.ico ^
   --exclude-module tkinter ^
   --exclude-module cv2 ^
   --exclude-module numpy ^

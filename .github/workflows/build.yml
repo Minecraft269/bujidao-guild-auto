@@ -172,7 +172,9 @@ jobs:
           $pyinstaller_args = @(
             "--onefile", "--clean", "--noconfirm",
             "--name", "$env:APP_NAME-${{ matrix.variant }}${{ matrix.artifact_suffix }}",
-            "--paths", "src"
+            "--paths", "src",
+            # 与 GUI 共用同一枚图标（gui/src-tauri/icons/icon.ico），不复制第二份
+            "--icon", "gui/src-tauri/icons/icon.ico"
           )
           if ($caps -contains 'vision') {
             $pyinstaller_args += @("--collect-all", "winsdk")
