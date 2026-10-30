@@ -28,7 +28,7 @@ from datetime import date
 from pathlib import Path
 
 LAUNCH_CMD = """@echo off
-rem 便携包入口：只指向核 exe（Gui.exe 不单独给快捷方式，§9）
+rem Portable entry: launches the core exe (Gui.exe gets no shortcut)
 setlocal
 cd /d "%~dp0"
 start "" "{core_name}"

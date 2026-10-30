@@ -163,3 +163,62 @@ def test_mouse_callbacks_trigger_auto_pause():
     assert runtime_mod.is_paused() is False
     pause_mod._on_mouse_click(1, 2, "left", True)  # 按下触发
     assert runtime_mod.is_paused() is True
+
+
+def test_debug_records_else_branch_marks_no_action(monkeypatch):
+    """未跳过判定时动作留空、trigger 为 None：不得凭空造动作。"""
+    import random as _random
+
+    from guild_auto.application import debug_data
+
+    real_choice = _random.choice
+    monkeypatch.setattr(
+        _random, "choice", lambda seq: None if seq and seq[-1] is None else real_choice(seq)
+    )
+    cfg = _cfg()
+    cfg["debug"]["simulation"]["players_per_rank"] = 1
+    guild = debug_data._generate_debug_guild(cfg)
+    rank = next(iter(guild["groups"]))
+    # decide_skipped=False 才是「等着阶段 3 判定」的路径：动作必须留空
+    recs = debug_data._generate_debug_records(
+        cfg, guild, [(rank, guild["groups"][rank][0])], decide_skipped=False
+    )
+    assert recs[0]["actions"] == []
+    assert recs[0]["trigger"] is None
+
+
+def test_query_async_inner_closures_cover_send_and_parse_error(monkeypatch):
+    """让 run_async_round 真正调用 send_only / verify：覆盖「发命令打印」与「解析失败」。"""
+    from guild_auto.concurrency import async_system
+
+    sent = []
+
+    class FakeWatcher:
+        def wait_for_chat_block(self, timeout=0, stop_check=None):
+            return ["完全无法解析的一行"]
+
+    class FakeHuman:
+        def send_chat_text(self, cmd, detector=None, stop_check=None):
+            sent.append(cmd)
+            return True
+
+        def wait_between_commands(self):
+            pass
+
+    rt = _Rt(results=[])
+    rt.watcher = FakeWatcher()
+    rt.human = FakeHuman()
+
+    def fake_round(system, commands, send_only, max_retries):
+        for cmd, player in commands:
+            assert send_only(cmd, player, {}) is True
+            ok, reason, _info = system._verify_fn(cmd, player, {})
+            assert ok is False and "解析失败" in reason
+        return [], []
+
+    monkeypatch.setattr(async_system, "run_async_round", fake_round)
+    cfg = _cfg()
+    cfg["commands"]["guild_member"] = "/guild member {player}"
+    records, failures = stages.stage_query_async(rt, [("member", "示例玩家")], cfg)
+    assert sent == ["/guild member 示例玩家"]
+    assert records == [] and failures == []

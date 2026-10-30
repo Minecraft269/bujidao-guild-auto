@@ -656,35 +656,41 @@ def main():
     first_run = not os.path.exists(args.config)
     cfg = prepare_config(args)
 
-    # ---- UI 入口（阶段 3）----
-    # 规格：--ui 参数启动 UI；ui.enabled=false 时**报错**而不是静默降级到控制台。
-    if getattr(args, "ui", False):
-        if not cfg.get("ui", {}).get("enabled", False):
-            raise SystemExit(
-                "配置未启用 UI 入口（ui.enabled=false）。"
-                "请先在 config.json 把 ui.enabled 改为 true，或去掉 --ui 使用控制台模式。"
-            )
+    # ---- UI 入口（阶段 3 / §2.1 单 exe 解包前的过渡形态）----
+    # 触发条件：--ui 显式指定，**或** ui.enabled=true（用户双击就该看到界面，不必带参数）。
+    # 反例保留：--ui 但配置 ui.enabled=false → 报错，而不是静默降级。
+    ui_flag = bool(getattr(args, "ui", False))
+    ui_enabled = bool(cfg.get("ui", {}).get("enabled", False))
+    if ui_flag and not ui_enabled:
+        raise SystemExit(
+            "配置未启用 UI 入口（ui.enabled=false）。"
+            "请先在 config.json 把 ui.enabled 改为 true，或去掉 --ui 使用控制台模式。"
+        )
+    if ui_flag or ui_enabled:
         from guild_auto.ui import binding as ui_bridge_mod
 
-        if ui_bridge_mod.gui_executable() is None:
-            raise SystemExit(
-                "找不到 Gui.exe。请先构建 GUI："
-                "cd gui/src-tauri && cargo build --release（见 docs/GUI设计规范.md §10）。"
+        exe = ui_bridge_mod.gui_executable()
+        if exe is None:
+            # 明确报错并**回落控制台**：双击启动时至少还能跑，不是一句报错就退出。
+            console(
+                "⚠ 未找到 Gui.exe（应与核 exe 放在同一目录）。"
+                "已回落控制台模式；如需界面，请把 Gui.exe 放到核 exe 同目录后重新启动。"
             )
-        bridge = ui_bridge_mod.GuiBridge(
-            cfg,
-            args.config,
-            report_dir=cfg["report_dir"],
-            log_dir=cfg["log"]["dir"],
-            controller=ui_bridge_mod.RuntimeController(),
-            first_run=first_run,
-        )
-        # launch() 返回 True = 用户点了「开始」：重新读取刚保存的配置，
-        # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
-        if not bridge.launch():
-            return 0
-        ui_bridge_mod.set_active(bridge)
-        cfg = config_mod.load_config(args.config)
+        else:
+            bridge = ui_bridge_mod.GuiBridge(
+                cfg,
+                args.config,
+                report_dir=cfg["report_dir"],
+                log_dir=cfg["log"]["dir"],
+                controller=ui_bridge_mod.RuntimeController(),
+                first_run=first_run,
+            )
+            # launch() 返回 True = 用户点了「开始」：重新读取刚保存的配置，
+            # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
+            if not bridge.launch():
+                return 0
+            ui_bridge_mod.set_active(bridge)
+            cfg = config_mod.load_config(args.config)
     # 功能开关的本地别名。此前 main() 里直接引用 `sw` 却从未定义 —— 查询阶段的
     # 详细输出、执行阶段的三个开关判断、dry-run 分支全都挂在未定义名上,
     # 而这些代码行此前从未被任何测试执行过,所以一直没被发现。
