@@ -21,6 +21,18 @@ UNREADABLE = "不可读"
 DAILY_ROWS = 7
 """成员 tooltip 的每日明细行数(含"今天"行)。这是游戏界面结构,不是业务参数。"""
 
+
+def mask_player(name: str) -> str:
+    """日志用玩家名脱敏:保留首字符,其余以 *** 代替(空/不可读原样返回)。
+
+    日志会落盘并被用户发出来排查,完整玩家名没必要留在日志里。
+    """
+    text = str(name or "")
+    if not text or text == UNREADABLE:
+        return text
+    return text[:1] + "***"
+
+
 MEMBER_FIELDS = (
     "player",
     "online",

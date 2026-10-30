@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from guild_auto.infrastructure import logger
+
 if TYPE_CHECKING:  # 仅用于类型注解
     from collections.abc import Callable, Sequence
 
@@ -65,6 +67,9 @@ def _timestamp(line: ChatLine | str) -> float | None:
 def _permission_denied(lines: Sequence[ChatLine | str]) -> VerifyResult | None:
     for line in lines:
         if PERMISSION_DENIED_TEXT in _text(line):
+            logger.log_warning(
+                f"vision.verifier: 权限不足告警(回显原文={_text(line)!r}),操作未生效"
+            )
             return VerifyResult(
                 ok=False,
                 reason=f"权限不足(聊天回显包含「{PERMISSION_DENIED_TEXT}」),操作未生效",
@@ -85,13 +90,23 @@ def verify_rank_change(
     回显含玩家名,所以可以精确归因;匹配不到就是失败(不猜"应该成功了")。
     """
     lines = tuple(chat_reader() or ())
+    logger.log_debug(
+        f"vision.verifier: 职位变更验证输入(player={player!r},"
+        f"expected_rank={expected_rank!r},回显行数={len(lines)})"
+    )
     denied = _permission_denied(lines)
     if denied is not None:
         return denied
 
     expected = RANK_ECHO_PATTERN.format(player=player, rank=expected_rank)
     if any(expected in _text(line) for line in lines):
+        logger.log_info(
+            f"vision.verifier: 职位变更验证结论 ok=True method=echo reason=回显匹配 {expected!r}"
+        )
         return VerifyResult(ok=True, reason=f"聊天回显匹配:{expected}", method="echo")
+    logger.log_info(
+        f"vision.verifier: 职位变更验证结论 ok=False method=echo reason=回显中未找到 {expected!r}"
+    )
     return VerifyResult(
         ok=False,
         reason=f"未在聊天回显中找到「{expected}」,无法确认 {player} 的职位变更",
@@ -152,6 +167,12 @@ def verify_kick(
 
     # 回显只读一次:读取函数可能接实时日志钩子,重复调用会漏掉窗口内的行
     lines: tuple[ChatLine | str, ...] = tuple(chat_reader() or ()) if chat_reader else ()
+    logger.log_debug(
+        f"vision.verifier: 踢出验证输入(method={method!r},回显行数={len(lines)},"
+        f"operation_ts={'有' if operation_ts is not None else '无'},"
+        f"member_gone={member_gone!r},count_before={count_before!r},"
+        f"count_after={count_after!r})"
+    )
     if lines:
         denied = _permission_denied(lines)
         if denied is not None:
@@ -167,11 +188,15 @@ def verify_kick(
         details = "；".join(detail for _value, detail in evidence.values())
         passing = [name for name, value in evaluated if value is True]
         if passing:
+            logger.log_info(
+                f"vision.verifier: 踢出验证结论 ok=True method=any 证据={details} 成立项={passing}"
+            )
             return VerifyResult(
                 ok=True,
                 reason=f"交叉验证成立({', '.join(passing)}):{details}",
                 method=method,
             )
+        logger.log_info(f"vision.verifier: 踢出验证结论 ok=False method=any 证据={details}")
         return VerifyResult(
             ok=False,
             reason=f"{UNCONFIRMED}:{details}",
@@ -180,7 +205,12 @@ def verify_kick(
 
     value, detail = evidence[method]
     if value is True:
+        logger.log_info(f"vision.verifier: 踢出验证结论 ok=True method={method} reason={detail}")
         return VerifyResult(ok=True, reason=detail, method=method)
     if value is False:
+        logger.log_info(f"vision.verifier: 踢出验证结论 ok=False method={method} reason={detail}")
         return VerifyResult(ok=False, reason=f"{UNCONFIRMED}:{detail}", method=method)
+    logger.log_info(
+        f"vision.verifier: 踢出验证结论 ok=False method={method} reason={UNCONFIRMED}:{detail}"
+    )
     return VerifyResult(ok=False, reason=f"{UNCONFIRMED}:{detail}", method=method)

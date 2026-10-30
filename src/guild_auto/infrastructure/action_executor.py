@@ -53,13 +53,13 @@ class ActionExecutor:
             # 原 sleep(0.2) 看一次就放行——现改为看到 True 后 sleep+再 check,共 N 周期
             # 持续 False 才放行(避免瞬时抖动误判)
             _DEBOUNCE_CYCLES = 3
-            logged_waiting = False
-            if self.stop_check and self.stop_check():
+            gate_t0 = time.monotonic()
+            paused_on_entry = bool(self.stop_check and self.stop_check())
+            debounce_cycles = 0
+            if paused_on_entry:
                 # 看到 True 先打印,等 3 个 50ms 周期全部 False 才放行
-                if not logged_waiting:
-                    logger.log_debug("检测到暂停状态,发送线程严格阻塞等待稳定恢复 ...")
-                    console("执行暂停,发送等待恢复 ...")
-                    logged_waiting = True
+                logger.log_info("SEND_GATE 暂停门进入 | 发送线程阻塞等待恢复")
+                console("执行暂停,发送等待恢复 ...")
                 stable = 0
                 while self.stop_check and self.stop_check() and stable < _DEBOUNCE_CYCLES:
                     time.sleep(0.05)
@@ -67,15 +67,23 @@ class ActionExecutor:
                         stable += 1
                     else:
                         stable = 0
+                        debounce_cycles += 1
             # ---- 二次复查(防抖:用户按了 u 又立即松开时,原 while time.sleep(0.2)
             #      后看到 _paused 已经是 False,while 立即退出导致 send_chat_text 已执行)。
             #      现在:看到 _paused=False 后再等一个 poll 周期再看一次——稳定为 False 才发。
             #      用 while True + break 模式以便二次暂停时 continue 回顶部
+            # 暂停期间每轮都会进这里:debug 必须节流,否则暂停几分钟日志被刷屏。
+            recheck_rounds = 0
             while True:
                 time.sleep(0.2)  # 二次复查去抖间隔(与门内 while 一致)
                 if not (self.stop_check and self.stop_check()):
                     break  # 稳定非暂停,准备发送
-                logger.log_debug("发送前二次复查检测到持续暂停,继续阻塞等待 ...")
+                recheck_rounds += 1
+                if recheck_rounds == 1 or recheck_rounds % 20 == 0:
+                    logger.log_debug(
+                        f"SEND_GATE 等待恢复中 | 已等待约 {time.monotonic() - gate_t0:.1f}s"
+                        f" | 复查轮次={recheck_rounds}"
+                    )
             # ---- 恢复后重置窗口状态(_reset_needed 由 main._toggle_pause 置位,
             #      reset_ui 内部消费该标志;无残留标志时 reset_ui 仍做一次轻量校验) ----
             self.reset_ui()
@@ -83,11 +91,22 @@ class ActionExecutor:
                 "ActionExecutor._send_with_gate", f"准备发送 cmd={cmd[:60]!r}"
             )
             t_send = time.monotonic()
-            self.input.send_chat_text(cmd)
+            sent = self.input.send_chat_text(cmd)
             send_ms = int((time.monotonic() - t_send) * 1000)
+            if sent is False:
+                # stop_check 打断时 send_chat_text 返回 False:命令实际未发出,
+                # 原实现照样记"完成",日志里看不出丢命令。
+                logger.log_warning(
+                    f"发送未执行 | cmd={cmd[:40]!r} | send_chat_text=False | reason=stop_check 中断"
+                )
             logger.trace_code_location(
                 "ActionExecutor._send_with_gate", f"send_chat_text 完成({send_ms}ms)"
             )
+            if paused_on_entry:
+                logger.log_info(
+                    f"SEND_GATE 暂停门退出 | waited_s={time.monotonic() - gate_t0:.2f}"
+                    f" | debounce_cycles={debounce_cycles} | reset_ui=True"
+                )
 
     def reset_ui(self):
         """发送前界面保障:激活游戏窗口;若暂停恢复标志置位则按 Esc 清残留并 OCR 处理菜单。
@@ -148,14 +167,23 @@ class ActionExecutor:
         try:
             from guild_auto.infrastructure.log_watcher import extract_chat_block, split_messages
 
-            block = (
-                extract_chat_block(split_messages(list(lines))[0])
-                if split_messages(list(lines))
-                else None
+            messages = split_messages(list(lines))
+            block = extract_chat_block(messages[0]) if messages else None
+        except Exception as e:
+            # 解析层炸掉会让所有动作都被判成"未收到成功回显",报告与真实结果不符;
+            # 默认级别下必须能看到是解析失败而不是动作失败。
+            logger.log_warning(
+                f"公会面板解析失败 | lines={len(lines) if lines is not None else 0}"
+                f" | {e!r} | 返回=空块"
             )
-        except Exception:
             return []
-        return list(block) if block else []
+        out = list(block) if block else []
+        logger.log_debug(
+            f"公会面板解析结果 | 块行数={len(out)}"
+            f" | 含[CHAT]={any('[CHAT]' in ln for ln in lines)}"
+            f" | 首行={out[0][:60] if out else ''!r}"
+        )
+        return out
 
     def _find_success(self, action, player, lines):
         """根据操作类型检查成功回显。返回 True/False。
@@ -242,7 +270,12 @@ class ActionExecutor:
 
             self._ensure_window()
             if self.verbose:
-                print(f"  → 发送: {cmd} (尝试 {attempt + 1}/{retries})")
+                # print 在无控制台(GUI/打包 sys.stdout=None)时不落盘,发送记录会缺失;
+                # console() 同时写控制台与日志文件。
+                console(
+                    f"  → 发送: {cmd} (尝试 {attempt + 1}/{retries})"
+                    f" | action={action} | player={player}"
+                )
             # 带暂停门的串行发送(锁内:暂停阻塞→恢复重置→发送)
             self._send_with_gate(cmd)
             logger.trace_code_location("execute_action.sent", f"cmd={cmd} attempt={attempt + 1}")
@@ -288,8 +321,10 @@ class ActionExecutor:
         """发送 /gc 广播，验证是否在日志中回显。返回 (success, error_msg)。"""
         prefix = self.cfg.get("commands", {}).get("gc_prefix", "/gc")
         for attempt in range(retries):
+            logger.log_debug(f"[BROADCAST] 尝试 {attempt + 1}/{retries} | text_len={len(text)}")
             self.gc_broadcast(text)  # 发送
             lines = self.watcher.read_until(timeout=timeout)
+            logger.log_debug(f"[BROADCAST] 回显 {len(lines)} 行 (尝试 {attempt + 1}/{retries})")
 
             # 检查是否出现错误
             error = None
@@ -301,9 +336,14 @@ class ActionExecutor:
                         error = err
                         break
             if error is not None:
+                logger.log_warning(
+                    f"[BROADCAST] 错误命中,重试 | reason=error_pattern"
+                    f" | attempt={attempt + 1}/{retries} | error={error}"
+                )
                 if attempt < retries - 1:
                     time.sleep(1.0)
                     continue
+                logger.log_warning(f"[BROADCAST] 最终失败 | error={error!r} | retries={retries}")
                 return False, error
 
             # 检查是否出现广播内容（去除前缀的文本是否出现在日志中）
@@ -319,8 +359,12 @@ class ActionExecutor:
             if found:
                 return True, None
 
+            logger.log_warning(
+                f"[BROADCAST] 未回显,重试 | reason=未回显 | attempt={attempt + 1}/{retries}"
+            )
             if attempt < retries - 1:
                 time.sleep(1.0)
+        logger.log_warning(f"[BROADCAST] 最终失败 | error='广播未在日志中回显' | retries={retries}")
         return False, "广播未在日志中回显"
 
     def execute_actions(self, player, actions):

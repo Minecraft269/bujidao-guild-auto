@@ -40,6 +40,12 @@ def _get_process_name(hwnd):
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
         if not h:
+            # 取不到进程名 → 该窗口被排除出白名单候选,表现为"找不到游戏窗口";
+            # 留痕以区分权限不足 / 进程已退出。
+            logger.log_debug(
+                f"进程名探测失败(OpenProcess 无句柄:权限不足或进程已退出)"
+                f" | hwnd={hwnd} | pid={pid.value} | 返回空串=按非游戏进程处理"
+            )
             return ""
         try:
             buf = ctypes.create_unicode_buffer(1024)
@@ -48,7 +54,8 @@ def _get_process_name(hwnd):
             return os.path.basename(buf.value).lower()
         finally:
             kernel32.CloseHandle(h)
-    except Exception:
+    except Exception as e:
+        logger.log_warning(f"进程名探测失败 | hwnd={hwnd} | {e!r} | 返回空串=按非游戏进程处理")
         return ""
 
 
@@ -86,7 +93,10 @@ def find_game_window(keywords):
       * 若不存在白名单进程窗口,回退到全部窗口按标题匹配(兼容非 Java 客户端)。
     匹配顺序按配置列表:先命中的关键词优先。"""
     if not keywords:
+        logger.log_debug("S8 窗口查找跳过 | keywords 为空")
         return None
+    t0 = time.monotonic()
+    logger.log_info(f"S8 窗口查找 ENTER | keywords={list(keywords)}")
     logger.trace_call("window_input.find_game_window", kwargs={"keywords": list(keywords)})
     lowered = [str(k).lower() for k in keywords]
     windows = _enum_windows(exclude_pid=os.getpid())
@@ -96,10 +106,22 @@ def find_game_window(keywords):
         title = win[1].lower()
         for kw in lowered:
             if kw in title:
+                logger.log_info(
+                    f"S8 窗口查找 EXIT | keywords={list(keywords)}"
+                    f" | visible_count={len(windows)} | game_process_count={len(game_windows)}"
+                    f" | hwnd={win[0]} | title={win[1]!r}"
+                    f" | elapsed_s={time.monotonic() - t0:.3f} | 结果=命中"
+                )
                 logger.trace_return(
                     "window_input.find_game_window", {"hwnd": win[0], "title": win[1]}
                 )
                 return win[0]
+    logger.log_info(
+        f"S8 窗口查找 EXIT | keywords={list(keywords)}"
+        f" | visible_count={len(windows)} | game_process_count={len(game_windows)}"
+        f" | hwnd=None | title=None"
+        f" | elapsed_s={time.monotonic() - t0:.3f} | 结果=未命中"
+    )
     logger.trace_return("window_input.find_game_window", None)
     return None
 
@@ -171,28 +193,40 @@ def read_chat_key_from_options(options_path):
     """读取 options.txt 的 key_key.chat 值,返回 pyautogui 键名;失败返回 None。
     编码兼容:依次尝试 utf-8 / gbk / gb2312。"""
     try:
-        raw = None
         with open(options_path, "rb") as f:
             data = f.read()
-        logger.trace_file_read(options_path, len(data))
-        for enc in ("utf-8", "gbk", "gb2312"):
-            try:
-                text = data.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
-        else:
-            text = data.decode("gbk", errors="replace")
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("key_key.chat:"):
-                raw = line.split(":", 1)[1].strip()
-                break
-    except OSError:
+    except OSError as e:
+        # 读不到 options.txt 会让聊天键静默回退 't' → 开栏失败/重试死循环。
+        logger.log_warning(f"读取 options.txt 失败 | path={options_path} | {e!r}")
         return None
+    logger.trace_file_read(options_path, len(data))
+    text = None
+    hit_enc = "replace"
+    for enc in ("utf-8", "gbk", "gb2312"):
+        try:
+            text = data.decode(enc)
+            hit_enc = enc
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = data.decode("gbk", errors="replace")
+    logger.log_debug(
+        f"options.txt 编码探测 | bytes={len(data)} | samples=utf-8,gbk,gb2312 | hit={hit_enc}"
+    )
+    raw = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("key_key.chat:"):
+            raw = line.split(":", 1)[1].strip()
+            break
     if not raw:
+        logger.log_debug(f"options.txt 未找到 key_key.chat | path={options_path}")
         return None
-    return MC_KEY_TO_PYAUTOGUI.get(raw)
+    mapped = MC_KEY_TO_PYAUTOGUI.get(raw)
+    if mapped is None:
+        logger.log_warning(f"聊天键名未映射 | raw={raw!r} | 回退=否 | path={options_path}")
+    return mapped
 
 
 def resolve_chat_key(cfg):
@@ -206,10 +240,14 @@ def resolve_chat_key(cfg):
     if key == "auto":
         resolved = read_chat_key_from_options(cfg.get("game_options", ""))
         if resolved:
+            logger.log_debug(f"chat_key 解析 | source=options.txt | chat_key={resolved}")
             return resolved
+        logger.log_debug("chat_key 解析 | source=options.txt(未命中) | chat_key='t'(默认回退)")
         return "t"  # 回退:原脚本默认聊天键
     if key in KEY_ALIASES:
+        logger.log_debug(f"chat_key 解析 | source=KEY_ALIASES | chat_key={KEY_ALIASES[key]}")
         return KEY_ALIASES[key]
+    logger.log_debug(f"chat_key 解析 | source=direct | chat_key={key.lower()}")
     return key.lower()
 
 
@@ -281,8 +319,10 @@ class HumanInput:
         for i in range(retries):
             try:
                 pyperclip.copy(text)
+                logger.log_debug(f"剪贴板写入成功 | text_len={len(text)} | retries_used={i + 1}")
                 return
-            except Exception:
+            except Exception as e:
+                logger.log_warning(f"剪贴板写入失败 | attempt={i + 1}/{retries} | {e!r}")
                 if i >= retries - 1:
                     raise
                 time.sleep(0.3)

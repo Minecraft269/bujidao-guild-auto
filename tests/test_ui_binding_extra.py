@@ -26,6 +26,7 @@ def bridge(tmp_path):
 
 
 # ── binding：发布流程相关 ────────────────────────────────────────────────
+@pytest.mark.real_gui_executable
 def test_gui_executable_prefers_env_override(monkeypatch, tmp_path):
     fake = tmp_path / "Gui.exe"
     fake.write_bytes(b"MZ")

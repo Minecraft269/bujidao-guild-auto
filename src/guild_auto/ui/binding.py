@@ -26,9 +26,14 @@ from guild_auto import capabilities as capabilities_mod
 from guild_auto.config import load_config, save_config, validate_config
 from guild_auto.config import ui_binding
 from guild_auto.domain import rules as rules_mod
+from guild_auto.infrastructure import logger
 from guild_auto.ui.ipc import IpcServer
 
-START_TIMEOUT = 24 * 3600.0
+# S5：GUI 窗口拉起后等用户点「开始」的上限。24h 等同无超时，日志也无法解释卡点；
+# 这里给一个真实上限（15 分钟），超时会记 WARNING 并明确说明已等待多久。
+START_TIMEOUT = 900.0
+# 确认模态：GUI 断开/不回车时不能永远挂住主流程（§6.2/§6.3）。
+CONFIRM_TIMEOUT = 600.0
 UPDATE_TIMEOUT = 8.0
 GUI_EXE_NAMES = ("布吉岛公会管理脚本-Gui.exe", "bujidao-guild-gui.exe")
 
@@ -52,17 +57,25 @@ def gui_executable() -> Path | None:
     """定位 Gui.exe：环境变量优先，其次 exe 同级（发布布局），最后仓库构建产物（开发）。"""
     override = os.environ.get("BUJIDAO_GUI")
     if override:
+        logger.log_info(f"[阶段] S4 Gui.exe 候选(环境变量 BUJIDAO_GUI): {override}")
         return Path(override)
     repo = Path(__file__).resolve().parents[3]
     roots = [
         Path(sys.executable).resolve().parent,
         repo / "gui" / "src-tauri" / "target" / "release",
     ]
+    # 记录搜索过哪些目录：未命中时能回答「为什么没弹出界面」（§6.1 S4）
+    logger.log_info(
+        f"[阶段] S4 查找 Gui.exe: 候选目录={[str(r) for r in roots]} 文件名={list(GUI_EXE_NAMES)}"
+    )
     for root in roots:
         for name in GUI_EXE_NAMES:
             candidate = root / name
+            logger.log_debug(f"[阶段] S4 检查候选: {candidate}")
             if candidate.exists():
+                logger.log_info(f"[阶段] S4 Gui.exe 命中: {candidate}")
                 return candidate
+    logger.log_warning("[阶段] S4 未找到 Gui.exe: 以上候选目录均无命中")
     return None
 
 
@@ -108,29 +121,81 @@ class GuiBridge:
         self._reports: dict[str, Any] = {}
         self._confirm: dict[str, tuple[threading.Event, dict[str, Any]]] = {}
         self._t0: float | None = None
+        self._pipe_created_at: float | None = None
+        self._hello_at: float | None = None
+
+    @property
+    def _launch_pipe_label(self) -> str:
+        """日志用管道名（一次性 token 脱敏，§6.1 S6）。"""
+        return self.server.masked_path
 
     # ── 生命周期 ────────────────────────────────────────────────────────
     def launch(self, *, timeout: float = START_TIMEOUT) -> bool:
         """起管道 + 拉 Gui，等用户点「开始」。True=开始，False=关窗/超时。"""
+        started = time.monotonic()
         exe = gui_executable()
         if exe is None:
+            logger.log_error(
+                "[阶段] S5 GuiBridge.launch 失败: 找不到 Gui.exe（候选目录见上一条 S4 日志）"
+            )
             raise FileNotFoundError(
                 "找不到 Gui.exe。请先构建：cargo build --release（见 docs/GUI设计规范.md §10）"
             )
-        self.server.create()
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        console_safe(f"核侧已建管道: {self.server.path}")
-        self._proc = subprocess.Popen(
-            [str(exe), "--pipe", self.server.pipe_name, "--token", self.server.token]
+        logger.log_info(
+            f"[阶段][ENTER] S5 GuiBridge.launch exe={exe} "
+            f"等待用户点「开始」超时={timeout:.0f}s 管道={self._launch_pipe_label}"
         )
-        console_safe(f"Gui 已启动 pid={self._proc.pid}")
-        if not self._started.wait(timeout):
+        pipe_started = time.monotonic()
+        self.server.create()
+        self._pipe_created_at = time.monotonic()
+        console_safe(
+            f"[阶段][EXIT ] S6 ipc.create 耗时={self._pipe_created_at - pipe_started:.3f}s "
+            f"管道={self._launch_pipe_label}"
+        )
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        cmd = [str(exe), "--pipe", self.server.pipe_name, "--token", self.server.token]
+        self._proc = subprocess.Popen(cmd)
+        # 命令行含一次性 token：落盘前必须脱敏（§6.4 隐私）
+        logger.log_info(
+            f"[阶段] S5 Gui.exe 已拉起 pid={self._proc.pid} 命令行={self._masked_cmd(cmd)}"
+        )
+        wait_started = time.monotonic()
+        outcome = "超时"
+        while not self._started.is_set():
+            remaining = timeout - (time.monotonic() - wait_started)
+            if remaining <= 0:
+                outcome = "超时"
+                break
+            if self._proc.poll() is not None:
+                outcome = f"进程已退出 code={self._proc.returncode}"
+                break
+            # 分片等待：这样进程崩溃时能立即发现，而不是睡满整个超时
+            self._started.wait(min(remaining, 1.0))
+        elapsed = time.monotonic() - started
+        if not self._started.is_set():
+            waited = time.monotonic() - wait_started
+            logger.log_warning(
+                f"[阶段] S5 等待 GUI「开始」失败: {outcome} 已等待={waited:.1f}s "
+                f"超时={timeout:.0f}s pid={self._proc.pid if self._proc else '?'} "
+                f"管道={self._launch_pipe_label}"
+            )
             self.stop()
+            console_safe(
+                f"[阶段][EXIT ] S5 GuiBridge.launch 耗时={elapsed:.2f}s 结果=未开始({outcome})"
+            )
             return False
         self._t0 = time.time()
         self._state.update({"state": "running", "stage": "准备中"})
         self.push_state()
+        console_safe(
+            f"[阶段][EXIT ] S5 GuiBridge.launch 耗时={elapsed:.2f}s 结果=用户已点开始 "
+            f"pid={self._proc.pid if self._proc else '?'}"
+        )
         return True
+
+    def _masked_cmd(self, cmd: list[str]) -> str:
+        """命令行日志：一次性 token 脱敏（其余参数原样）。"""
+        return " ".join("***" if part == self.server.token else part for part in cmd)
 
     def stop(self) -> None:
         self._exit.set()
@@ -138,8 +203,9 @@ class GuiBridge:
         if self._proc and self._proc.poll() is None:
             try:
                 self._proc.terminate()
-            except OSError:
-                pass
+            except OSError as e:
+                # 停止失败不阻断退出，但必须留痕（禁止静默失败）
+                logger.log_warning(f"[阶段] S5 终止 GUI 进程失败 pid={self._proc.pid}: {e!r}")
 
     # ── 推送 ────────────────────────────────────────────────────────────
     def push_state(self, **changes: Any) -> None:
@@ -195,13 +261,41 @@ class GuiBridge:
     def ask_confirm(self, kind: str, **fields: Any) -> str:
         """向 GUI 发模态确认并等答复。GUI 断开时按『停止』处理，绝不挂死流程。"""
         token = f"{kind}-{int(time.time() * 1000)}"
+        started = time.monotonic()
+        logger.log_info(
+            f"[阶段][ENTER] 确认 ask_confirm kind={kind} id={token} "
+            f"超时={CONFIRM_TIMEOUT:.0f}s 已连接={self.server.connected}"
+        )
         done = threading.Event()
         box: dict[str, Any] = {}
         self._confirm[token] = (done, box)
         self.server.send_event("confirm", {"id": token, "kind": kind, **fields})
-        done.wait()
+        deadline = time.monotonic() + CONFIRM_TIMEOUT
+        disconnected = False
+        while not done.is_set():
+            if self.server.ever_connected and not self.server.connected:
+                disconnected = True
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # 分片等待：GUI 中途断开时不必等满整个超时才发现
+            done.wait(min(remaining, 0.5))
         self._confirm.pop(token, None)
-        return str(box.get("choice") or "stop")
+        elapsed = time.monotonic() - started
+        if done.is_set():
+            choice = str(box.get("choice") or "stop")
+            logger.log_info(
+                f"[阶段][EXIT ] 确认 ask_confirm kind={kind} id={token} "
+                f"结果={choice} 耗时={elapsed:.2f}s"
+            )
+            return choice
+        reason = "GUI 已断开" if disconnected else f"超时(上限 {CONFIRM_TIMEOUT:.0f}s)"
+        logger.log_warning(
+            f"[阶段] 确认 ask_confirm kind={kind} id={token} {reason}，"
+            f"已等待={elapsed:.1f}s，按「停止」处理"
+        )
+        return "stop"
 
     def ask_stage(self, prompt: str, default: bool = False, context: dict | None = None) -> bool:
         """阶段确认（§3.4）：走 GUI 模态；GUI 模式下不存在的 input() 分支不再被触达。"""
@@ -286,8 +380,9 @@ class GuiBridge:
         from guild_auto import __version__  # noqa: PLC0415
         from guild_auto.config.schema import SCHEMA_VERSION  # noqa: PLC0415
 
+        started = time.monotonic()
         meta = capabilities_mod.variant_meta()
-        return {
+        payload = {
             "variant": meta["build_variant"],
             "capabilities": list(meta["capabilities"]),
             "plugin_version": __version__,
@@ -295,6 +390,14 @@ class GuiBridge:
             # 首次运行（配置是刚生成的）→ 前端锁在配置页并要求先保存（§3.5）
             "first_run": self.first_run,
         }
+        if self._hello_at is None:
+            self._hello_at = time.monotonic()
+            since_create = self._hello_at - self._pipe_created_at if self._pipe_created_at else 0.0
+            logger.log_info(
+                f"[阶段] S6 首帧 hello 处理完成 耗时={time.monotonic() - started:.3f}s "
+                f"距管道创建={since_create:.3f}s variant={payload['variant']}"
+            )
+        return payload
 
     def _config_payload(self) -> dict[str, Any]:
         readonly = ui_binding.readonly_values()
@@ -452,10 +555,17 @@ def _default_restart_impl() -> None:
 
 
 def console_safe(msg: str) -> None:
-    """控制台输出：打包成无控制台时 sys.stdout 可能是 None。"""
+    """控制台输出并**同时落盘**：打包成无控制台时 sys.stdout 可能是 None。
+
+    不能用 print 代替日志（§四）：GUI 生命周期埋点必须能在 latest.log 里查到。
+    """
     stream = sys.stdout
     if stream is not None:
-        print(msg, flush=True)
+        try:
+            print(msg, flush=True)
+        except (OSError, ValueError) as e:
+            logger.log_warning(f"[console_safe] 控制台输出失败(仍写入日志): {e!r}")
+    logger.log_info(msg)
 
 
 class RuntimeController:

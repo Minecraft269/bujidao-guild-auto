@@ -11,15 +11,18 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 """
 
 import argparse
+import faulthandler
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime
 
 from pynput import keyboard
 import pyautogui
 
+from guild_auto import __version__
 from guild_auto import capabilities as capabilities_mod
 import guild_auto.config as config_mod
 from guild_auto.domain.decisions import (
@@ -471,6 +474,163 @@ def parse_args():
     return ap.parse_args()
 
 
+# ---------------------------------------------------------------------------
+# S0 启动快照与看门狗（§6.1 S0 / §6.3）
+# ---------------------------------------------------------------------------
+# logger 要等配置加载完才知道日志目录：S0 在它之前输出，所以先缓冲，
+# init_logger 就绪后由 prepare_config 调用 _flush_prelog() 补写（见任务 S0）。
+_PRELOG_BUFFER: list[str] = []
+
+
+def _prelog(msg):
+    """logger 未就绪时的启动日志：先缓冲 + 控制台可见，就绪后补写。"""
+    _PRELOG_BUFFER.append(str(msg))
+    stream = sys.stdout
+    if stream is not None:
+        try:
+            print(msg, flush=True)
+        except (OSError, ValueError) as e:
+            # 控制台不可用（打包成无控制台）时仍保留缓冲，logger 就绪后落盘
+            _PRELOG_BUFFER.append(f"[S0] 控制台输出失败: {e!r}")
+
+
+def _flush_prelog():
+    """把 S0 缓冲写进已就绪的 logger（幂等：缓冲清空后无动作）。"""
+    if not _PRELOG_BUFFER:
+        return
+    pending = list(_PRELOG_BUFFER)
+    _PRELOG_BUFFER.clear()
+    for msg in pending:
+        logger.log_info(msg)
+
+
+def _log_startup_snapshot(args):
+    """§6.1 S0：进程启动必须记录 argv / cwd / exe / 版本 / 构建变体 / 能力清单。"""
+    started = time.monotonic()
+    try:
+        meta = capabilities_mod.variant_meta()
+        variant = str(meta["build_variant"])
+        caps = ",".join(str(c) for c in meta["capabilities"])
+    except Exception as e:  # 能力探测失败不阻断启动，但必须把原因写出来
+        variant, caps = "?", f"<能力探测失败: {e!r}>"
+    _prelog("[阶段][ENTER] S0 进程启动")
+    _prelog(f"[阶段] S0 argv={sys.argv}")
+    _prelog(f"[阶段] S0 cwd={os.getcwd()}")
+    _prelog(f"[阶段] S0 exe={sys.executable}")
+    _prelog(f"[阶段] S0 version={__version__} build_variant={variant} capabilities={caps}")
+    _prelog(f"[阶段] S0 配置路径={os.path.abspath(args.config)}")
+    _prelog(f"[阶段][EXIT ] S0 进程启动 耗时={time.monotonic() - started:.3f}s")
+
+
+def _latest_log_path(cfg):
+    """本运行的 latest.log 绝对路径（看门狗把线程栈写到这里）。"""
+    log_dir = str((cfg.get("log") or {}).get("dir") or "logs")
+    return os.path.abspath(os.path.join(log_dir, "latest.log"))
+
+
+class _StartupWatchdog:
+    """启动看门狗（§6.3）：阶段共享变量 + 10s 巡检，自身异常绝不外抛。
+
+    覆盖 S0→S9：同一阶段持续超过阈值记 WARNING 并转储线程栈；
+    启动 30s 仍未进入 S9 记 ERROR 并同步提示控制台。
+    """
+
+    def __init__(self, log_path, *, interval=10.0, stall_seconds=30.0, start_seconds=30.0):
+        self.log_path = log_path
+        self.interval = float(interval)
+        self.stall_seconds = float(stall_seconds)
+        self.start_seconds = float(start_seconds)
+        self._stage = "S0 进程启动"
+        self._since = time.monotonic()
+        self._started_at = time.monotonic()
+        self._reached_s9 = False
+        self._reported_stage = None
+        self._reported_slow_start = False
+        self._stop_event = threading.Event()
+        self._dump_fh = None
+        self._dump_scheduled = False
+        self._thread = threading.Thread(target=self._run, name="startup-watchdog", daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def mark(self, stage):
+        """推进当前阶段（主线程调用，开销只是一次赋值 + 一次时间读取）。"""
+        self._stage = str(stage)
+        self._since = time.monotonic()
+        self._reported_stage = None
+
+    def reach_s9(self):
+        """已进入主流程：启动段巡检结束。"""
+        self._reached_s9 = True
+        self.stop()
+
+    def stop(self):
+        self._stop_event.set()
+        # 已排队的线程栈转储必须让它落盘（0.1s 后），不能在这里取消掉
+        if not self._dump_scheduled:
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception as e:  # 取消失败不影响退出，但要留痕
+                logger.log_warning(f"[看门狗] 取消线程栈转储失败: {e!r}")
+
+    def _run(self):
+        try:
+            while not self._stop_event.wait(self.interval):
+                now = time.monotonic()
+                stage = self._stage
+                held = now - self._since
+                if held >= self.stall_seconds and self._reported_stage != stage:
+                    self._reported_stage = stage
+                    logger.log_warning(
+                        f"[看门狗] 阶段 {stage} 已持续 {held:.0f}s 无进展"
+                        f"（阈值 {self.stall_seconds:.0f}s），转储线程栈到 {self.log_path}"
+                    )
+                    self._dump_thread_stack()
+                if (
+                    not self._reached_s9
+                    and now - self._started_at >= self.start_seconds
+                    and not self._reported_slow_start
+                ):
+                    self._reported_slow_start = True
+                    msg = f"启动卡在 {stage}，日志见 {self.log_path}"
+                    logger.log_error(
+                        f"[看门狗] {msg}（已启动 {now - self._started_at:.0f}s 仍未进入 S9）"
+                    )
+                    try:
+                        console(msg, level="error")
+                    except Exception as e:  # 控制台提示失败不影响看门狗
+                        logger.log_warning(f"[看门狗] 控制台提示失败: {e!r}")
+                    # GUI 已拉起时同步推一条错误事件（界面也要能回答「卡在哪」）
+                    try:
+                        from guild_auto.ui import binding as _ui_binding  # noqa: PLC0415
+
+                        _bridge = _ui_binding.active()
+                        if _bridge is not None:
+                            _bridge.event(msg, level=2, category="启动")
+                    except Exception as e:  # 界面推送失败只留痕，不影响主流程
+                        logger.log_warning(f"[看门狗] 界面提示失败: {e!r}")
+        except Exception as e:  # 看门狗自身异常不得向上抛
+            try:
+                logger.log_warning(f"[看门狗] 自身异常已忽略(不影响主流程): {e!r}")
+            except Exception as e2:
+                sys.stderr.write(f"[看门狗] 自身异常且日志不可用: {e!r} / {e2!r}\n")
+
+    def _dump_thread_stack(self):
+        """用 faulthandler 把线程栈写进日志文件（保留文件句柄直到转储发生）。"""
+        try:
+            if self._dump_fh is not None:
+                self._dump_fh.close()
+            self._dump_fh = open(self.log_path, "a", encoding="utf-8")
+            faulthandler.cancel_dump_traceback_later()
+            self._dump_scheduled = True
+            # 0.1s 后一次性转储；exit=False 保证只写栈、不退出进程
+            faulthandler.dump_traceback_later(0.1, repeat=False, file=self._dump_fh, exit=False)
+        except Exception as e:
+            logger.log_warning(f"[看门狗] 线程栈转储失败: {e!r}")
+
+
 def prepare_config(args, console_fn=None, exit_fn=None):
     """流程第一步:检测配置文件 → 加载 → 校验 → 初始化日志。
 
@@ -491,19 +651,10 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     exit_fn = exit_fn or sys.exit
 
     created = config_mod.ensure_default_config(args.config)
-    if created:
-        # 首次运行:提醒先查看配置,回车退出;下次启动配置文件存在则不再提醒
-        console_fn(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
-        console_fn("请先查看并修改该配置文件——每个配置键前都有 '//' 中文注释,说明作用与取值范围")
-        console_fn("重点确认:管理员名(留空自动识别)、日志路径、聊天键、升/降/踢阈值、各开关")
-        console_fn("详细说明见 docs/《配置说明.md》")
-        try:
-            input("按回车退出...")
-        except EOFError as e:
-            # 首次运行提示是尽力而为:stdin 不可用就直接关脚本,但留痕
-            logger.log_debug(f"首次运行等待回车不可用: {e!r}")
-        exit_fn(0)
 
+    # 顺序很关键：先加载配置→初始化日志→再处理"首次运行"提示。
+    # 反例（修过的真 bug）：旧代码在 init_logger 之前 input("按回车退出")，
+    # 于是首次运行时既不落盘日志、又卡在等回车 —— 用户看到的就是"双击无界面"。
     cfg = config_mod.load_config(args.config)
     config_mod.apply_cli_overrides(cfg, args)
 
@@ -514,6 +665,30 @@ def prepare_config(args, console_fn=None, exit_fn=None):
         level=int(log_cfg.get("level", 4)),
         enabled=bool(log_cfg.get("enabled", True)),
     )
+    # S0 缓冲在 logger 就绪后补写（配置探测/加载阶段即便卡住，前面的错误也已有缓冲）
+    _flush_prelog()
+
+    if created:
+        wants_ui = _bool_arg(args, "ui") or bool(cfg.get("ui", {}).get("enabled", False))
+        console_fn(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
+        logger.log_warning(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
+        console_fn("请先查看并修改该配置文件——每个配置键前都有 '//' 中文注释,说明作用与取值范围")
+        console_fn("重点确认:管理员名(留空自动识别)、日志路径、聊天键、升/降/踢阈值、各开关")
+        console_fn("详细说明见 docs/《配置说明.md》")
+        if wants_ui:
+            # 要开界面就继续走：界面首启会把用户锁在配置页（§3.5），不需要再按回车
+            console_fn("即将打开配置页，请在其中核对并保存后再开始运行…")
+            logger.log_info("首次运行且启用 UI：跳过『按回车退出』，直接进入配置页")
+        else:
+            # 仅纯控制台模式才停一下，且只在交互终端上等；非交互（管道/计划任务）不留挂
+            if sys.stdin is not None and sys.stdin.isatty():
+                try:
+                    input("按回车退出...")
+                except (EOFError, KeyboardInterrupt):
+                    logger.log_warning("首次运行等待回车被中断，直接退出")
+            else:
+                logger.log_warning("首次运行且非交互终端：不等待回车，直接退出")
+            exit_fn(0)
     logger.log_info(
         f"脚本启动 (日志级别 {logger.current_level()}, {'启用' if logger.is_enabled() else '禁用'})"
     )
@@ -624,6 +799,16 @@ def prepare_config(args, console_fn=None, exit_fn=None):
 from guild_auto.domain.decisions import build_summary_message, count_actions  # noqa: E402,F401
 
 
+def _bool_arg(args, name: str) -> bool:
+    """只认真正的 bool 值。
+
+    argparse 给的是 True/False；但测试里常用 mock.Mock(**kwargs) 冒充 args，
+    未显式设置的属性会返回**真值 Mock 对象**，`bool(getattr(...))` 会误判成 True，
+    从而悄悄改变启动分支（首启是否退出、是否拉起界面）。
+    """
+    return getattr(args, name) is True
+
+
 def _gui_bridge():
     """当前 GUI 会话（未用 --ui 时为 None）。延迟导入，控制台模式不加载界面模块。"""
     from guild_auto.ui import binding as _b
@@ -650,18 +835,27 @@ def main():
         return runtime_mod.is_paused()
 
     args = parse_args()
+    # S0 必须在 prepare_config 之前输出（此时 logger 可能未就绪，先缓冲，见 _prelog）
+    _log_startup_snapshot(args)
 
     # 流程第一步:配置检测/生成/校验/日志初始化(见 prepare_config)
     # 首次运行判定必须在 prepare_config 之前：那一步会把默认配置写成文件（§3.5）
     first_run = not os.path.exists(args.config)
     cfg = prepare_config(args)
+    # 看门狗覆盖 S0→S9：logger 已就绪，线程栈可直接写进 latest.log（§6.3）
+    watchdog = _StartupWatchdog(_latest_log_path(cfg)).start()
+    watchdog.mark("S4 UI 入口决策")
 
     # ---- UI 入口（阶段 3 / §2.1 单 exe 解包前的过渡形态）----
     # 触发条件：--ui 显式指定，**或** ui.enabled=true（用户双击就该看到界面，不必带参数）。
     # 反例保留：--ui 但配置 ui.enabled=false → 报错，而不是静默降级。
-    ui_flag = bool(getattr(args, "ui", False))
+    ui_flag = _bool_arg(args, "ui")
     ui_enabled = bool(cfg.get("ui", {}).get("enabled", False))
+    logger.log_info(f"[阶段] S4 UI 入口决策输入: ui_flag={ui_flag} ui_enabled={ui_enabled}")
     if ui_flag and not ui_enabled:
+        reason = "以 --ui 显式要求界面，但 ui.enabled=false：按规范报错退出，不静默降级到控制台"
+        logger.log_warning(f"[阶段] S4 决定=报错退出 原因={reason}")
+        watchdog.reach_s9()
         raise SystemExit(
             "配置未启用 UI 入口（ui.enabled=false）。"
             "请先在 config.json 把 ui.enabled 改为 true，或去掉 --ui 使用控制台模式。"
@@ -670,13 +864,21 @@ def main():
         from guild_auto.ui import binding as ui_bridge_mod
 
         exe = ui_bridge_mod.gui_executable()
+        logger.log_info(
+            f"[阶段] S4 Gui.exe 查找结果: {'命中 ' + str(exe) if exe else '未找到'}"
+            f"（搜索目录见上一条 S4 日志）"
+        )
         if exe is None:
             # 明确报错并**回落控制台**：双击启动时至少还能跑，不是一句报错就退出。
+            logger.log_warning(
+                "[阶段] S4 决定=回落控制台模式 原因=未找到 Gui.exe（应与核 exe 同目录）"
+            )
             console(
                 "⚠ 未找到 Gui.exe（应与核 exe 放在同一目录）。"
                 "已回落控制台模式；如需界面，请把 Gui.exe 放到核 exe 同目录后重新启动。"
             )
         else:
+            logger.log_info(f"[阶段] S4 决定=拉起 GUI (exe={exe})")
             bridge = ui_bridge_mod.GuiBridge(
                 cfg,
                 args.config,
@@ -687,10 +889,16 @@ def main():
             )
             # launch() 返回 True = 用户点了「开始」：重新读取刚保存的配置，
             # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
+            watchdog.mark("S5/S6 GUI 拉起与 IPC 建立")
             if not bridge.launch():
+                # 关窗/超时都是正常退出：必须落日志，才能回答「为什么没弹出界面/为什么退出」
+                logger.log_info("[阶段] S4 GUI 未进入开始状态(用户关窗或等待超时)，正常退出")
+                watchdog.reach_s9()
                 return 0
             ui_bridge_mod.set_active(bridge)
             cfg = config_mod.load_config(args.config)
+    else:
+        logger.log_info("[阶段] S4 决定=控制台模式 原因=未指定 --ui 且 ui.enabled=false")
     # 功能开关的本地别名。此前 main() 里直接引用 `sw` 却从未定义 —— 查询阶段的
     # 详细输出、执行阶段的三个开关判断、dry-run 分支全都挂在未定义名上,
     # 而这些代码行此前从未被任何测试执行过,所以一直没被发现。
@@ -709,22 +917,35 @@ def main():
         # 桥的模态实现，stages 里的确认代码一行不改，也不会再去读控制台。
         _gui_for_confirm = _gui_bridge()
         _rt_holder: dict = {}
-        if _gui_for_confirm is not None:
+        watchdog.mark("S7 运行环境构建(build_runtime)")
+        _s7_started = time.monotonic()
+        logger.log_info("[阶段][ENTER] S7 build_runtime")
+        try:
+            if _gui_for_confirm is not None:
 
-            def _ask_gui(prompt, default=False):
-                rt_obj = _rt_holder.get("rt")
-                ctx = getattr(rt_obj, "confirm_context", {}) if rt_obj is not None else {}
-                return _gui_for_confirm.ask_stage(prompt, default, ctx)
+                def _ask_gui(prompt, default=False):
+                    rt_obj = _rt_holder.get("rt")
+                    ctx = getattr(rt_obj, "confirm_context", {}) if rt_obj is not None else {}
+                    return _gui_for_confirm.ask_stage(prompt, default, ctx)
 
-            def _ask_text_gui(prompt):
-                rt_obj = _rt_holder.get("rt")
-                ctx = getattr(rt_obj, "confirm_context", {}) if rt_obj is not None else {}
-                return _gui_for_confirm.ask_kick_text(prompt, ctx)
+                def _ask_text_gui(prompt):
+                    rt_obj = _rt_holder.get("rt")
+                    ctx = getattr(rt_obj, "confirm_context", {}) if rt_obj is not None else {}
+                    return _gui_for_confirm.ask_kick_text(prompt, ctx)
 
-            rt = runtime_mod.build_runtime(cfg, ask_confirm=_ask_gui, ask_text_fn=_ask_text_gui)
-            _rt_holder["rt"] = rt
-        else:
-            rt = runtime_mod.build_runtime(cfg)
+                rt = runtime_mod.build_runtime(cfg, ask_confirm=_ask_gui, ask_text_fn=_ask_text_gui)
+                _rt_holder["rt"] = rt
+            else:
+                rt = runtime_mod.build_runtime(cfg)
+        finally:
+            _s7_elapsed = time.monotonic() - _s7_started
+            logger.log_info(f"[阶段][EXIT ] S7 build_runtime 耗时={_s7_elapsed:.2f}s")
+            if _s7_elapsed > 10.0:
+                # 子步骤日志由 runtime.build_runtime 逐条输出；这里只对总耗时告警
+                logger.log_warning(
+                    f"[阶段] S7 build_runtime 总耗时 {_s7_elapsed:.2f}s 超过阈值 10s，"
+                    "请检查 watcher/human/executor 子步骤日志"
+                )
         watcher = rt.watcher
         human = rt.human
         executor = rt.executor
@@ -732,11 +953,25 @@ def main():
         hwnd = rt.hwnd
 
         # 1. 只查找窗口，暂不激活
+        watchdog.mark("S8 游戏窗口查找")
+        _s8_started = time.monotonic()
+        logger.log_info(
+            f"[阶段][ENTER] S8 find_game_window keywords={list(cfg['window_keywords'])}"
+        )
         hwnd = find_game_window(cfg["window_keywords"])
+        logger.log_info(
+            f"[阶段][EXIT ] S8 find_game_window 耗时={time.monotonic() - _s8_started:.2f}s "
+            f"结果={'hwnd=' + str(hwnd) if hwnd else '未命中'}"
+        )
         if hwnd:
             console("游戏窗口已找到(将在倒计时结束后自动置前)")
         else:
             console("⚠ 未找到游戏窗口(请确认游戏已启动、窗口标题包含关键词)")
+            watchdog.mark("S8 等待用户输入(无超时)")
+            # 进入无限等待前必须同时写控制台与日志（§6.2）
+            logger.log_warning(
+                "[阶段] S8 未命中游戏窗口，进入控制台等待用户输入(无超时)：回车继续发送 / q 退出"
+            )
             try:
                 ans = (
                     input("按回车仍继续发送命令(可能误操作其他程序),输入 q 回车退出: ")
@@ -746,7 +981,9 @@ def main():
             except EOFError:
                 ans = "q"
             if ans == "q":
+                logger.log_info("[阶段] S8 用户选择退出(未找到游戏窗口)")
                 console("已退出")
+                watchdog.reach_s9()
                 sys.exit(0)
         # 窗口句柄以本次查找为准（build_runtime 内查过一次，此处可能得到新值）
         executor.hwnd = hwnd
@@ -767,6 +1004,7 @@ def main():
         # ---- 以下为新增：待办处理 + 统一提示 + 倒计时 ----
         # 1. 先处理待办（run_pending 内部已有自己的询问，但不会触发这里的提示）
         pending_path = pending_path_of(cfg)
+        watchdog.mark("S9 启动前处理待办")
         cont, _remaining = run_pending(cfg, watcher, human, hwnd, executor, pending_path)
         _g_pending = _gui_bridge()
         if _g_pending is not None:
@@ -774,17 +1012,20 @@ def main():
             _g_pending.push_pending(_gui_pending(_remaining))
         if not cont:
             console("\n再见，本次仅处理了上次未完成的操作")
+            watchdog.reach_s9()
             return
 
         # 2. 只有决定继续新的统计时才显示提示和倒计时（仅一次）
         #    流程规格:启动前等用户回车确认;按流程规格,此时必须已提示
         #    "请保证游戏正在运行且在主大厅(防止 AFK)"与"按下回车后不要操作键鼠"
+        watchdog.mark("S9 启动前确认(等待用户回车)")
         if not rt.confirm(
             "请保证游戏正在运行且在主大厅(防止 AFK)。\n"
             "按回车键运行;按下回车后请不要操作键盘和鼠标,脚本会自动前置游戏窗口",
             default=True,
         ):
             console("已取消,未开始运行")
+            watchdog.reach_s9()
             return
         console("3 秒后开始运行(请将鼠标移开,不要操作键盘)...")
         console("请不要操作键盘和鼠标,脚本会自动前置游戏窗口")
@@ -805,9 +1046,18 @@ def main():
         console(f"暂停键: {runtime_mod.pause_key_name()}(随时按暂停/继续)")
 
         console("开始运行\n")
+        # S9：启动段结束（看门狗据此停止巡检；之后是业务阶段，不属于启动卡点）
+        logger.log_info(
+            f"[阶段] S9 进入主流程 operation_mode={cfg.get('operation_mode') or 'command'} "
+            f"async={bool((cfg.get('async') or {}).get('enabled', False))} "
+            f"confirm_mode={'gui-modal' if _gui_bridge() is not None else 'console-input'} "
+            f"启动前 build_runtime 耗时={_s7_elapsed:.2f}s"
+        )
+        watchdog.reach_s9()
     except BaseException:  # 含 SystemExit(sys.exit(0) 未找到窗口退出路径),确保资源清理
         # watcher 必须预置 None:若 build_runtime() 自己就抛了,这里再用 watcher
         # 会二次抛 NameError,把真正的失败原因盖掉。
+        watchdog.stop()
         if watcher is not None:
             watcher.close()
         if listener is not None:

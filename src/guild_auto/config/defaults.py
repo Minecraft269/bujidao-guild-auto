@@ -108,7 +108,9 @@ DEFAULT_CONFIG = {
     "rules_strategy": "first_match",
     "rules": [],
     "ui": {
-        "enabled": False,
+        # 默认开启：gui 变体双击即出界面（用户实测要求）；非 gui 构建找不到 Gui.exe 时
+        # 会「明确报错 + 回落控制台」，不会静默卡住。
+        "enabled": True,
         "start_mode": "normal",
         "always_on_top": False,
         "kick_confirm_mode": "dialog",
@@ -432,7 +434,7 @@ CONFIG_COMMENTS = {
     "conditions/actions。条件字段可用:weekly_total(数值比较) rank(== != in not_in) "
     "online(== !=) player(== != matches) joined_at/last_online(before after)。"
     "动作可用:promote(times) demote(times) kick(reason) notify ignore",
-    "ui.enabled": "是否允许 UI 入口:true=启动时可加 --ui 打开图形配置界面;false=只走控制台流程。"
+    "ui.enabled": "是否启用图形界面入口:true=启动即拉起界面(找不到 Gui.exe 会明确报错并回落控制台);false=只走控制台流程。默认 true。"
     "无 --ui 参数时默认走控制台,向后兼容",
     "ui.start_mode": "窗口初始形态:'normal'=窗口化 600x400(默认);'compact'=小窗 200x150"
     "(只显示状态与进度)。运行时可用工具栏按钮切换",

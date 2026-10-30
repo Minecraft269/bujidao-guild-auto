@@ -13,10 +13,12 @@ vision/runner.py —— 定位 → 扫掠采集 → 转 records
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from guild_auto.infrastructure import logger
+from guild_auto.vision.models import mask_player
 from guild_auto.vision.navigator import NavigationError
 from guild_auto.vision.tooltip import (
     KIND_GUILD_DETAIL,
@@ -71,6 +73,7 @@ class VisionRunner:
         # 公会详情 tooltip 读取器(悬停 book → 截图 → OCR)。
         # 未注入时成员总数不可知,上层退回逐页累计并注明来源。
         self._guild_detail_reader = guild_detail_reader
+        self._warned_no_sampler = False  # online 采样缺失只告警一次,避免逐轮刷屏
 
     def _read_member_total(self, sweep) -> int | None:
         """从扫掠结果里找「公会详情」元素,悬停读 tooltip 并解析人数。
@@ -79,6 +82,10 @@ class VisionRunner:
         那会让报告的对账变成自证循环,跨页漏扫也发现不了。
         """
         if self._guild_detail_reader is None:
+            logger.log_info(
+                "vision.runner: 未注入 guild_detail_reader,"
+                "member_total 来源=逐页累计(ui_paging_accumulated)"
+            )
             return None
         element = next((e for e in sweep.elements if e.kind == KIND_GUILD_DETAIL), None)
         if element is None:
@@ -95,6 +102,7 @@ class VisionRunner:
             logger.log_warning(f"vision.runner: 读取公会详情失败,总数改为逐页累计: {e!r}")
             return None
         if not text:
+            logger.log_warning("vision.runner: 公会详情 tooltip 为空,成员总数改为逐页累计")
             return None
         total = parse_guild_detail(text)
         if total is None:
@@ -104,6 +112,8 @@ class VisionRunner:
         return total
 
     def collect(self) -> CollectionResult:
+        started = time.monotonic()
+        logger.log_info("vision.runner: UI 采集开始(导航 → 扫掠 → 解析)")
         try:
             key = self._navigator.enter_guild_ui(self._open_guild)
         except NavigationError as e:
@@ -136,19 +146,35 @@ class VisionRunner:
             logger.log_warning(f"vision.runner: {reason},需重扫后再采集")
             return CollectionResult(ok=False, reason=reason, key_used=key, sweep=sweep)
 
+        if self._online_sampler is None and not self._warned_no_sampler:
+            self._warned_no_sampler = True
+            logger.log_warning(
+                "vision.runner: 能力不可用(capability=online_pixel_sampling,"
+                "status=unavailable,原因=未注入 online_sampler);"
+                "影响=online 记为不可读,不猜离线"
+            )
+
         records = []
         for element in sweep.elements:
             if element.kind != KIND_MEMBER:
                 continue  # 翻页/返回/组队钻石等无关元素跳过
             online = self._online_sampler(element) if self._online_sampler else None
             member = self._member_parser(element.text, online=online)
-            records.append(member.as_record())
+            record = member.as_record()
+            logger.log_debug(
+                f"vision.runner: 解析成员 player={mask_player(member.player)!r} "
+                f"kind={element.kind} online={record.get('online')!r} "
+                f"unreadable={record.get('unreadable', [])} daily={len(member.daily)}"
+            )
+            records.append(record)
 
         member_total = self._read_member_total(sweep)
 
+        total_ms = (time.monotonic() - started) * 1000
         logger.log_info(
-            f"vision.runner: UI 采集完成 {len(records)} 人 "
-            f"(按键 {key},停留点 {len(sweep.points)},识别语义 {sweep.recognized_cells} 格,"
+            f"vision.runner: UI 采集结束(总耗时 {total_ms:.1f}ms,records={len(records)},"
+            f"key_used={key!r},停留点 {len(sweep.points)},"
+            f"识别语义 {sweep.recognized_cells} 格,"
             f"成员总数来源={'公会详情 tooltip' if member_total is not None else '逐页累计'})"
         )
         return CollectionResult(

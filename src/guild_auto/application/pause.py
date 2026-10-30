@@ -78,6 +78,22 @@ def _maybe_auto_pause(source):
     )
 
 
+def _warn_callback_error(source, exc):
+    """键鼠监听回调异常:WARNING 留痕(默认级别可见),同类异常只记第一次。
+
+    监听线程异常死亡时暂停键/自动暂停会静默失效,用户会当成"脚本卡住";
+    限流是避免鼠标每秒移动几十次时把日志刷满。
+    """
+    key = (source, type(exc).__name__)
+    if key in _CALLBACK_WARNED:
+        return
+    _CALLBACK_WARNED.add(key)
+    logger.log_warning(f"键鼠监听回调异常 source={source} {type(exc).__name__}: {exc}")
+
+
+_CALLBACK_WARNED = set()  # (source, 异常类型)
+
+
 def _on_press(key):
     """pynput 全局按键回调:暂停键切换暂停;Ctrl+C 转成 SIGINT 走菜单。"""
     try:
@@ -114,7 +130,7 @@ def _on_press(key):
         _maybe_auto_pause("键盘按键")
     except Exception as e:
         # 不静默吞——记录异常(防止 pynput 后台挂掉但日志无声)
-        logger.log_debug(f"[键盘] _on_press 异常: {type(e).__name__}: {e}")
+        _warn_callback_error("key", e)
 
 
 def _on_mouse_move(_x, _y):
@@ -126,7 +142,7 @@ def _on_mouse_move(_x, _y):
     try:
         _maybe_auto_pause("鼠标移动")
     except Exception as e:
-        logger.log_debug(f"[鼠标] _on_mouse_move 异常: {type(e).__name__}: {e}")
+        _warn_callback_error("move", e)
 
 
 def _on_mouse_click(_x, _y, _button, pressed):
@@ -136,7 +152,7 @@ def _on_mouse_click(_x, _y, _button, pressed):
     try:
         _maybe_auto_pause("鼠标点击")
     except Exception as e:
-        logger.log_debug(f"[鼠标] _on_mouse_click 异常: {type(e).__name__}: {e}")
+        _warn_callback_error("click", e)
 
 
 class _CombinedListener:
@@ -189,6 +205,7 @@ def wait_if_paused():
     所以看到 _force_stop 必须 raise KeyboardInterrupt 让顶层 except 接住。
     """
     logged = False
+    started = None
     while True:
         if runtime.is_force_stop():
             if not logged:
@@ -198,9 +215,15 @@ def wait_if_paused():
                 logged = True
             raise KeyboardInterrupt("Ctrl+C 触发 _force_stop,冒泡到顶层 except")
         if not runtime.is_paused():
-            if logged:
-                logger.log_debug("暂停解除,流程继续")
+            if started is not None:
+                logger.log_info(f"暂停门解除 已等待={time.monotonic() - started:.1f}s")
             break
+        if started is None:
+            started = time.monotonic()
+            stage, _command = runtime.pause_context()
+            logger.log_info(
+                f"暂停门 ENTER(无限等待，按 {runtime.pause_key_name()} 恢复) 阶段={stage}"
+            )
         # 事件驱动阻塞:0.1s 内暂停事件置位则立即唤醒
         _pause_event.wait(timeout=0.1)
 

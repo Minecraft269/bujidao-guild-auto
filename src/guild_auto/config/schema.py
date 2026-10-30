@@ -10,7 +10,7 @@ config/schema.py —— 配置结构契约(键名 / 枚举 / 校验规则)
 """
 
 import os
-import sys
+import time
 
 from guild_auto.config.defaults import DEFAULT_CONFIG
 
@@ -31,8 +31,24 @@ VISION_MIN_STAY_MS = 120
 SCHEMA_VERSION = 1
 
 
+def _log(level, msg):
+    """写日志文件(不打印控制台)。
+
+    延迟 import loader._log:loader 模块级 import 本模块,反向只读 type hint 不需要,
+    运行期调用时 loader 已加载完成,不会循环。"""
+    from guild_auto.config.loader import _log as _loader_log
+
+    _loader_log(level, msg)
+
+
 def validate_config(cfg):
     """校验配置,返回问题列表(每条为 (级别, 消息);级别: error/warning)。"""
+    t0 = time.monotonic()
+    key_count = len(cfg) if isinstance(cfg, dict) else 0
+    _log(
+        "info",
+        f"[S2] validate_config ENTER | 键数量={key_count} | config_schema_version={SCHEMA_VERSION}",
+    )
     issues = []
 
     def _is_num(v):
@@ -535,8 +551,25 @@ def validate_config(cfg):
                     )
         except (OSError, ValueError) as exc:
             # 路径解析失败不阻塞校验(后续打开日志时会自然报错)。
-            # 写 stderr 而不是调项目 logger:此处可能发生在 logger 初始化之前,
-            # 且 config 层不宜反向依赖 infrastructure。
-            sys.stderr.write(f"[schema] game_log 路径解析失败: {exc!r}\n")
+            # 延迟 import 同层 console:它既打印控制台也写日志文件,替代原先只写
+            # sys.stderr 的做法(后者不进日志文件,事后无从追溯)。
+            from guild_auto.config.loader import console
 
+            console(f"[schema] 配置/校验: game_log 路径解析失败: {exc!r}", level="warning")
+
+    error_count = sum(1 for level, _msg in issues if level == "error")
+    warning_count = len(issues) - error_count
+    elapsed = (time.monotonic() - t0) * 1000.0
+    if error_count:
+        _log(
+            "error",
+            f"[S2] validate_config EXIT | 校验失败: error={error_count}, warning={warning_count}"
+            f" | 耗时={elapsed:.2f}ms",
+        )
+    else:
+        _log(
+            "info",
+            f"[S2] validate_config EXIT | 配置校验通过 | warning={warning_count}"
+            f" | 耗时={elapsed:.2f}ms",
+        )
     return issues

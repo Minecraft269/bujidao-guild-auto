@@ -359,13 +359,28 @@ class TestPrepareConfig(_Base):
         exit_fn.assert_not_called()
         self.assertEqual(cfg["guild_qq"], DEFAULT_CONFIG["guild_qq"])
 
-    def test_missing_config_creates_and_exits(self):
+    def test_missing_config_with_ui_keeps_running(self):
+        """首次运行且启用 UI：生成配置后**不退出**，直接进入配置页（用户实测的"双击无界面"）。"""
         path = os.path.join(self.tmp, "brand_new.json")
         exit_fn = mock.Mock()
-        with mock.patch.object(main_mod, "input", return_value=""):
-            main_mod.prepare_config(self._args(path), console_fn=mock.Mock(), exit_fn=exit_fn)
-        exit_fn.assert_called_once_with(0)
+        console_fn = mock.Mock()
+        main_mod.prepare_config(self._args(path), console_fn=console_fn, exit_fn=exit_fn)
+        exit_fn.assert_not_called()
         self.assertTrue(os.path.exists(path), "首次运行必须生成配置文件")
+        printed = " ".join(str(c.args[0]) for c in console_fn.call_args_list if c.args)
+        self.assertIn("配置页", printed)
+
+    def test_missing_config_console_mode_exits(self):
+        """纯控制台模式（ui.enabled=false）：生成配置后仍按原契约退出。"""
+        path = os.path.join(self.tmp, "brand_new_console.json")
+        exit_fn = mock.Mock()
+        console_cfg = json.loads(json.dumps(main_mod.config_mod.DEFAULT_CONFIG))
+        console_cfg["ui"]["enabled"] = False
+        with mock.patch.object(main_mod.config_mod, "load_config", return_value=console_cfg):
+            with mock.patch.object(main_mod.sys.stdin, "isatty", return_value=False):
+                main_mod.prepare_config(self._args(path), console_fn=mock.Mock(), exit_fn=exit_fn)
+        exit_fn.assert_called_once_with(0)
+        self.assertTrue(os.path.exists(path))
 
     def test_cli_overrides_applied(self):
         path = os.path.join(self.tmp, "config.json")

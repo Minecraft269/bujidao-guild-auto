@@ -19,10 +19,17 @@ stages.py —— 流程阶段编排(双模式)
 
 import time
 
+from guild_auto.application import runtime as _runtime
 from guild_auto.infrastructure import logger
 from guild_auto.domain.decisions import build_notification, build_summary_message
 from guild_auto.config import console
 from guild_auto.domain.parsers import ParseError, is_masked_name, parse_guild_member
+
+
+def _gate(rt, stage, command):
+    """过发送前的暂停门,并记录"哪个阶段/哪条命令在等"(日志据此定位阻塞点)。"""
+    _runtime.set_pause_context(stage=stage, command=command)
+    rt.pause_gate()
 
 
 def stage_query_async(rt, targets, cfg):
@@ -46,6 +53,7 @@ def stage_query_async(rt, targets, cfg):
     """
     from guild_auto.concurrency.async_system import AsyncVerifySystem, run_async_round
 
+    started = time.monotonic()
     cmds = cfg["commands"]
     timeout = float(cfg["timeouts"].get("response_wait", 12.0))
     sw = cfg.get("switches", {})
@@ -55,7 +63,7 @@ def stage_query_async(rt, targets, cfg):
 
     def send_only(cmd, player, meta):
         """只发送指令。**不读日志、不解析、不判定** —— 规格的核心要求。"""
-        rt.pause_gate()
+        _gate(rt, "查询发送", cmd)
         if sw.get("verbose_log", True):
             console(f"  → {cmd}")
         sent = rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
@@ -71,8 +79,14 @@ def stage_query_async(rt, targets, cfg):
         这是"所有指令发送后必须有读取日志并验证操作"(验收第7条)在异步模式
         下的承担者。成功返回 (True, None, info_dict);失败返回 (False, reason, None)。
         """
+        logger.log_debug(f"验证 ENTER player={player} 超时={timeout:.1f}s")
+        verify_started = time.monotonic()
         block = watcher.wait_for_chat_block(timeout=timeout, stop_check=rt.is_paused)
+        elapsed = time.monotonic() - verify_started
+        block_text = "None" if block is None else f"{len(block)}行"
+        logger.log_debug(f"验证 EXIT 耗时={elapsed:.1f}s block={block_text}")
         if block is None:
+            logger.log_warning(f"等待响应超时 player={player} 已等待={elapsed:.1f}s")
             return False, "等待响应超时", None
         try:
             info = parse_guild_member(block, expected_id=player)
@@ -145,7 +159,7 @@ def stage_query_async(rt, targets, cfg):
 
     logger.log_info(
         f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)} "
-        f"(其中屏蔽词 {len(blocked_targets)})"
+        f"(其中屏蔽词 {len(blocked_targets)}) 耗时={time.monotonic() - started:.1f}s"
     )
     return records, failures
 
@@ -251,16 +265,26 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
     retries = int(cfg.get("timeouts", {}).get("max_retries", 3))
     timeout = float(cfg.get("timeouts", {}).get("error_check_window", 4.0))
     failures = []
+    started = time.monotonic()
 
     if debug_notify_skipped:
         # Debug 模式:模拟数据不得发进真实公会频道
         console("Debug: 跳过通知(notify 在 skip_stages,不向真实频道广播)")
+        logger.log_info(
+            f"[阶段][EXIT] stage_notify 耗时={time.monotonic() - started:.1f}s 跳过=debug"
+        )
         return failures
     if not sw.get("notify_enabled", True):
         console("[4/5] 通知已关闭,跳过 /gc")
+        logger.log_info(
+            f"[阶段][EXIT] stage_notify 耗时={time.monotonic() - started:.1f}s 跳过=通知已关闭"
+        )
         return failures
     if not records:
         console("  无玩家需要通知，跳过 /gc")
+        logger.log_info(
+            f"[阶段][EXIT] stage_notify 耗时={time.monotonic() - started:.1f}s 跳过=无记录"
+        )
         return failures
 
     logger.log_info("阶段4 起点: 发送 /gc 通知")
@@ -274,14 +298,14 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
         # 失败只能等到进程结束进待办(验收 14 要求等验证完成再进下一步)。
         pending = []  # [(task_id, label, 业务 key, 原文)]
         if mode == "summary":
-            rt.pause_gate()
             msg = build_summary_message(records, cfg)
+            _gate(rt, "通知发送", msg)
             logger.log_info(f"/gc summary: {msg}")
             pending.append((_notify_one_async(rt, msg, "summary", cfg), "summary", "summary", msg))
         else:
             for r in records:
-                rt.pause_gate()
                 msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
+                _gate(rt, "通知发送", msg)
                 label = f"{r['player']}[周贡献 {r['weekly_total']}]"
                 pending.append(
                     (_notify_one_async(rt, msg, r["player"], cfg), label, r["player"], msg)
@@ -289,8 +313,8 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
                 rt.human.wait_between_commands()
         failures.extend(_collect_async_notifications(rt, pending, cfg))
     elif mode == "summary":
-        rt.pause_gate()
         msg = build_summary_message(records, cfg)
+        _gate(rt, "通知发送", msg)
         logger.log_info(f"/gc summary: {msg}")
         ok, err = _notify_one_sync(rt, msg, cfg)
         _report_notify(msg, ok, err)
@@ -299,15 +323,19 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
     else:
         # per_player:逐条通知(含无操作玩家)
         for r in records:
-            rt.pause_gate()
             msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
+            _gate(rt, "通知发送", msg)
             ok, err = _notify_one_sync(rt, msg, cfg)
             _report_notify(f"{r['player']}[周贡献 {r['weekly_total']}]", ok, err)
             if not ok:
                 failures.append({"scope": r["player"], "error": err})
             rt.human.wait_between_commands()
 
-    logger.log_info("阶段4 完成: /gc 通知完成")
+    total = 1 if mode == "summary" else len(records)
+    logger.log_info(
+        f"阶段4 完成: /gc 通知完成 耗时={time.monotonic() - started:.1f}s "
+        f"成功={max(0, total - len(failures))} 失败={len(failures)}"
+    )
     return failures
 
 
@@ -349,11 +377,19 @@ def _collect_async_notifications(rt, pending, cfg):
     alive = list(pending)  # [(task_id, label, 业务 key, 原文)]
     last_error = {}  # label -> None(成功) / 错误文本
     for attempt in range(1, max_retries + 1):
-        system.wait_all(timeout=timeout)
+        logger.log_info(
+            f"wait_all ENTER timeout={timeout:.1f}s 任务数={len(alive)} "
+            f"attempt={attempt}/{max_retries}"
+        )
+        wait_started = time.monotonic()
+        got = system.wait_all(timeout=timeout)
+        elapsed = time.monotonic() - wait_started
+        logger.log_info(f"wait_all EXIT 耗时={elapsed:.1f}s got={got}")
         ids = [tid for tid, _label, _key, _msg in alive]
         done = {str(s.get("task_id")) for s in system.get_completed(ids)}
         failed = {str(s.get("task_id")): s for s in system.get_failed(ids)}
         retry = []
+        inflight = []
         for tid, label, key, msg in alive:
             tid_s = str(tid)
             if tid_s in done:
@@ -365,12 +401,21 @@ def _collect_async_notifications(rt, pending, cfg):
                 # 绝不能记成成功(报告会出现假的"通知成功");也不重发,
                 # 重发可能让同一广播发两遍。
                 last_error[label] = "等待验证超时(后台未在时限内给出结论)"
+                inflight.append(label)
                 continue
             last_error[label] = snap.get("error") or "通知验证失败"
             retry.append((label, key, msg))
+        if inflight:
+            logger.log_warning(
+                f"wait_all 超时 在途={len(inflight)} 已等待={elapsed:.1f}s items={inflight}"
+            )
         if not retry or attempt >= max_retries:
             break
-        logger.log_info(f"(异步)通知失败 {len(retry)} 条,第 {attempt} 次重发")
+        reasons = sorted({str(last_error.get(label)) for label, _k, _m in retry})
+        logger.log_warning(
+            f"(异步)通知重试 attempt={attempt}/{max_retries} "
+            f"原因={'|'.join(reasons)} items={[label for label, _k, _m in retry]}"
+        )
         time.sleep(retry_delay)
         alive = [
             (_notify_one_async(rt, msg, key, cfg), label, key, msg) for label, key, msg in retry
@@ -406,11 +451,16 @@ def stage_execute_async(rt, records, cfg):
     """
     from guild_auto.concurrency.async_system import AsyncVerifySystem, run_async_round
 
+    started = time.monotonic()
     failures = []
     actionable = [
         r for r in records if r.get("actions") and not r.get("executed")
     ]  # kick 被跳过的已标 executed=True
     if not actionable:
+        logger.log_info(
+            f"[阶段][EXIT] stage_execute_async 耗时={time.monotonic() - started:.1f}s "
+            f"跳过=无可执行项"
+        )
         return failures
 
     sw = cfg.get("switches", {})
@@ -426,7 +476,7 @@ def stage_execute_async(rt, records, cfg):
         # 与查询/通知、以及串行执行路径一致:暂停期间绝不发送,恢复后先重置窗口状态。
         # 缺这道门时,sender 线程会在暂停中调用 send_chat_text(因 stop_check 直接返回
         # False),而任务已被 mark_sent → 验证必然失败并烧光重试,最后误判成执行失败。
-        rt.pause_gate()
+        _gate(rt, "执行发送", cmd)
         if system.is_stopped():
             # 暂停阻塞期间主线程可能已判超时收工:此时再发,就是"报告记执行失败、
             # 游戏里却真发了",下次启动会从待办再发一次 —— 踢人/升职被重复执行。
@@ -509,6 +559,10 @@ def stage_execute_async(rt, records, cfg):
             failures.append(
                 {"player": player, "rank": r["rank"], "actions": r["actions"], "error": r["error"]}
             )
+    logger.log_info(
+        f"[阶段][EXIT] stage_execute_async 耗时={time.monotonic() - started:.1f}s "
+        f"命令={len(commands)} 失败={len(failures)}"
+    )
     return failures
 
 

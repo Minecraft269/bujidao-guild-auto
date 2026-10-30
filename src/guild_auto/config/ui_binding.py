@@ -201,12 +201,35 @@ def _set_path(cfg, path, value):
 READONLY_PATHS = ("build_variant",)
 
 
+def _log(level, msg):
+    """走 config 层既有日志通道（loader._log），不新造日志器。"""
+    from guild_auto.config.loader import _log as _loader_log
+
+    _loader_log(level, msg)
+
+
+def _strip_values(message):
+    """错误消息只留原因，去掉"当前: <原值>"部分（配置值一律不落日志）。"""
+    idx = message.find("当前")
+    if idx != -1:
+        return message[:idx].rstrip(" ,，:：")
+    return message
+
+
 def readonly_values() -> dict[str, str]:
     """GUI 的只读展示字段 → 值。唯一来源是 capabilities.variant_meta()。"""
     from guild_auto.capabilities import variant_meta
 
     meta = variant_meta()
     return {"build_variant": str(meta["build_variant"])}
+
+
+def _log_rejection(errors):
+    """批量拒绝只记一条汇总（各条 path + 原因），避免逐条刷屏。"""
+    detail = " ; ".join(
+        f"{e.get('path') or '<全局>'}: {_strip_values(str(e.get('message', '')))}" for e in errors
+    )
+    _log("warning", f"配置/保存被拒: error={len(errors)} 条 | {detail}")
 
 
 def apply_edits(cfg, edits):
@@ -224,6 +247,11 @@ def apply_edits(cfg, edits):
     for path, raw in edits.items():
         if path in READONLY_PATHS:
             # 只读字段由核与构建常量决定，写回会被后续读取覆盖，静默接受等于骗 GUI
+            _log(
+                "warning",
+                f"配置/只读写回拒绝: 字段={path} | 尝试写入值类型={type(raw).__name__}"
+                " | 已拒绝、配置未落盘",
+            )
             errors.append({"path": path, "message": f"只读字段不可写回: {path}"})
             continue
         field = fields.get(path)
@@ -236,6 +264,7 @@ def apply_edits(cfg, edits):
             errors.append({"path": path, "message": str(e)})
 
     if errors:
+        _log_rejection(errors)
         return new_cfg, errors
 
     # 结构化字段保持原值（编辑它们的是专用面板，不经表单）
@@ -263,6 +292,10 @@ def apply_edits(cfg, edits):
                     ),
                 }
             )
+    if errors:
+        _log_rejection(errors)
+        return new_cfg, errors
+    _log("info", f"配置/保存前校验通过，共 {len(edits)} 项修改")
     return new_cfg, errors
 
 
@@ -289,8 +322,14 @@ def render_field_value(field):
 def diff_against_default(cfg):
     """与 DEFAULT_CONFIG 相比哪些字段被改过（首次运行要求"必须有修改才放行"）。"""
     changed = []
+    unchanged = []
     for f in flatten_config(cfg):
         base = field_by_path(DEFAULT_CONFIG, f.path)
         if base is None or base.value != f.value:
             changed.append(f.path)
+        else:
+            unchanged.append(f.path)
+    # 首次运行锁在配置页时，用日志解释"还剩哪些项未改"(只记 path，不记值)
+    _log("info", f"配置/首次运行判定: changed={len(changed)} 项")
+    _log("debug", f"配置/首次运行判定: 仍为默认值的字段({len(unchanged)})={unchanged}")
     return changed

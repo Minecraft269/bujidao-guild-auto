@@ -77,6 +77,10 @@ testpaths = ["tests"]
 # 使本地未 pip install -e . 时也能跑（CI 走 pip install -e . 的主路径）。
 pythonpath = ["src"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    # 需要验证真实 gui_executable 定位逻辑的用例：绕过 tests/conftest.py 的全局 GUI 隔离
+    "real_gui_executable: 验证真实 Gui.exe 定位逻辑（不套用全局隔离）",
+]
 
 # 覆盖率配置唯一真源是仓库根的 .coveragerc —— coverage 在 CWD 会自动加载它,
 # pyproject 里的 [tool.coverage.*] 永远不会生效,故不在此重复声明(避免两处漂移)。

@@ -40,6 +40,8 @@ from __future__ import annotations
 import fnmatch
 from datetime import datetime
 
+from guild_auto.infrastructure import logger
+
 BUILTIN_RULE_ID = "builtin_threshold"
 STRATEGIES = ("first_match", "highest_priority", "all")
 ACTIONS = ("promote", "demote", "kick", "notify", "ignore")
@@ -48,17 +50,39 @@ _NUM_FIELDS = ("weekly_total",)
 _ENUM_FIELDS = ("rank",)
 _NAME_FIELDS = ("player",)
 
+_SNIP_MAX = 80
 
-def _parse_date(text):
-    """解析 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS；失败返回 None（条件判否）。"""
+
+def _snip(value, limit=_SNIP_MAX):
+    """值 → 单行短片段(超长截断),用于日志里带原始字段值。"""
+    if value is None:
+        return "None"
+    s = value if isinstance(value, str) else repr(value)
+    s = s.replace("\r", " ").replace("\n", " ")
+    return s if len(s) <= limit else s[:limit] + f"...(+{len(s) - limit}字符)"
+
+
+def _parse_date(text, context=""):
+    """解析 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS；失败返回 None（条件判否）。
+
+    两种格式都解析失败时记 WARNING（带原始值与异常文本）——
+    日期格式不匹配会让条件静默判否,kick 规则于是静默不生效。
+    """
     if text is None:
         return None
     s = str(text).strip()
+    last_err = None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
             return datetime.strptime(s, fmt)
-        except ValueError:
+        except ValueError as e:
+            last_err = e
             continue
+    logger.log_warning(
+        f"日期无法解析(条件判否) | raw_value={_snip(text)} "
+        f"| expected=YYYY-MM-DD[ HH:MM:SS] | error={last_err!r}"
+        + (f" | {context}" if context else "")
+    )
     return None
 
 
@@ -78,15 +102,36 @@ def _cmp(op, left, right):
     return None
 
 
-def check_condition(cond, member):
+def _not_evaluable(detail, cond, member, rule_id, warned, raw):
+    """不可求值的条件统一出口:记 WARNING(同规则同字段只汇总一条)并判否。"""
+    field = cond.get("field") if isinstance(cond, dict) else None
+    op = cond.get("op") if isinstance(cond, dict) else None
+    value = cond.get("value") if isinstance(cond, dict) else None
+    key = (rule_id, field)
+    if warned is None or key not in warned:
+        if warned is not None:
+            warned.add(key)
+        logger.log_warning(
+            f"规则条件无法求值,判否 | rule_id={rule_id} | player={_snip(member.get('player'))} "
+            f"| field={field} | op={op} | value={_snip(value)} | raw_value={_snip(raw)} "
+            f"| detail={detail}"
+        )
+    return False, detail
+
+
+def check_condition(cond, member, rule_id=None, warned=None):
     """单条条件是否满足。返回 (ok, detail)。
 
     detail 用于报告/日志追溯（命中依据），例如 "weekly_total=800 < 1000"。
     无法求值（字段缺失/日期不可解析/算子非法）一律判否并写明原因 ——
-    绝不把"读不到"当成 0 或真。
+    绝不把"读不到"当成 0 或真。这类路径同时记 WARNING(带 rule_id/field/op/
+    value/raw_value),否则自定义 kick 规则会因日期格式不符而静默失效。
+
+    rule_id / warned 由 rule_matches 传入,用于同一玩家同一规则同一字段只汇总
+    一条 WARNING,避免刷屏。
     """
     if not isinstance(cond, dict):
-        return False, "条件格式非法(非对象)"
+        return _not_evaluable("条件格式非法(非对象)", cond, member, rule_id, warned, None)
     field = cond.get("field")
     op = cond.get("op")
     value = cond.get("value")
@@ -94,50 +139,60 @@ def check_condition(cond, member):
     if field in _NUM_FIELDS:
         raw = member.get(field)
         if not isinstance(raw, (int, float)) or isinstance(raw, bool):
-            return False, f"{field} 不可读"
+            return _not_evaluable(f"{field} 不可读", cond, member, rule_id, warned, raw)
         res = _cmp(op, raw, value)
         if res is None:
-            return False, f"{field} 算子非法: {op}"
+            return _not_evaluable(f"{field} 算子非法: {op}", cond, member, rule_id, warned, raw)
         return res, f"{field}={raw} {op} {value}"
 
     if field in _ENUM_FIELDS:
         raw = member.get(field)
         if raw is None:
-            return False, f"{field} 不可读"
+            return _not_evaluable(f"{field} 不可读", cond, member, rule_id, warned, raw)
         if op in ("==", "!="):
             return _cmp(op, raw, value), f"{field}={raw!r} {op} {value!r}"
         if op in ("in", "not_in"):
             if not isinstance(value, (list, tuple)):
-                return False, f"{field} 的 {op} 需要列表"
+                return _not_evaluable(
+                    f"{field} 的 {op} 需要列表", cond, member, rule_id, warned, raw
+                )
             inside = raw in value
             return (inside if op == "in" else not inside), f"{field}={raw!r} {op} {value}"
-        return False, f"{field} 算子非法: {op}"
+        return _not_evaluable(f"{field} 算子非法: {op}", cond, member, rule_id, warned, raw)
 
     if field in _NAME_FIELDS:
         raw = member.get(field)
         if not raw:
-            return False, f"{field} 不可读"
+            return _not_evaluable(f"{field} 不可读", cond, member, rule_id, warned, raw)
         if op == "matches":
             res = fnmatch.fnmatchcase(str(raw).casefold(), str(value).casefold())
             return res, f"{field}={raw!r} 匹配 {value!r}"
         if op in ("==", "!="):
             return _cmp(op, str(raw), str(value)), f"{field}={raw!r} {op} {value!r}"
-        return False, f"{field} 算子非法: {op}"
+        return _not_evaluable(f"{field} 算子非法: {op}", cond, member, rule_id, warned, raw)
 
     if field in _DATE_FIELDS:
-        left = _parse_date(member.get(field))
-        right = _parse_date(value)
+        raw = member.get(field)
+        context = f"rule_id={rule_id} | field={field} | op={op} | value={_snip(value)}"
+        left = _parse_date(raw, context=context)
+        right = _parse_date(value, context=context)
         if left is None:
-            return False, f"{field} 不可读"
+            if raw is None:  # 字段缺失:_parse_date 未尝试解析,由这里补警告
+                return _not_evaluable(f"{field} 不可读", cond, member, rule_id, warned, raw)
+            return False, f"{field} 不可读"  # 格式错误:_parse_date 已警告
         if right is None:
-            return False, f"{field} 阈值日期非法: {value!r}"
+            if value is None:  # 阈值缺失:_parse_date 未尝试解析
+                return _not_evaluable(
+                    f"{field} 阈值日期非法: {value!r}", cond, member, rule_id, warned, raw
+                )
+            return False, f"{field} 阈值日期非法: {value!r}"  # _parse_date 已警告
         if op == "before":
             return left < right, f"{field}={left.date()} before {right.date()}"
         if op == "after":
             return left > right, f"{field}={left.date()} after {right.date()}"
-        return False, f"{field} 算子非法: {op}"
+        return _not_evaluable(f"{field} 算子非法: {op}", cond, member, rule_id, warned, raw)
 
-    return False, f"未知字段: {field}"
+    return _not_evaluable(f"未知字段: {field}", cond, member, rule_id, warned, None)
 
 
 def rule_matches(rule, member):
@@ -147,19 +202,25 @@ def rule_matches(rule, member):
     缺失/空列表一律判否并写明原因 —— 否则"漏写 conditions"会命中所有人，
     在 kick 规则上等于全员被踢（不可逆）。内置规则走 _eval_builtin，不经此函数。
     """
+    rid = rule.get("id")
     conds = rule.get("conditions")
     if not isinstance(conds, list) or not conds:
-        return False, [
-            {
-                "index": -1,
-                "ok": False,
-                "detail": "conditions 缺失或为空（自定义规则必须至少一个条件）",
-            }
-        ]
+        detail = "conditions 缺失或为空（自定义规则必须至少一个条件）"
+        logger.log_warning(
+            f"规则条件缺失,判否 | rule_id={rid} | player={_snip(member.get('player'))} "
+            f"| detail={detail}"
+        )
+        return False, [{"index": -1, "ok": False, "detail": detail}]
     trace = []
+    warned = set()
     for i, cond in enumerate(conds):
-        ok, detail = check_condition(cond, member)
+        ok, detail = check_condition(cond, member, rule_id=rid, warned=warned)
         trace.append({"index": i, "ok": ok, "detail": detail})
+        logger.log_debug(
+            f"[规则条件] rule_id={rid} player={_snip(member.get('player'))} index={i} "
+            f"field={cond.get('field') if isinstance(cond, dict) else None} "
+            f"ok={ok} detail={detail}"
+        )
         if not ok:
             return False, trace
     return True, trace

@@ -190,8 +190,15 @@ def init_logger(log_dir="logs", level=4, enabled=True):
 
         os.makedirs(log_dir, exist_ok=True)
         archived = None
+        archive_error = None
         if not _initialized:  # 仅首次初始化时归档上一运行的日志
-            archived = _archive_old_latest(log_dir)
+            try:
+                archived = _archive_old_latest(log_dir)
+            except Exception as e:
+                # latest.log 被占用(并发实例/杀软锁定)时 shutil.move 会抛 OSError。
+                # 此时 FileHandler 还没创建,归档失败绝不能中断 init_logger ——
+                # 否则启动失败且没有任何日志可查。降级:继续用 latest.log 追加写。
+                archive_error = e
 
         threshold = LEVEL_MAP[_current_level]
         logger.setLevel(threshold)
@@ -206,6 +213,12 @@ def init_logger(log_dir="logs", level=4, enabled=True):
         logger.addHandler(handler)
         _logger = logger
         _initialized = True
+        if archive_error is not None:
+            logger.log(
+                logging.WARNING,
+                f"[归档] 归档旧 latest.log 失败: {archive_error!r}"
+                f" | 降级=仅写 latest.log | 不阻断启动",
+            )
         if archived:
             logger.log(logging.INFO, f"[归档] 上一运行日志已压缩: {archived}")
     return logger

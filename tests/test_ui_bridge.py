@@ -213,6 +213,7 @@ def test_rows_from_records_marks_masked_and_failures():
     assert rows[2]["note"] == "等待响应超时"
 
 
+@pytest.mark.real_gui_executable
 def test_gui_executable_respects_env_override(tmp_path, monkeypatch):
     fake = tmp_path / "Gui.exe"
     fake.write_bytes(b"MZ")
