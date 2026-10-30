@@ -22,6 +22,26 @@ from pathlib import Path
 
 from PIL import Image, ImageChops
 
+
+def _ensure_utf8_stdout() -> None:
+    """CI 的 Windows 控制台默认是 cp1252/cp437，打印中文会 UnicodeEncodeError。
+
+    这里把标准输出/错误重挂成 UTF-8（不能重挂就退回 ascii + replace），
+    让脚本在任何代码页下都能跑完 —— 只是显示字符可能降级，不影响比对结果。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            try:
+                reconfigure(encoding="ascii", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 ROOT = Path(__file__).resolve().parents[1]
 GUI = ROOT / "gui"
 SRC = GUI / "src"
@@ -75,6 +95,7 @@ def diff_pct(a: Path, b: Path) -> float:
 
 
 def main() -> int:
+    _ensure_utf8_stdout()
     update = "--update" in sys.argv
     shutil.rmtree(TMP, ignore_errors=True)
     try:

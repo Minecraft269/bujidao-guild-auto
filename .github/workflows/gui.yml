@@ -58,6 +58,8 @@ jobs:
 
       - name: 快照（深浅 × 两套标题栏 = 4 组，差异 ≤0.1%）
         working-directory: .
+        env:
+          PYTHONIOENCODING: utf-8
         run: python scripts/gui_snapshot.py
 
       - name: 上传快照差异
@@ -94,6 +96,9 @@ jobs:
       - name: 单元测试
         # 本工程只有 bin target（没有 lib），用 --lib 会报 "no library targets found"
         run: cargo test --bins
+
+      - name: 安装 cargo-llvm-cov（预编译，避免每次 cargo install 编译 2 分钟）
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: 覆盖率（cargo llvm-cov，纯逻辑 ≥60%）
         # 只统计 protocol.rs（纯协议逻辑，有单测）；main.rs 是窗口/托盘装配段、
