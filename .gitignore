@@ -53,3 +53,9 @@ gui/node_modules/
 # 前端覆盖率产物
 gui/coverage/
 gui/.snapshots-tmp/
+
+# 打包产物
+dist/
+/gui/src-tauri/target/
+covtmp.log
+covfull.json
