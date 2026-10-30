@@ -345,5 +345,30 @@ class TestVariantAliases(unittest.TestCase):
         self.assertEqual(data["authoritative_field"], "variant")
 
 
+class TestArtifactSuffix(unittest.TestCase):
+    """产物后缀只给全能力变体(-Full),且**不得**污染 variant/build_variant_name。
+
+    为什么单独一条:后缀一旦漂移(新增能力后忘同步、或把 Full 拼进拼接名),
+    会同时打挂 8 组合名录、iter_variants 全量比对与启动横幅断言 —— 而且是静默的。
+    """
+
+    def test_exactly_one_variant_gets_full_suffix(self):
+        out = subprocess.run(
+            [sys.executable, str(SCRIPT), "--list"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
+        include = json.loads(out)["include"]
+        suffixed = [i for i in include if i["artifact_suffix"]]
+        self.assertEqual(len(suffixed), 1, f"应恰有一个变体带后缀,实际: {suffixed}")
+        self.assertEqual(suffixed[0]["variant"], cap_mod.aliases()["full"])
+        self.assertEqual(suffixed[0]["artifact_suffix"], "-Full")
+        for item in include:
+            self.assertNotIn("Full", item["variant"], f"权威拼接名不得含 Full: {item}")
+            self.assertIn(item["artifact_suffix"], ("", "-Full"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

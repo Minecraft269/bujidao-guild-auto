@@ -40,3 +40,7 @@ htmlcov/
 *.swp
 Thumbs.db
 Desktop.ini
+# tauri/cargo 构建产物（体积大且可由源码重建）
+gui/src-tauri/target/
+gui/src-tauri/gen/
+gui/node_modules/

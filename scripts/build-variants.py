@@ -37,9 +37,20 @@ CAPABILITIES = {raw!r}
 
 
 def _matrix() -> str:
-    """输出单行 JSON —— GITHUB_OUTPUT 每个 key 只接受单行 value。"""
+    """输出单行 JSON —— GITHUB_OUTPUT 每个 key 只接受单行 value。
+
+    额外带一个 artifact_suffix 字段:全能力变体带 "-Full",其余空串。
+    为什么不做进 variant:variant 是 8 组合名录、iter_variants 全量比对与启动横幅
+    断言的权威标识,动它会把这三处一起打挂。产物名要的是"拼接名 + 后缀",
+    不是"改拼接名"。
+    """
+    full_variant = capabilities.aliases()["full"]
     include = [
-        {"variant": name, "capabilities": ",".join(caps)}
+        {
+            "variant": name,
+            "capabilities": ",".join(caps),
+            "artifact_suffix": "-Full" if name == full_variant else "",
+        }
         for name, caps in capabilities.iter_variants()
     ]
     return json.dumps({"include": include}, ensure_ascii=False, separators=(",", ":"))

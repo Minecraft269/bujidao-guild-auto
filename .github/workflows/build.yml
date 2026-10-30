@@ -130,7 +130,7 @@ jobs:
 
           $pyinstaller_args = @(
             "--onefile", "--clean", "--noconfirm",
-            "--name", "$env:APP_NAME-${{ matrix.variant }}",
+            "--name", "$env:APP_NAME-${{ matrix.variant }}${{ matrix.artifact_suffix }}",
             "--paths", "src"
           )
           if ($caps -contains 'vision') {
@@ -205,8 +205,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          # artifact 名含变体代号,8 个变体互不覆盖。
-          name: dist-${{ matrix.variant }}-${{ github.run_number }}
+          # artifact 名含变体代号(+全能力变体的 -Full 后缀),8 个变体互不覆盖。
+          name: dist-${{ matrix.variant }}${{ matrix.artifact_suffix }}-${{ github.run_number }}
           path: dist/
           retention-days: 7
           if-no-files-found: error

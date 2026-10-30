@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>布吉岛公会管理脚本 · Gui</title>
+<style>
+  :root {
+    /* 骨架阶段先落深色 token；浅色与"跟随系统"在铺界面时补齐 */
+    --bg: #1E1F22; --panel: #2B2D31; --border: #3A3D42;
+    --text: #E6E6E6; --text-dim: #9AA0A6;
+    --accent: #2DD4BF; --danger: #F87171; --ok: #4ADE80;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.6 "Microsoft YaHei UI", system-ui, sans-serif;
+  }
+  .titlebar {
+    height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+  .dot.ok { background: var(--ok); }
+  .dot.danger { background: var(--danger); }
+  .title { font-weight: 600; }
+  .variant { color: var(--text-dim); font-size: 12px; }
+  .body { flex: 1; padding: 16px; display: grid; gap: 12px; align-content: start; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  .dim { color: var(--text-dim); font-size: 12px; }
+  dl { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; margin: 12px 0 0; }
+  dt { text-align: right; color: var(--text-dim); }
+  dd { margin: 0; }
+  .statusbar {
+    height: 28px; display: flex; align-items: center; justify-content: space-between;
+    padding: 0 12px; border-top: 1px solid var(--border);
+    background: var(--panel); font-size: 12px;
+  }
+</style>
+</head>
+<body>
+  <header class="titlebar">
+    <span class="dot" id="dot"></span>
+    <span class="title">布吉岛公会管理脚本</span>
+    <span class="variant" id="variant">（等待核下发变体）</span>
+  </header>
+
+  <main class="body">
+    <section class="card">
+      <h1>IPC 握手</h1>
+      <p class="dim" id="hs-state">正在连接核心…</p>
+      <dl>
+        <dt>构建变体</dt><dd id="hs-variant">—</dd>
+        <dt>已启用能力</dt><dd id="hs-caps">—</dd>
+        <dt>核版本</dt><dd id="hs-version">—</dd>
+        <dt>配置架构版本</dt><dd id="hs-schema">—</dd>
+      </dl>
+    </section>
+
+    <section class="card">
+      <h1>骨架范围</h1>
+      <p class="dim">本屏只验证：tauri 独立进程 + 命名管道 + hello 握手 + 事件通道。
+        页签、托盘、双主题、规则编辑器在下一步铺开。</p>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status">未连接</span>
+    <span class="dim" id="last-event">—</span>
+  </footer>
+
+<script>
+const api = window.__TAURI__;
+const $ = (id) => document.getElementById(id);
+
+function badge(cls) {
+  $("dot").className = "dot " + cls;
+}
+
+function setHandshake(payload) {
+  let msg;
+  try {
+    msg = JSON.parse(payload);
+  } catch (e) {
+    $("hs-state").textContent = "握手应答不是合法 JSON：" + payload;
+    badge("danger");
+    return;
+  }
+  if (!msg.ok) {
+    $("hs-state").textContent = "握手被拒绝：" + (msg.error || "未知原因");
+    badge("danger");
+    $("status").textContent = "握手失败";
+    return;
+  }
+  const r = msg.result || {};
+  badge("ok");
+  $("hs-state").textContent = "握手成功";
+  $("hs-variant").textContent = r.variant || "—";
+  $("hs-caps").textContent = (r.capabilities || []).join(", ") || "—";
+  $("hs-version").textContent = r.plugin_version || "—";
+  $("hs-schema").textContent = r.config_schema_version ?? "—";
+  $("variant").textContent = r.variant ? "· " + r.variant : "";
+  $("status").textContent = "已连接核心";
+}
+
+async function boot() {
+  if (!api || !api.event) {
+    $("hs-state").textContent = "未启用 Tauri 全局 API（静态预览）";
+    return;
+  }
+  await api.event.listen("ipc-hello", (e) => setHandshake(e.payload));
+  await api.event.listen("ipc-event", (e) => {
+    $("last-event").textContent = String(e.payload).slice(0, 120);
+  });
+  await api.event.listen("ipc-error", (e) => {
+    $("hs-state").textContent = String(e.payload);
+    badge("danger");
+    $("status").textContent = "连接失败";
+  });
+  await api.event.listen("ipc-closed", () => {
+    $("status").textContent = "核心已断开";
+    badge("danger");
+  });
+}
+
+boot();
+</script>
+</body>
+</html>
