@@ -113,3 +113,56 @@ def test_debug_records_skip_decide_covers_each_action(monkeypatch, choice):
         assert acts == ["kick"]
     else:
         assert acts == []
+
+
+def _cfg(**switch_over):
+    """本文件自带的配置工厂（不跨测试文件 import，避免顺序耦合）。"""
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["switches"].update(switch_over)
+    cfg["switches"]["notify_enabled"] = True
+    return cfg
+
+
+class _Rt:
+    """最小假 Runtime：只提供 stage_query_async 用到的字段。"""
+
+    def __init__(self, results):
+        self.results = results
+        self.human = None
+        self.executor = None
+        self.async_enabled = False
+        self.watcher = None
+        self.detector = None
+
+    def pause_gate(self):
+        return None
+
+    def is_paused(self):
+        return False
+
+
+# ── 第三批补充：异步路径的内部闭包 / 默认输入 / 调试动作 else 分支 ──────
+def test_default_ask_text_reads_stdin(monkeypatch):
+    """_default_ask_text 是控制台模式的最后兜底：原样返回输入（不 trim、不布尔化）。"""
+    import builtins
+
+    from guild_auto.application.runtime import _default_ask_text
+
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "  kick-confirm  ")
+    assert _default_ask_text("确认?") == "  kick-confirm  "
+
+
+def test_pause_on_press_handles_key_without_readable_char(monkeypatch):
+    """有的键对象读 .char 会抛异常：必须降级成 str(key)，不能把监听线程带崩。"""
+    monkeypatch.setattr(runtime_mod, "pause_key", lambda: "f12")
+    runtime_mod.configure_auto_pause(operation_mode="cli", enabled=False, grace_ms=0)
+
+    class WeirdKey:
+        @property
+        def char(self):
+            raise RuntimeError("no char")
+
+        def __str__(self):
+            return "WeirdKey"
+
+    pause_mod._on_press(WeirdKey())  # 不抛即通过
