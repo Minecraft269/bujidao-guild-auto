@@ -113,6 +113,33 @@ DEFAULT_CONFIG = {
         "always_on_top": False,
         "kick_confirm_mode": "dialog",
         "kick_confirm_text": "kick-confirm",
+        # ── tauri 版新增（见 docs/GUI设计规范.md §3/§4/§5）──────────────────
+        # 主题:auto=跟随系统(读注册表 AppsUseLightTheme)/dark/light
+        "theme": "auto",
+        # 标题栏:true=自绘无边框(36px,含小窗/置顶/最小化/关闭);false=原生栏+32px 工具条
+        "custom_titlebar": True,
+        "window": {
+            # 默认窗口尺寸(规范 §3:1000×680;最小 900×620 由 GUI 侧钳制)
+            "width": 1000,
+            "height": 680,
+            # 记住上次位置与大小;上次位置在屏幕外时回落居中
+            "remember_geometry": True,
+        },
+        "tray": {
+            # 托盘常驻开关:false=点关闭直接退出,不询问不驻留
+            "enabled": True,
+            # 关闭行为:ask=每次问/minimize=最小化到托盘/exit=直接退出
+            "close_action": "ask",
+            # 首次关窗是否询问(勾选"不再询问"后写 false,设置页可改回)
+            "ask_on_close": True,
+        },
+    },
+    # ── 自动更新(见 docs/GUI设计规范.md §8)────────────────────────────────
+    "update": {
+        # check=仅后台查一次/notify=弹窗让用户决定/auto=静默下载安装
+        "mode": "notify",
+        # latest.json 地址;留空=不做更新检查(自建发布源时再填)
+        "manifest_url": "",
     },
     # ── 升/降/踢 阈值(原样继承自原脚本,勿改动数值) ────────────────────────
     # 取值:非负整数,单位=公会经验周贡献。语义与边界(含/不含)见 docs/业务规则继承清单.md §1
@@ -382,6 +409,19 @@ CONFIG_COMMENTS = {
     "缺口超过允许比例即判扫掠不完整并要求重扫。按公会界面实际物品格数标定",
     "vision.grid.max_missing_ratio": "允许的缺口比例([0, 1],默认 0):0=一格都不能少(最安全);"
     "界面空槽较多时可调大(如 0.2),但越大越可能拿漏掉的成员做判定",
+    "ui.window": "GUI 窗口几何。作用=默认尺寸与是否记住上次位置。可填值=见下列 width/height/remember_geometry",
+    "ui.tray": "GUI 托盘行为。作用=是否常驻、点关闭怎么做、首次是否询问。可填值=见下列 enabled/close_action/ask_on_close",
+    "update": "自动更新。作用=决定是否/何时检查并安装新版本。可填值=见下列 mode/manifest_url",
+    "ui.theme": "GUI 主题。作用=决定界面用深色还是浅色 token。可填值=auto(默认,跟随系统注册表 AppsUseLightTheme)/dark/light",
+    "ui.custom_titlebar": "GUI 标题栏样式。作用=true 用自绘无边框标题栏(36px,含小窗/置顶/最小化/关闭);false 用系统标题栏+32px 工具条。可填值=true/false",
+    "ui.window.width": "GUI 默认窗口宽度(像素)。作用=首次启动与未记录几何时的宽度。可填值=正整数,建议 ≥900(规范默认 1000;小于最小尺寸会被 GUI 钳到 900×620)",
+    "ui.window.height": "GUI 默认窗口高度(像素)。作用=同 ui.window.width。可填值=正整数,建议 ≥620(规范默认 680)",
+    "ui.window.remember_geometry": "是否记住窗口位置与大小。作用=true 记住上次位置;上次落在屏幕外(换显示器)时自动回落居中。可填值=true(默认)/false",
+    "ui.tray.enabled": "托盘常驻开关。作用=false 时点关闭直接退出,不询问也不驻留。可填值=true(默认)/false",
+    "ui.tray.close_action": "关闭窗口的行为。作用=决定点关闭后做什么。可填值=ask(每次询问,默认)/minimize(最小化到托盘)/exit(直接退出)",
+    "ui.tray.ask_on_close": "首次关闭时是否询问。作用=true 弹一次对话框让用户选并勾选\"不再询问\";勾选后本键写 false,可在设置页改回。可填值=true(默认)/false",
+    "update.mode": "自动更新档位。作用=check 仅后台查一次并在关于页提示;notify 弹窗让用户决定(默认);auto 静默下载安装、退出后生效。可填值=check/notify/auto",
+    "update.manifest_url": "更新清单 latest.json 的地址。作用=留空则不做更新检查;填写后按变体匹配下载。可填值=https URL 或空字符串(默认)",
     "ui": "UI 配置界面(阶段 3):是否允许图形入口、窗口初始形态、是否置顶、"
     "踢出二次确认方式与确认词。无 --ui 参数时全部不起作用",
     "rules_enabled": "是否启用自定义规则引擎:false(默认)=只用内置阈值规则;"

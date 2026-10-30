@@ -197,6 +197,18 @@ def _set_path(cfg, path, value):
     node[parts[-1]] = value
 
 
+# 只读展示字段（GUI设计规范 §2.2 的 config.readonly[]）：只给 GUI 看，不参与写回。
+READONLY_PATHS = ("build_variant",)
+
+
+def readonly_values() -> dict[str, str]:
+    """GUI 的只读展示字段 → 值。唯一来源是 capabilities.variant_meta()。"""
+    from guild_auto.capabilities import variant_meta
+
+    meta = variant_meta()
+    return {"build_variant": str(meta["build_variant"])}
+
+
 def apply_edits(cfg, edits):
     """把 UI 提交的 {path: raw_value} 写回配置的**副本**。
 
@@ -210,6 +222,10 @@ def apply_edits(cfg, edits):
     errors = []
 
     for path, raw in edits.items():
+        if path in READONLY_PATHS:
+            # 只读字段由核与构建常量决定，写回会被后续读取覆盖，静默接受等于骗 GUI
+            errors.append({"path": path, "message": f"只读字段不可写回: {path}"})
+            continue
         field = fields.get(path)
         if field is None:
             errors.append({"path": path, "message": f"未知配置项: {path}"})

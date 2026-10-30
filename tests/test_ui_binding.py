@@ -268,5 +268,26 @@ class TestDiffAgainstDefault(unittest.TestCase):
         self.assertIn("整数", errors[0]["message"])
 
 
+class TestReadonlyFields(unittest.TestCase):
+    """build_variant 是只读展示字段(GUI设计规范 §2.2),不得进写回路径。"""
+
+    def test_readonly_value_comes_from_variant_meta(self):
+        from guild_auto.capabilities import variant_meta
+        from guild_auto.config.ui_binding import readonly_values
+
+        self.assertEqual(readonly_values()["build_variant"], variant_meta()["build_variant"])
+
+    def test_write_back_is_rejected_not_silently_accepted(self):
+        from copy import deepcopy
+        from guild_auto.config import DEFAULT_CONFIG
+        from guild_auto.config.ui_binding import apply_edits
+
+        cfg = deepcopy(DEFAULT_CONFIG)
+        new_cfg, errors = apply_edits(cfg, {"build_variant": "Full"})
+        self.assertTrue(errors, "只读字段写回必须报错，不能静默接受")
+        self.assertEqual(errors[0]["path"], "build_variant")
+        self.assertNotIn("build_variant", new_cfg, "只读字段不得落进配置")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

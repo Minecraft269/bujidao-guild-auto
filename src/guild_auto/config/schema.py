@@ -191,6 +191,70 @@ def validate_config(cfg):
                 issues.append(
                     ("error", f"配置项 ui.kick_confirm_text 必须是非空字符串,当前: {txt!r}")
                 )
+            # ── tauri 版新增键(GUI设计规范 §3/§4/§5)─────────────────────
+            def _enum(block, key, allowed, path):
+                if key in block and block[key] not in allowed:
+                    issues.append(
+                        (
+                            "error",
+                            f"配置项 {path} 取值非法: {block[key]!r},"
+                            f"应为 {allowed} 之一",
+                        )
+                    )
+
+            def _bool(block, key, path):
+                if key in block and not isinstance(block[key], bool):
+                    issues.append(("error", f"配置项 {path} 必须是 true/false,当前: {block[key]!r}"))
+
+            _enum(ui, "theme", ("auto", "dark", "light"), "ui.theme")
+            _bool(ui, "custom_titlebar", "ui.custom_titlebar")
+            for sub, fields in (
+                ("window", ("width", "height")),
+                ("tray", ("enabled", "ask_on_close")),
+            ):
+                block = ui.get(sub)
+                if block is not None and not isinstance(block, dict):
+                    issues.append(("error", f"配置项 ui.{sub} 必须是对象"))
+                    continue
+                if not isinstance(block, dict):
+                    continue
+                for f in fields:
+                    if f in block and not isinstance(block[f], bool) and f != "width" and f != "height":
+                        issues.append(
+                            ("error", f"配置项 ui.{sub}.{f} 必须是 true/false,当前: {block[f]!r}")
+                        )
+                if sub == "window":
+                    for f in ("width", "height"):
+                        v = block.get(f)
+                        if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v <= 0):
+                            issues.append(
+                                ("error", f"配置项 ui.window.{f} 必须是正整数,当前: {v!r}")
+                            )
+                    _bool(block, "remember_geometry", "ui.window.remember_geometry")
+                if sub == "tray":
+                    _enum(
+                        block,
+                        "close_action",
+                        ("ask", "minimize", "exit"),
+                        "ui.tray.close_action",
+                    )
+    # ── 自动更新(GUI设计规范 §8)──
+    upd = cfg.get("update")
+    if upd is not None:
+        if not isinstance(upd, dict):
+            issues.append(("error", "配置项 update 必须是对象"))
+        else:
+            if upd.get("mode") not in (None, "check", "notify", "auto"):
+                issues.append(
+                    (
+                        "error",
+                        f"配置项 update.mode 取值非法: {upd.get('mode')!r},"
+                        f"应为 ('check', 'notify', 'auto') 之一",
+                    )
+                )
+            url = upd.get("manifest_url")
+            if url is not None and not isinstance(url, str):
+                issues.append(("error", "配置项 update.manifest_url 必须是字符串"))
     # ── 自定义规则(阶段 4)──
     if "rules_enabled" in cfg:
         check_bool(cfg, "rules_enabled", "")
