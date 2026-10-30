@@ -48,6 +48,14 @@ jobs:
       - name: 单元测试 + 覆盖率（纯逻辑 ≥80%）
         run: npx vitest run --coverage
 
+      - name: Set up Python（快照比对需要 Pillow）
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装快照依赖
+        run: python -m pip install --upgrade pip "Pillow>=10.0.0"
+
       - name: 快照（深浅 × 两套标题栏 = 4 组，差异 ≤0.1%）
         working-directory: .
         run: python scripts/gui_snapshot.py
