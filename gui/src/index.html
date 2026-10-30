@@ -73,6 +73,9 @@
 <script>
 const api = window.__TAURI__;
 const $ = (id) => document.getElementById(id);
+// 探针：脚本一旦执行就把这行改掉，用来区分"脚本没跑"与"事件没到"
+$("hs-state").textContent = api && api.event ? "脚本已加载，等待核心…" : "脚本已加载，但 Tauri API 不可用";
+
 
 function badge(cls) {
   $("dot").className = "dot " + cls;
@@ -110,6 +113,20 @@ async function boot() {
     return;
   }
   await api.event.listen("ipc-hello", (e) => setHandshake(e.payload));
+  // 前端通常比 Rust 先就绪：单次取快照会取到 null（此时管道还没连上），
+  // 事件也可能在注册监听之前就发过了。所以订阅后轮询快照直到拿到为止。
+  (async () => {
+    for (let i = 0; i < 60; i++) {
+      try {
+        const snap = await api.core.invoke("hello_snapshot");
+        if (snap) { setHandshake(snap); return; }
+      } catch (e) {
+        $("hs-state").textContent = "取握手快照失败：" + e;
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  })();
   await api.event.listen("ipc-event", (e) => {
     $("last-event").textContent = String(e.payload).slice(0, 120);
   });

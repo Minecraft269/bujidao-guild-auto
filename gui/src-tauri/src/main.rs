@@ -7,7 +7,18 @@
 
 use std::io::{BufRead, BufReader, Write};
 
+use std::sync::{Arc, Mutex};
+
 use tauri::{Emitter, Manager};
+
+/// 握手应答快照：前端启动可能晚于 Rust 读到应答，事件会丢；
+/// 所以把应答同时存进这里，前端可以主动取一次，避免"界面永远正在连接"。
+struct HelloState(Arc<Mutex<Option<String>>>);
+
+#[tauri::command]
+fn hello_snapshot(state: tauri::State<'_, HelloState>) -> Option<String> {
+    state.0.lock().ok().and_then(|g| g.clone())
+}
 
 fn arg_value(name: &str) -> Option<String> {
     let mut args = std::env::args().skip(1);
@@ -24,7 +35,12 @@ fn main() {
     let token = arg_value("--token").unwrap_or_default();
     let smoke = std::env::args().any(|a| a == "--smoke-test");
 
+    let hello_state: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let hello_for_setup = hello_state.clone();
+
     tauri::Builder::default()
+        .manage(HelloState(hello_state))
+        .invoke_handler(tauri::generate_handler![hello_snapshot])
         .setup(move |app| {
             let handle = app.handle().clone();
             if let Some(pipe_name) = pipe {
@@ -50,10 +66,16 @@ fn main() {
                                 let _ = handle.emit("ipc-error", format!("发送握手失败: {e}"));
                                 return;
                             }
+                            eprintln!("[gui] 已写入 hello 请求，开始读应答");
                             let reader = BufReader::new(stream);
                             let mut lines = reader.lines();
                             // 第一行是握手应答（带 id），之后是无 id 的事件推送
-                            if let Some(Ok(first)) = lines.next() {
+                            let first_opt = lines.next();
+                            eprintln!("[gui] 首个应答: {:?}", first_opt.as_ref().map(|r| r.is_ok()));
+                            if let Some(Ok(first)) = first_opt {
+                                if let Ok(mut g) = hello_for_setup.lock() {
+                                    *g = Some(first.clone());
+                                }
                                 let _ = handle.emit("ipc-hello", first);
                             }
                             for line in lines {
