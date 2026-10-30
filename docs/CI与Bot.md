@@ -26,6 +26,23 @@
 
 ---
 
+### gui.yml（界面门禁，已落地）
+
+界面是独立的 tauri 进程（`gui/`），与 Python 核用两套工具链，因此单独一道工作流：
+
+| 作业 | 步骤 | 阻塞 |
+|---|---|---|
+| 前端 | `biome check` / `vitest run --coverage`（纯逻辑 ≥80%）/ 快照 4 组（差异 ≤0.1%） | 是 |
+| Rust | `cargo fmt --check` / `cargo clippy -D warnings` / `cargo test` / `cargo llvm-cov ≥60%` / `cargo build --release` | 是 |
+
+**覆盖率口径**：只统计纯逻辑。Rust 侧统计 `protocol.rs`，排除 `main.rs`（窗口/托盘装配段）、
+`ipc.rs`（OS 管道胶水）与 `gen/**`；前端统计 `src/lib/**`，不含 `app.js` 的 DOM 装配段。
+被排除的部分由 GUI 冒烟（真进程 + IPC 握手）与 4 组快照兜底，而不是放低门槛。
+
+**不做的事**：不跑 `tauri bundle`（MSI 要下载 WiX，属于发布流程，不进 PR 门禁）。
+
+---
+
 ## 二、待补充的工作流
 
 | 工作流 | 作用 | 阻塞策略 |

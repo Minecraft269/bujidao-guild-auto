@@ -78,10 +78,13 @@ class GuiBridge:
         log_dir: str | Path | None = None,
         controller: Any | None = None,
         first_run: bool = False,
+        restart_impl: Callable[[], None] | None = None,
     ):
         self.cfg = cfg
         self.config_path = Path(config_path)
         self.first_run = bool(first_run)
+        # 重启实现可注入：测试里绝不能真的 execv（那会把测试进程替换掉）
+        self._restart_impl = restart_impl or _default_restart_impl
         self.report_dir = Path(report_dir) if report_dir else None
         self.log_dir = Path(log_dir) if log_dir else None
         self.controller = controller
@@ -356,7 +359,7 @@ class GuiBridge:
         time.sleep(0.3)  # 让应答先写回界面
         self.stop()
         try:
-            os.execv(sys.executable, [sys.executable, *sys.argv])
+            self._restart_impl()
         except OSError as e:  # 重启失败必须让用户知道，而不是静默留在旧进程
             console_safe(f"重启失败: {e}")
 
@@ -435,11 +438,17 @@ class GuiBridge:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as e:  # 网络/解析失败都如实回报，不假装有更新
             raise ValueError(f"检查更新失败: {e}") from e
-        variant = capabilities_mod.variant_meta().get("variant")
+        # 清单按拼接名分列，这里必须用 variant_meta 的 build_variant 键
+        variant = capabilities_mod.variant_meta()["build_variant"]
         entry = (data.get("variants") or {}).get(variant) or {}
         if not entry.get("signature"):
             raise ValueError("清单缺少签名，按规范直接拒绝")
         return {"status": "有新版本", "version": data.get("version"), "entry": entry}
+
+
+def _default_restart_impl() -> None:
+    """真重启：用同一个解释器/可执行文件替换当前进程（argv 原样带过去）。"""
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def console_safe(msg: str) -> None:

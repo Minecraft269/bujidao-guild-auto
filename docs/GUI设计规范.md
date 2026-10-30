@@ -407,6 +407,28 @@ Windows「应用和功能」里显示的版本与实际不一致，也会让第�
 
 ---
 
+### 9.2 本轮实测记录（2026-10-30）
+
+| 项 | 实测值 | 命令/来源 |
+|---|---|---|
+| Gui.exe（release） | 9.57 MB | `cargo build --release` → `Finished release profile in 34.50s` |
+| MSI 安装包 | 3.09 MiB | `npx tauri build --bundles msi` → `布吉岛公会管理脚本-Gui_0.1.0_x64_zh-CN.msi`，WiX 正常下载并出包 |
+| 便携包组装 | 5 个文件（核 exe / 共用 Gui.exe / 启动.cmd / zip / latest.json） | `python scripts/package.py --core … --gui … --variant Lite-Async-Gui-Vision --full-suffix=-Full` |
+| latest.json | `{version, variants:{<拼接名>:{url, sha256, signature, released}}}` | 同上，sha256 与 zip 内容一致 |
+| MSI 静默安装 | **未完成：Error 1925（权限不足）** | `msiexec /i <msi> /qn` 在非提权会话下失败；需管理员权限重跑 |
+
+**未闭环（明确记录，不假装完成）**
+- MSI 的「安装→应用和功能可见→卸载→注册表清理」全链路实测需要管理员权限，
+  本轮会话无提权，故只验证到「安装包能生成」。复核命令：
+  `msiexec /i "<msi路径>" /l*v "%TEMP%\msi.log"` → 在「应用和功能」查看 →
+  `msiexec /x "<msi路径>"` → 确认安装目录与该注册表分支下的条目均已清除：
+  `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*`
+- tauri 的 MSI 由 WiX 模板生成，卸载入口是 `msiexec /x {ProductCode}`（对应 §9.1 的
+  「独立卸载程序」要求）；DisplayName/DisplayVersion/Publisher/InstallLocation/EstimatedSize
+  由 tauri 自动写入，本轮未逐字段核对（同样需要安装后才可读）。
+
+---
+
 ## 十、构建与 CI
 
 1. GUI 构建一次（cargo/tauri），产物复制进 4 个含 gui 变体的 artifact。
