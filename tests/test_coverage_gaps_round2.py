@@ -21,9 +21,20 @@ from guild_auto.config.defaults import DEFAULT_CONFIG
 
 @pytest.fixture(autouse=True)
 def _clean_runtime_state():
-    runtime_mod.reset_state()
+    """进出都把 runtime 的全局状态清干净。
+
+    注意：光 reset_state() 不够 —— 自动暂停的"模式/开关/宽限窗口"是另外三个全局量，
+    我第一版只 reset 了暂停位，结果把后续用例的路径带偏（核心层覆盖反而掉了 1 行）。
+    """
+
+    def _neutral():
+        runtime_mod.reset_state()
+        runtime_mod.configure_auto_pause(operation_mode="cli", enabled=False, grace_ms=0)
+        runtime_mod.set_auto_pause_guard(False)
+
+    _neutral()
     yield
-    runtime_mod.reset_state()
+    _neutral()
 
 
 def _cfg():
