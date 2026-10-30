@@ -1,0 +1,93 @@
+name: GUI Tests
+
+# 界面的「测试 + 覆盖率 + 快照」门禁（§10.2.1 与 gui.yml 职责分离）。
+# 覆盖率口径只统计纯逻辑：
+#   · 前端 src/lib/**、src/icons/**；app.js 的 DOM 装配段不计
+#   · Rust protocol.rs；main.rs（窗口/托盘装配段）、ipc.rs（管道胶水）、gen/**、build.rs 不计
+# 被排除的部分由 GUI 冒烟（真进程 + IPC 握手）与 4 组快照兜底，不放低门槛。
+on:
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - "gui/**"
+      - "scripts/gui_snapshot.py"
+      - ".github/workflows/gui-test.yml"
+  pull_request:
+    paths:
+      - "gui/**"
+      - "scripts/gui_snapshot.py"
+      - ".github/workflows/gui-test.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: gui-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-tests:
+    name: 前端（vitest / 覆盖率 / 快照）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 安装依赖
+        working-directory: gui
+        run: npm ci
+
+      - name: 单元测试 + 覆盖率（纯逻辑 ≥80%）
+        working-directory: gui
+        run: npx vitest run --coverage
+
+      - name: Set up Python（快照比对需要 Pillow）
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装快照依赖
+        run: python -m pip install --upgrade pip "Pillow>=10.0.0"
+
+      - name: 快照（深浅 × 两套标题栏 = 4 组，差异 ≤0.1%）
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/gui_snapshot.py
+
+      - name: 上传快照差异
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-snapshots-diff
+          path: gui/.snapshots-tmp/
+          if-no-files-found: ignore
+
+  rust-tests:
+    name: Rust（cargo test / llvm-cov）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gui/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 安装 cargo-llvm-cov（预编译，省掉 cargo install 的编译时间）
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: 单元测试
+        # 本工程只有 bin target（没有 lib），用 --lib 会报 "no library targets found"
+        run: cargo test --bins
+
+      - name: 覆盖率（纯逻辑 ≥60%）
+        run: cargo llvm-cov --bins --summary-only --ignore-filename-regex "(src[\\/]main\.rs|src[\\/]ipc\.rs|gen[\\/]|build\.rs)" --fail-under-lines 60
