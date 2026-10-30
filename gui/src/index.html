@@ -1,147 +1,305 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8" />
-<title>布吉岛公会管理脚本 · Gui</title>
-<style>
-  :root {
-    /* 骨架阶段先落深色 token；浅色与"跟随系统"在铺界面时补齐 */
-    --bg: #1E1F22; --panel: #2B2D31; --border: #3A3D42;
-    --text: #E6E6E6; --text-dim: #9AA0A6;
-    --accent: #2DD4BF; --danger: #F87171; --ok: #4ADE80;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; height: 100vh; display: flex; flex-direction: column;
-    background: var(--bg); color: var(--text);
-    font: 13px/1.6 "Microsoft YaHei UI", system-ui, sans-serif;
-  }
-  .titlebar {
-    height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
-    background: var(--panel); border-bottom: 1px solid var(--border);
-  }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
-  .dot.ok { background: var(--ok); }
-  .dot.danger { background: var(--danger); }
-  .title { font-weight: 600; }
-  .variant { color: var(--text-dim); font-size: 12px; }
-  .body { flex: 1; padding: 16px; display: grid; gap: 12px; align-content: start; }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-  h1 { font-size: 15px; margin: 0 0 8px; }
-  .dim { color: var(--text-dim); font-size: 12px; }
-  dl { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; margin: 12px 0 0; }
-  dt { text-align: right; color: var(--text-dim); }
-  dd { margin: 0; }
-  .statusbar {
-    height: 28px; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 12px; border-top: 1px solid var(--border);
-    background: var(--panel); font-size: 12px;
-  }
-</style>
-</head>
-<body>
-  <header class="titlebar">
-    <span class="dot" id="dot"></span>
-    <span class="title">布吉岛公会管理脚本</span>
-    <span class="variant" id="variant">（等待核下发变体）</span>
-  </header>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>布吉岛公会管理脚本</title>
+    <!-- 主题与尺度 token 集中在 theme/，本页不写内联色值（§4.1） -->
+    <link rel="stylesheet" href="theme/tokens.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body data-titlebar="custom" data-mode="normal" data-page="run">
+    <!-- ── 自绘标题栏（§3.1 A） ───────────────────────────────────── -->
+    <header class="titlebar">
+      <img class="logo" src="logo.png" alt="" />
+      <div class="drag" id="drag-region">
+        <span class="title-text" id="app-title">布吉岛公会管理脚本</span>
+        <span class="variant" id="variant-label">（等待核心下发构建代号）</span>
+      </div>
+      <div class="tb-actions">
+        <button class="tb-btn" id="btn-compact" title="小窗模式">⤡</button>
+        <button class="tb-btn" id="btn-top" title="置顶">📌</button>
+        <button class="tb-btn" id="btn-min" title="最小化">─</button>
+        <button class="tb-btn close" id="btn-close" title="关闭">✕</button>
+      </div>
+    </header>
 
-  <main class="body">
-    <section class="card">
-      <h1>IPC 握手</h1>
-      <p class="dim" id="hs-state">正在连接核心…</p>
-      <dl>
-        <dt>构建变体</dt><dd id="hs-variant">—</dd>
-        <dt>已启用能力</dt><dd id="hs-caps">—</dd>
-        <dt>核版本</dt><dd id="hs-version">—</dd>
-        <dt>配置架构版本</dt><dd id="hs-schema">—</dd>
-      </dl>
-    </section>
+    <!-- ── 原生标题栏方案下的 32px 工具条（§3.1 B） ───────────────── -->
+    <div class="toolbar">
+      <button class="ctl" id="btn-compact2">⤡ 小窗</button>
+      <button class="ctl" id="btn-top2">📌 置顶</button>
+    </div>
 
-    <section class="card">
-      <h1>骨架范围</h1>
-      <p class="dim">本屏只验证：tauri 独立进程 + 命名管道 + hello 握手 + 事件通道。
-        页签、托盘、双主题、规则编辑器在下一步铺开。</p>
-    </section>
-  </main>
+    <!-- ── 页签 ──────────────────────────────────────────────────── -->
+    <nav class="tabs" id="tabs">
+      <button class="tab" data-tab="run" aria-selected="true">运行</button>
+      <button class="tab" data-tab="config">配置</button>
+      <button class="tab" data-tab="rules">规则</button>
+      <button class="tab" data-tab="logs">日志</button>
+      <button class="tab" data-tab="about">关于</button>
+    </nav>
 
-  <footer class="statusbar">
-    <span id="status">未连接</span>
-    <span class="dim" id="last-event">—</span>
-  </footer>
+    <main>
+      <!-- ── 运行页（§3.3） ──────────────────────────────────────── -->
+      <section class="page" data-page="run" data-active="true">
+        <div class="grid-run-top">
+          <div class="card">
+            <div class="status-line">
+              <span class="dot" id="st-dot"></span>
+              <strong id="st-state">空闲</strong>
+              <span class="muted" id="st-stage">未开始</span>
+              <span class="muted" id="st-progress">0/0</span>
+            </div>
+            <div class="bar"><i id="st-bar"></i></div>
+            <dl class="kv">
+              <dt>已用时</dt>
+              <dd id="st-elapsed">0:00</dd>
+              <dt>当前玩家</dt>
+              <dd id="st-player">—</dd>
+              <dt>暂停原因</dt>
+              <dd id="st-pause-reason">—</dd>
+            </dl>
+          </div>
 
-<script>
-const api = window.__TAURI__;
-const $ = (id) => document.getElementById(id);
-// 探针：脚本一旦执行就把这行改掉，用来区分"脚本没跑"与"事件没到"
-$("hs-state").textContent = api && api.event ? "脚本已加载，等待核心…" : "脚本已加载，但 Tauri API 不可用";
+          <div class="card">
+            <h2>运行控制</h2>
+            <div class="controls vertical">
+              <button class="ctl primary" id="btn-start">开始</button>
+              <button class="ctl" id="btn-pause">暂停</button>
+              <button class="ctl" id="btn-resume">继续</button>
+              <button class="ctl danger" id="btn-stop">停止</button>
+            </div>
+            <p class="muted" id="ctl-hint">首次启动前会先倒计时 3 秒。</p>
+          </div>
+        </div>
 
+        <div class="card">
+          <div class="card-head">
+            <h2>当前动作</h2>
+            <span class="muted" id="act-target-kind">—</span>
+          </div>
+          <dl class="kv">
+            <dt>命令原文</dt>
+            <dd class="mono" id="act-cmd">—</dd>
+            <dt>验证对象</dt>
+            <dd id="act-verify">—</dd>
+            <dt>重试次数</dt>
+            <dd id="act-retry">0</dd>
+            <dt>上次结果</dt>
+            <dd id="act-last">—</dd>
+          </dl>
+        </div>
 
-function badge(cls) {
-  $("dot").className = "dot " + cls;
-}
+        <div class="card grow">
+          <div class="card-head">
+            <h2>实时玩家表</h2>
+            <span class="muted" id="player-count">0 人</span>
+          </div>
+          <div class="filter-row">
+            <input class="ctl" type="search" id="player-search" placeholder="搜索玩家名或备注" />
+            <select class="ctl" id="player-decision">
+              <option value="">全部决策</option>
+              <option value="promote">提升</option>
+              <option value="demote">降级</option>
+              <option value="kick">踢出</option>
+              <option value="none">无操作</option>
+            </select>
+            <select class="ctl" id="player-online">
+              <option value="">全部在线状态</option>
+              <option value="在线">在线</option>
+              <option value="离线">离线</option>
+              <option value="未知">未知</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table class="grid" id="player-table">
+              <thead>
+                <tr>
+                  <th data-key="index">#</th>
+                  <th data-key="name">玩家名</th>
+                  <th data-key="level">等级</th>
+                  <th data-key="weekly_total">周贡献</th>
+                  <th data-key="weekly_detail">7 日明细</th>
+                  <th data-key="last_online">上次在线</th>
+                  <th data-key="online_state">在线状态</th>
+                  <th data-key="decision">决策</th>
+                  <th data-key="exec_state">执行状态</th>
+                  <th data-key="note">备注</th>
+                </tr>
+              </thead>
+              <tbody id="player-body"></tbody>
+            </table>
+            <div class="empty" id="player-empty">
+              还没有查询结果。点「开始」后这里会随进度增量出现。
+            </div>
+          </div>
+        </div>
 
-function setHandshake(payload) {
-  let msg;
-  try {
-    msg = JSON.parse(payload);
-  } catch (e) {
-    $("hs-state").textContent = "握手应答不是合法 JSON：" + payload;
-    badge("danger");
-    return;
-  }
-  if (!msg.ok) {
-    $("hs-state").textContent = "握手被拒绝：" + (msg.error || "未知原因");
-    badge("danger");
-    $("status").textContent = "握手失败";
-    return;
-  }
-  const r = msg.result || {};
-  badge("ok");
-  $("hs-state").textContent = "握手成功";
-  $("hs-variant").textContent = r.variant || "—";
-  $("hs-caps").textContent = (r.capabilities || []).join(", ") || "—";
-  $("hs-version").textContent = r.plugin_version || "—";
-  $("hs-schema").textContent = r.config_schema_version ?? "—";
-  $("variant").textContent = r.variant ? "· " + r.variant : "";
-  $("status").textContent = "已连接核心";
-}
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head">
+              <h2>待办队列</h2>
+              <span class="muted" id="pending-count">0 条</span>
+            </div>
+            <div class="list" id="pending-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>失败与跳过</h2>
+              <span class="muted" id="fail-count">0 条</span>
+            </div>
+            <div class="list" id="fail-list"></div>
+          </div>
+        </div>
 
-async function boot() {
-  if (!api || !api.event) {
-    $("hs-state").textContent = "未启用 Tauri 全局 API（静态预览）";
-    return;
-  }
-  await api.event.listen("ipc-hello", (e) => setHandshake(e.payload));
-  // 前端通常比 Rust 先就绪：单次取快照会取到 null（此时管道还没连上），
-  // 事件也可能在注册监听之前就发过了。所以订阅后轮询快照直到拿到为止。
-  (async () => {
-    for (let i = 0; i < 60; i++) {
-      try {
-        const snap = await api.core.invoke("hello_snapshot");
-        if (snap) { setHandshake(snap); return; }
-      } catch (e) {
-        $("hs-state").textContent = "取握手快照失败：" + e;
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 150));
-    }
-  })();
-  await api.event.listen("ipc-event", (e) => {
-    $("last-event").textContent = String(e.payload).slice(0, 120);
-  });
-  await api.event.listen("ipc-error", (e) => {
-    $("hs-state").textContent = String(e.payload);
-    badge("danger");
-    $("status").textContent = "连接失败";
-  });
-  await api.event.listen("ipc-closed", () => {
-    $("status").textContent = "核心已断开";
-    badge("danger");
-  });
-}
+        <div class="card">
+          <div class="card-head">
+            <h2>本次报告</h2>
+            <button class="ctl" id="btn-open-reports">打开报告目录</button>
+          </div>
+          <dl class="kv">
+            <dt>基础报告</dt>
+            <dd class="mono" id="rep-1">—</dd>
+            <dt>完整报告</dt>
+            <dd class="mono" id="rep-2">—</dd>
+            <dt>摘要报告</dt>
+            <dd class="mono" id="rep-3">—</dd>
+          </dl>
+        </div>
+      </section>
 
-boot();
-</script>
-</body>
+      <!-- ── 配置页（§3.3） ──────────────────────────────────────── -->
+      <section class="page" data-page="config">
+        <div class="card">
+          <div class="card-head">
+            <h2>配置（与 config_panel 一一对应）</h2>
+            <div class="controls">
+              <input class="ctl" type="search" id="cfg-search" placeholder="搜索键名或说明" />
+              <button class="ctl primary" id="cfg-save">保存</button>
+              <button class="ctl" id="cfg-revert">放弃修改</button>
+            </div>
+          </div>
+          <p class="muted">
+            只读字段（构建变体）由构建期决定，不随配置写回。每项右侧是该项的作用与可填值。
+          </p>
+          <div id="cfg-list"></div>
+        </div>
+      </section>
+
+      <!-- ── 规则页（§7） ────────────────────────────────────────── -->
+      <section class="page" data-page="rules">
+        <div class="card">
+          <div class="rule-toolbar">
+            <button class="ctl" id="rule-add">新增规则</button>
+            <button class="ctl" id="rule-view-toggle">切到 JSON 视图</button>
+            <button class="ctl" id="rule-preview">预览（走核侧求值）</button>
+            <button class="ctl primary" id="rule-save">保存规则</button>
+            <span class="muted" id="rule-hint"
+              >行编辑支持 AND/OR 最多两层；OR 会展开成多条同优先级规则，展开结果在预览里可见。</span
+            >
+          </div>
+          <div id="rule-issues" class="issue"></div>
+          <div id="rule-list" class="rule-list"></div>
+          <textarea id="rule-json" class="json-view" hidden spellcheck="false"></textarea>
+          <div class="card" id="rule-preview-box" hidden>
+            <div class="card-head">
+              <h2>预览结果</h2>
+              <span class="muted">合成样本，不含真实玩家名</span>
+            </div>
+            <pre class="mono" id="rule-preview-out"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── 日志页（§6） ────────────────────────────────────────── -->
+      <section class="page" data-page="logs">
+        <div class="card grow">
+          <div class="card-head">
+            <h2>实时事件流</h2>
+            <span class="muted" id="log-count">0 条（缓冲上限 2000）</span>
+          </div>
+          <div class="log-tools">
+            <input class="ctl" type="search" id="log-search" placeholder="搜索事件内容" />
+            <select class="ctl" id="log-level">
+              <option value="4">4 级及以上（默认）</option>
+              <option value="3">3 级及以上</option>
+              <option value="2">2 级及以上（含 trace）</option>
+              <option value="1">全部</option>
+            </select>
+            <button class="ctl" id="btn-log-pause">暂停滚动</button>
+            <button class="ctl" id="btn-log-copy">复制本条</button>
+            <button class="ctl" id="btn-log-open">打开报告目录</button>
+          </div>
+          <div class="events" id="events"></div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <h2>判定链</h2>
+            <span class="muted" id="event-detail-title">点一条带玩家的事件查看</span>
+          </div>
+          <pre class="mono" id="event-detail">—</pre>
+        </div>
+      </section>
+
+      <!-- ── 关于页 ──────────────────────────────────────────────── -->
+      <section class="page" data-page="about">
+        <div class="card">
+          <h2>关于</h2>
+          <dl class="kv">
+            <dt>版本</dt>
+            <dd id="about-version">—</dd>
+            <dt>构建变体</dt>
+            <dd id="about-variant">—</dd>
+            <dt>能力清单</dt>
+            <dd id="about-caps">—</dd>
+            <dt>配置架构版本</dt>
+            <dd id="about-schema">—</dd>
+            <dt>日志目录</dt>
+            <dd class="mono" id="about-logdir">—</dd>
+            <dt>报告目录</dt>
+            <dd class="mono" id="about-reportdir">—</dd>
+          </dl>
+          <div class="controls" style="margin-top: var(--sp-3)">
+            <button class="ctl" id="btn-check-update">检查更新</button>
+            <button class="ctl" id="btn-open-logs">打开日志目录</button>
+          </div>
+          <p class="muted" id="about-update">尚未检查更新。</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- ── 小窗模式（§3.2） ──────────────────────────────────────── -->
+    <div class="compact" id="compact">
+      <div class="compact-head">
+        <span class="dot" id="c-dot"></span>
+        <span id="c-state">空闲</span>
+        <span class="stage" id="c-stage">未开始</span>
+        <span class="compact-pct" id="c-progress">0/0</span>
+      </div>
+      <div class="bar"><i id="c-bar"></i></div>
+      <div class="compact-event" id="c-event">—</div>
+      <div class="compact-event" id="c-player">当前玩家：—</div>
+    </div>
+
+    <!-- ── 底部常驻状态条 ───────────────────────────────────────── -->
+    <footer class="statusbar">
+      <div class="left">
+        <span id="sb-tray">托盘：空闲</span>
+        <span class="dirty" id="sb-dirty"></span>
+        <span id="sb-pending">待办 0</span>
+        <span id="sb-fail">失败 0</span>
+      </div>
+      <div class="right">
+        <span id="sb-level">日志级别：信息</span>
+        <span id="sb-conn">未连接核心</span>
+      </div>
+    </footer>
+
+    <!-- ── 模态容器（§3.4） ─────────────────────────────────────── -->
+    <div class="modal-layer" id="modal-layer">
+      <div class="modal" id="modal"></div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+  </body>
 </html>

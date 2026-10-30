@@ -49,3 +49,7 @@ gui/node_modules/
 /aoci.txt
 /aoci.meta.txt
 /aoci.code.txt
+
+# 前端覆盖率产物
+gui/coverage/
+gui/.snapshots-tmp/
