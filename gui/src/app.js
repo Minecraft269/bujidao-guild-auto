@@ -981,25 +981,40 @@ function confirmStop() {
 }
 
 async function askClosePolicy() {
+  // §5：应用内模态（窗口内渲染），不新建窗口、不改窗口尺寸。
+  // 小窗 360×150 用紧凑版：单行标题 + 两按钮各半 + 复选框折成 12px 小字。
   const layer = $("modal-layer");
   const modal = $("modal");
+  const compact = S.compact;
   modal.replaceChildren();
+  modal.dataset.variant = compact ? "compact" : "full";
+
   const h = document.createElement("h3");
-  h.textContent = "关闭时希望怎么做？";
+  h.textContent = compact ? "要最小化到托盘吗？" : "关闭时希望怎么做？";
+
   const b = document.createElement("div");
   b.className = "modal-body";
   const remember = document.createElement("input");
   remember.type = "checkbox";
   const label = document.createElement("label");
+  label.className = "remember";
   label.append(
     remember,
-    document.createTextNode(" 不再询问（可在配置页 ui.tray.ask_on_close 改回）"),
+    document.createTextNode(compact ? " 不再询问" : " 不再询问（可随时在「关于」页改回）"),
   );
   b.append(label);
-  const row = document.createElement("div");
-  row.className = "modal-actions";
-  const go = async (action) => {
+
+  let closed = false;
+  function closeModal() {
+    if (closed) return;
+    closed = true;
     layer.dataset.open = "false";
+    document.removeEventListener("keydown", onKey, true);
+  }
+
+  const go = async (action) => {
+    if (closed) return;
+    closeModal();
     await winCmd("win_close_decision", { action, remember: remember.checked });
     if (remember.checked) {
       // 「不再询问」必须落盘到配置，否则重启后还会再问（§5）
@@ -1011,6 +1026,7 @@ async function askClosePolicy() {
       });
     }
   };
+
   const min = document.createElement("button");
   min.className = "ctl primary";
   min.textContent = "最小化到托盘";
@@ -1019,9 +1035,37 @@ async function askClosePolicy() {
   exit.className = "ctl danger";
   exit.textContent = "直接退出";
   exit.onclick = () => go("exit");
+
+  const row = document.createElement("div");
+  row.className = "modal-actions";
   row.append(min, exit);
+
+  // Esc 取消（关模态、不动作）/ Enter 确认（默认最小化到托盘）/ 焦点锁在模态内
+  function onKey(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeModal();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      void go("minimize");
+      return;
+    }
+    if (e.key === "Tab") {
+      const order = [min, exit, remember];
+      const i = order.indexOf(document.activeElement);
+      e.preventDefault();
+      order[(i + 1) % order.length].focus();
+    }
+  }
+  document.addEventListener("keydown", onKey, true);
+
   modal.append(h, b, row);
   layer.dataset.open = "true";
+  min.focus();
 }
 
 // ── 引导 ───────────────────────────────────────────────────────────────

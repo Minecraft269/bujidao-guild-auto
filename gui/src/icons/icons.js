@@ -10,17 +10,20 @@ const ATTRS =
 
 const svg = (body) => `<svg class="icon" ${ATTRS}>${body}</svg>`;
 
-// 小窗/大窗共用的单外框
-const FRAME = '<rect x="3" y="4" width="18" height="16" rx="2"/>';
+// 参考图结构（已按 10× 放大版核对）：大圆角外框（占左上约 3/4）
+// + 右下角独立小方框 + 框内对角箭头。小窗/大窗只差箭头方向。
+const FRAME = '<rect x="3" y="4" width="14" height="11" rx="2.5"/>';
+const CORNER_BOX =
+  '<rect x="15" y="15" width="6" height="6" rx="1.5" vector-effect="non-scaling-stroke"/>';
 
 export const ICONS = {
-  // 小窗：单外框 + 框内指向右下的箭头
+  // 小窗：外框 + 右下小方框 + 框内指向右下的箭头
   compact: svg(
-    `${FRAME}<path d="M11.5 11.5l5 5" vector-effect="non-scaling-stroke"/><path d="M16.5 12v4.5H12" vector-effect="non-scaling-stroke"/>`,
+    `${FRAME}${CORNER_BOX}<path d="M10 9l3.5 3.5" vector-effect="non-scaling-stroke"/><path d="M13.5 12.5V9.5" vector-effect="non-scaling-stroke"/><path d="M13.5 12.5H10.5" vector-effect="non-scaling-stroke"/>`,
   ),
-  // 大窗（小窗→正常）：单外框 + 框内指向左上的箭头
+  // 大窗（小窗→正常）：同结构，仅箭头指向左上
   expand: svg(
-    `${FRAME}<path d="M17 17l-5-5" vector-effect="non-scaling-stroke"/><path d="M12 16.5V12h4.5" vector-effect="non-scaling-stroke"/>`,
+    `${FRAME}${CORNER_BOX}<path d="M13.5 12.5L10 9" vector-effect="non-scaling-stroke"/><path d="M10 9v3" vector-effect="non-scaling-stroke"/><path d="M10 9h3" vector-effect="non-scaling-stroke"/>`,
   ),
   // 最大化：单个空心方框（无箭头）
   maximize: svg(

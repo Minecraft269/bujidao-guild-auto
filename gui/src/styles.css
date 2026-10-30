@@ -39,15 +39,31 @@ body {
 
 .titlebar .drag {
   flex: 1;
+  min-width: 0; /* 关键：允许子项被压缩，否则长标题会把标题栏撑成两行 */
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   height: 100%;
 }
 
+/* §3.2：标题必须单行 + 末尾省略号；过长时优先省略标题、保住按钮区 */
+.titlebar .title-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
 .titlebar .variant {
   color: var(--text-dim);
   font-size: var(--fs-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 45%;
 }
 
 .tb-actions {
@@ -693,6 +709,8 @@ table.grid td.wrap {
   place-items: center;
   background: color-mix(in srgb, var(--bg) 70%, transparent);
   z-index: 20;
+  /* 小窗 360×150 时留 8px 呼吸位，模态绝不能溢出窗口 */
+  padding: var(--sp-2);
 }
 
 .modal-layer[data-open="true"] {
@@ -702,6 +720,9 @@ table.grid td.wrap {
 .modal {
   min-width: 380px;
   max-width: 560px;
+  /* 内容比窗口高时模态内部滚动，按钮永远留在可视区 */
+  max-height: calc(100% - 2 * var(--sp-2));
+  overflow-y: auto;
   padding: var(--sp-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
@@ -840,4 +861,47 @@ body[data-mode="compact"] .titlebar .drag .title-text {
   * {
     transition: none !important;
   }
+}
+
+/* ── 小窗（360×150）下的紧凑模态（§5） ───────────────────────────────
+   小窗放不下完整体：单行标题 + 两按钮横排各半 + 复选框折成 12px 小字。
+   注意：模态始终是**窗口内渲染**的应用内模态，不新建窗口、不改窗口尺寸。 */
+.modal[data-variant="compact"] {
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+  padding: var(--sp-2);
+}
+
+.modal[data-variant="compact"] h3 {
+  font-size: var(--fs-dim);
+  margin: 0 0 var(--sp-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal[data-variant="compact"] .modal-body {
+  margin-bottom: var(--sp-2);
+  font-size: var(--fs-dim);
+}
+
+.modal[data-variant="compact"] .modal-actions {
+  gap: var(--sp-1);
+}
+
+.modal[data-variant="compact"] .modal-actions button {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-dim);
+}
+
+.modal .remember {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--text-dim);
+  font-size: var(--fs-dim);
 }
