@@ -63,6 +63,8 @@ const S = {
   theme: "dark",
   topmost: false,
   compact: false,
+  // 首次运行门禁（§3.5）：配置刚生成时必须先保存才放行其它页签
+  firstRun: false,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -378,11 +380,15 @@ function configRow(f) {
   row.className = "cfg-row";
   const err = S.cfg.errors[f.path];
   if (err) row.classList.add("invalid");
-  row.append(
-    textDiv(f.path, "name"),
-    controlFor(f),
-    textDiv(err || f.comment || "", err ? "err" : "comment"),
-  );
+  const note = textDiv(err || f.comment || "", err ? "err" : "comment");
+  if (f.needs_restart) {
+    // §3.5 热重载分级：这些键保存后仍需重启
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = "需重启";
+    note.append(" ", chip);
+  }
+  row.append(textDiv(f.path, "name"), controlFor(f), note);
   return row;
 }
 
@@ -434,6 +440,19 @@ async function saveConfig() {
     pendingEdits.clear();
     S.cfg.dirty.clear();
     $("cfg-save").textContent = "保存";
+    const restart = (r.result && r.result.restart_required) || [];
+    // §3.5：有需重启项就给出明确提示与「立即重启」入口，不假装已生效
+    $("sb-restart").hidden = restart.length === 0;
+    $("sb-dirty").textContent = restart.length ? `有 ${restart.length} 项需重启生效` : "";
+    if (S.firstRun) {
+      S.firstRun = false;
+      unlockTabs();
+      await openModal({
+        title: "配置已保存",
+        body: "配置已保存，请重新启动脚本以使其生效。",
+        actions: [{ label: "知道了", value: true, primary: true }],
+      });
+    }
     await rpc("config", {});
   } else {
     $("cfg-save").textContent = "保存失败";
@@ -967,6 +986,9 @@ function setHandshake(payload) {
   $("about-caps").textContent = (r.capabilities || []).join(", ") || "—";
   $("about-schema").textContent = r.config_schema_version ?? "—";
   $("sb-conn").textContent = "已连接核心";
+  // 首次运行：配置是刚生成的 → 锁在配置页，保存后才放行（§3.5）
+  S.firstRun = !!r.first_run;
+  if (S.firstRun) lockTabsToConfig();
 }
 
 function handleTray(p) {
@@ -1020,18 +1042,42 @@ async function boot() {
   renderState();
 }
 
+// ── 页签与首次运行硬门禁（§3.5） ─────────────────────────────────────
+function switchTab(name) {
+  for (const t of document.querySelectorAll(".tab")) {
+    if (t.disabled && t.dataset.tab !== name) return; // 门禁期间不许切走
+    t.setAttribute("aria-selected", String(t.dataset.tab === name));
+  }
+  for (const p of document.querySelectorAll(".page"))
+    p.dataset.active = String(p.dataset.page === name);
+  document.body.dataset.page = name;
+}
+
+function lockTabsToConfig() {
+  for (const t of document.querySelectorAll(".tab")) {
+    if (t.dataset.tab !== "config") {
+      t.disabled = true;
+      t.title = "首次运行：请先保存配置";
+    }
+  }
+  switchTab("config");
+  $("sb-dirty").textContent = "首次运行：请先核对并保存配置";
+}
+
+function unlockTabs() {
+  for (const t of document.querySelectorAll(".tab")) {
+    t.disabled = false;
+    t.title = "";
+  }
+  $("sb-dirty").textContent = "";
+}
+
 // ── 事件绑定 ───────────────────────────────────────────────────────────
 function bind() {
   for (const tab of document.querySelectorAll(".tab")) {
-    tab.onclick = () => {
-      const name = tab.dataset.tab;
-      for (const t of document.querySelectorAll(".tab"))
-        t.setAttribute("aria-selected", String(t === tab));
-      for (const p of document.querySelectorAll(".page"))
-        p.dataset.active = String(p.dataset.page === name);
-      document.body.dataset.page = name;
-    };
+    tab.onclick = () => switchTab(tab.dataset.tab);
   }
+  $("sb-restart").onclick = () => rpc("restart_app", {});
 
   $("btn-min").onclick = () => winCmd("win_minimize");
   $("btn-close").onclick = () => winCmd("win_close");

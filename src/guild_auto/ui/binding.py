@@ -32,6 +32,9 @@ START_TIMEOUT = 24 * 3600.0
 UPDATE_TIMEOUT = 8.0
 GUI_EXE_NAMES = ("布吉岛公会管理脚本-Gui.exe", "bujidao-guild-gui.exe")
 
+# 热重载分级（§3.5）：这些键改了必须重启才生效，其余保存即生效
+RESTART_REQUIRED_PATHS = ("log.dir", "ui.enabled")
+
 # 当前会话的桥：main.py 启动 GUI 后登记，流程各阶段用它推状态（未启用 GUI 时为 None）
 _ACTIVE: GuiBridge | None = None
 
@@ -74,9 +77,11 @@ class GuiBridge:
         report_dir: str | Path | None = None,
         log_dir: str | Path | None = None,
         controller: Any | None = None,
+        first_run: bool = False,
     ):
         self.cfg = cfg
         self.config_path = Path(config_path)
+        self.first_run = bool(first_run)
         self.report_dir = Path(report_dir) if report_dir else None
         self.log_dir = Path(log_dir) if log_dir else None
         self.controller = controller
@@ -248,6 +253,7 @@ class GuiBridge:
             "window": lambda p: {"ok": True, "echo": p},
             "check_update": lambda _p: self._check_update(),
             "confirm_reply": self._on_confirm_reply,
+            "restart_app": self._restart_app,
         }
 
     def _hello(self) -> dict[str, Any]:
@@ -260,6 +266,8 @@ class GuiBridge:
             "capabilities": list(meta["capabilities"]),
             "plugin_version": __version__,
             "config_schema_version": SCHEMA_VERSION,
+            # 首次运行（配置是刚生成的）→ 前端锁在配置页并要求先保存（§3.5）
+            "first_run": self.first_run,
         }
 
     def _config_payload(self) -> dict[str, Any]:
@@ -274,6 +282,8 @@ class GuiBridge:
                 "value": spec.value,
                 "choices": list(spec.choices or ()),
                 "readonly": spec.path in readonly,
+                # 热重载分级（§3.5）：标了 needs_restart 的保存后仍要重启才生效
+                "needs_restart": spec.path in RESTART_REQUIRED_PATHS,
             }
             if item["readonly"]:
                 item["value"] = readonly[spec.path]
@@ -291,6 +301,7 @@ class GuiBridge:
                         "value": value,
                         "choices": [],
                         "readonly": True,
+                        "needs_restart": False,
                     }
                 )
         return {"fields": fields, "readonly": readonly}
@@ -307,7 +318,24 @@ class GuiBridge:
             raise ValueError("；".join(f"{level}: {msg}" for level, msg in problems))
         save_config(self.config_path, new_cfg)
         self.cfg = load_config(self.config_path)
-        return self._config_payload()
+        # 告诉界面哪些改动要重启才生效（§3.5），由界面提示「有 N 项需重启生效」
+        restart = sorted(p for p in values if p in RESTART_REQUIRED_PATHS)
+        payload = self._config_payload()
+        payload["restart_required"] = restart
+        return payload
+
+    def _restart_app(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """立即重启：先回包，再在后台替换本进程（§3.5 的「立即重启」入口）。"""
+        threading.Thread(target=self._do_restart, daemon=True).start()
+        return {}
+
+    def _do_restart(self) -> None:
+        time.sleep(0.3)  # 让应答先写回界面
+        self.stop()
+        try:
+            os.execv(sys.executable, [sys.executable, *sys.argv])
+        except OSError as e:  # 重启失败必须让用户知道，而不是静默留在旧进程
+            console_safe(f"重启失败: {e}")
 
     def _rules_with_builtin(self) -> list[dict[str, Any]]:
         builtin = rules_mod.builtin_default_rule(self.cfg)

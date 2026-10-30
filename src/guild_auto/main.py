@@ -652,6 +652,8 @@ def main():
     args = parse_args()
 
     # 流程第一步:配置检测/生成/校验/日志初始化(见 prepare_config)
+    # 首次运行判定必须在 prepare_config 之前：那一步会把默认配置写成文件（§3.5）
+    first_run = not os.path.exists(args.config)
     cfg = prepare_config(args)
 
     # ---- UI 入口（阶段 3）----
@@ -675,6 +677,7 @@ def main():
             report_dir=cfg["report_dir"],
             log_dir=cfg["log"]["dir"],
             controller=ui_bridge_mod.RuntimeController(),
+            first_run=first_run,
         )
         # launch() 返回 True = 用户点了「开始」：重新读取刚保存的配置，
         # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
