@@ -195,6 +195,40 @@ class GuiBridge:
         self._confirm.pop(token, None)
         return str(box.get("choice") or "stop")
 
+    def ask_stage(self, prompt: str, default: bool = False, context: dict | None = None) -> bool:
+        """阶段确认（§3.4）：走 GUI 模态；GUI 模式下不存在的 input() 分支不再被触达。"""
+        ctx = context or {}
+        choice = self.ask_confirm(
+            "stage",
+            stage=ctx.get("stage", "执行确认"),
+            target=ctx.get("target", 0),
+            actions=ctx.get("actions", 0),
+            prompt=prompt,
+            default=bool(default),
+        )
+        return choice in ("resume", "continue", "yes")
+
+    def ask_kick_text(self, prompt: str, context: dict | None = None) -> str:
+        """kick 二次确认（§3.4）：模态里已逐字校验确认词，这里只回原文。
+
+        返回原文而不是布尔值，是为了让 stages 里 `ans != expected` 的判定语义
+        与控制台模式完全一致（逐字匹配，绝不布尔化）。
+        """
+        ctx = context or {}
+        players = ctx.get("players") or []
+        first = players[0] if players else {}
+        choice = self.ask_confirm(
+            "kick",
+            players=players,
+            player=first.get("player", ""),
+            level=first.get("level", ""),
+            weekly_total=first.get("weekly_total", ""),
+            count=len(players),
+            confirm_text=ctx.get("confirm_text", ""),
+            prompt=prompt,
+        )
+        return str(ctx.get("confirm_text", "")) if choice == "kick" else ""
+
     # ── 方法表 ──────────────────────────────────────────────────────────
     def _build_handlers(self) -> dict[str, Callable[[dict[str, Any]], Any]]:
         return {
@@ -386,6 +420,23 @@ class RuntimeController:
     def stop(self) -> None:
         self._rt.set_force_stop(True)
         self._rt.set_paused(False)  # 解除等待，让流程真的能退出
+
+
+def pending_rows(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """待办队列行（§3.3）：把 pending_actions.json 的条目整理成界面字段。"""
+    rows: list[dict[str, Any]] = []
+    for it in items or []:
+        acts = it.get("actions")
+        rows.append(
+            {
+                "player": str(it.get("player") or ""),
+                "action": ",".join(str(a) for a in acts) if isinstance(acts, list) else str(acts or ""),
+                "reason": str(it.get("reason") or it.get("error") or ""),
+                "enqueued_at": str(it.get("enqueued_at") or it.get("ts") or ""),
+                "retries": int(it.get("retries") or 0),
+            }
+        )
+    return rows
 
 
 def rows_from_records(

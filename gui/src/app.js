@@ -923,6 +923,15 @@ async function askClosePolicy() {
   const go = async (action) => {
     layer.dataset.open = "false";
     await winCmd("win_close_decision", { action, remember: remember.checked });
+    if (remember.checked) {
+      // 「不再询问」必须落盘到配置，否则重启后还会再问（§5）
+      await rpc("save_config", {
+        values: {
+          "ui.tray.close_action": action === "minimize" ? "minimize" : "exit",
+          "ui.tray.ask_on_close": false,
+        },
+      });
+    }
   };
   const min = document.createElement("button");
   min.className = "ctl primary";

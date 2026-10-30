@@ -317,6 +317,9 @@ class Runtime:
         # 「逐字匹配」类确认(kick 二次确认)必须拿原文,不能走 y/n 布尔化 ——
         # 否则提示写"输入 kick-confirm",实际却把 kick-confirm 判成否。
         self.ask_text_fn = ask_text_fn if ask_text_fn is not None else _default_ask_text
+        # 确认点的结构化上下文（阶段名/目标人数/预计动作数、kick 名单）。
+        # 由 stages 在提问前写入，GUI 模态据此展示；控制台模式忽略它。
+        self.confirm_context: dict = {}
         # 时间源可注入,避免测试真的等 N 秒
         self.sleep = sleep if sleep is not None else time.sleep
         # 暂停查询:默认读本模块的 _paused(pynput 监听线程写、主线程/后台读);
@@ -484,13 +487,16 @@ def _default_ask_text(prompt):
     return input(prompt)
 
 
-def build_runtime(cfg, console_fn=None):
+def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
     """构造**真实** Runtime:接真实日志、真实键鼠、真实 OCR。
 
     单独抽出来的目的:让 main() 不再亲手碰硬件 —— main() 只接受一个
     已构造好的 Runtime,于是测试可以传假 Runtime 驱动完整流程。
 
     console_fn 可注入输出函数(默认 config.console),便于测试捕获提示文本。
+    ask_confirm / ask_text_fn 可注入确认实现:GUI 模式下由 ui.binding 注入
+    模态对话框版本,控制台模式保持默认的 input() —— 这样 stages 里的确认点
+    一行都不用改,也不会在 GUI 模式下还去读控制台。
 
     失败(SystemExit / 异常)由调用方处理;本函数不吞异常。
     """
@@ -554,5 +560,12 @@ def build_runtime(cfg, console_fn=None):
     executor.set_reset_hook(_consume_reset_flag)
 
     return Runtime(
-        cfg=cfg, watcher=watcher, human=human, executor=executor, detector=detector, hwnd=hwnd
+        cfg=cfg,
+        watcher=watcher,
+        human=human,
+        executor=executor,
+        detector=detector,
+        hwnd=hwnd,
+        ask_confirm=ask_confirm,
+        ask_text_fn=ask_text_fn,
     )

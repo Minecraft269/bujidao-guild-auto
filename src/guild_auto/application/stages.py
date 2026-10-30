@@ -182,6 +182,12 @@ def stage_confirm_execution(rt, records, cfg):
     console(f"待执行操作: 升职 {n_p} 人, 降职 {n_d} 人, 踢出 {n_k} 人")
 
     # ---- 门 1:总确认 ----
+    # GUI 模态需要结构化信息（阶段名/目标人数/预计动作数），控制台模式忽略这份上下文
+    rt.confirm_context = {
+        "stage": "执行确认",
+        "target": len(actionable),
+        "actions": n_p + n_d + n_k,
+    }
     ans = rt.ask("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(仅输出报告)", default=True)
     if not ans:
         console("已跳过执行(仅输出报告)")
@@ -198,6 +204,19 @@ def stage_confirm_execution(rt, records, cfg):
         # 早先误用布尔化 ask()(只认 y/yes),导致"按提示输入 kick-confirm 反而跳过、
         # 凭习惯敲 y 反而真踢"——语义完全反转,是不可逆操作上的严重回归。
         expected = str(cfg.get("kick_confirm_text") or "").strip()
+        # kick 模态要显示玩家名+等级+周贡献，并要求逐字输入确认词（§3.4）
+        rt.confirm_context = {
+            "stage": "踢出二次确认",
+            "players": [
+                {
+                    "player": r["player"],
+                    "level": r.get("rank"),
+                    "weekly_total": r.get("weekly_total"),
+                }
+                for r in pending_kicks
+            ],
+            "confirm_text": expected,
+        }
         ans = rt.ask_text(f"确认执行踢出?输入 {expected} 后回车执行,其他输入跳过踢出: ")
         if ans != expected:
             console("已跳过全部踢出(其他操作照常执行)")

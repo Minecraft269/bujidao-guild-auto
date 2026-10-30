@@ -637,6 +637,12 @@ def _gui_rows(records, failures):
     return _b.rows_from_records(records, failures)
 
 
+def _gui_pending(items):
+    from guild_auto.ui import binding as _b
+
+    return _b.pending_rows(items)
+
+
 def main():
     # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
     # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。
@@ -690,7 +696,26 @@ def main():
     try:
         # 真实硬件构造收口在 runtime.build_runtime():watcher / human / executor /
         # detector / hwnd 全部由它建好并注入暂停回调,main() 不再亲手碰硬件。
-        rt = runtime_mod.build_runtime(cfg)
+        # GUI 模式下确认点必须走界面（§3.4）：把 ask_confirm/ask_text_fn 换成
+        # 桥的模态实现，stages 里的确认代码一行不改，也不会再去读控制台。
+        _gui_for_confirm = _gui_bridge()
+        _rt_holder: dict = {}
+        if _gui_for_confirm is not None:
+
+            def _ask_gui(prompt, default=False):
+                rt_obj = _rt_holder.get("rt")
+                ctx = getattr(rt_obj, "confirm_context", {}) if rt_obj is not None else {}
+                return _gui_for_confirm.ask_stage(prompt, default, ctx)
+
+            def _ask_text_gui(prompt):
+                rt_obj = _rt_holder.get("rt")
+                ctx = getattr(rt_obj, "confirm_context", {}) if rt_obj is not None else {}
+                return _gui_for_confirm.ask_kick_text(prompt, ctx)
+
+            rt = runtime_mod.build_runtime(cfg, ask_confirm=_ask_gui, ask_text_fn=_ask_text_gui)
+            _rt_holder["rt"] = rt
+        else:
+            rt = runtime_mod.build_runtime(cfg)
         watcher = rt.watcher
         human = rt.human
         executor = rt.executor
@@ -734,6 +759,10 @@ def main():
         # 1. 先处理待办（run_pending 内部已有自己的询问，但不会触发这里的提示）
         pending_path = pending_path_of(cfg)
         cont, _remaining = run_pending(cfg, watcher, human, hwnd, executor, pending_path)
+        _g_pending = _gui_bridge()
+        if _g_pending is not None:
+            # 运行页「待办队列」要有真实数据（§3.3）
+            _g_pending.push_pending(_gui_pending(_remaining))
         if not cont:
             console("\n再见，本次仅处理了上次未完成的操作")
             return
@@ -1265,6 +1294,9 @@ def main():
         if incomplete:
             merged = load_pending(pending_path) + incomplete
             save_pending(pending_path, gname, merged)
+            _g_pending_after = _gui_bridge()
+            if _g_pending_after is not None:
+                _g_pending_after.push_pending(_gui_pending(merged))
             console(
                 f"⚠ {len(incomplete)} 条操作未完成(跳过/失败),已写入待办文件({pending_path}),下次启动可续做"
             )
