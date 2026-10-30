@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ICONS } from "../src/icons/icons.js";
 
 // 规范 §4.4：全部图标用内联 SVG，禁 emoji 与字符字形；24px 画布、1.5px 描边、currentColor。
-const NAMES = ["compact", "expand", "pin", "pinOff", "minimize", "close"];
+const NAMES = ["compact", "expand", "maximize", "restore", "pin", "pinOff", "minimize", "close"];
 
 describe("图标（§4.4）", () => {
   it("六个图标齐全，全部是内联 SVG", () => {

@@ -105,6 +105,11 @@ fn win_toggle_max(w: WebviewWindow) {
 }
 
 #[tauri::command]
+fn win_is_maximized(w: WebviewWindow) -> bool {
+    w.is_maximized().unwrap_or(false)
+}
+
+#[tauri::command]
 fn win_start_drag(w: WebviewWindow) {
     let _ = w.start_dragging();
 }
@@ -317,6 +322,7 @@ fn main() {
             hello_snapshot,
             win_minimize,
             win_toggle_max,
+            win_is_maximized,
             win_start_drag,
             win_show,
             win_set_top,

@@ -63,6 +63,7 @@ const S = {
   log: { ring: new Ring(), minLevel: 4, selected: null, paused: false, filter: "" },
   theme: "dark",
   topmost: false,
+  maximized: false,
   compact: false,
   // 首次运行门禁（§3.5）：配置刚生成时必须先保存才放行其它页签
   firstRun: false,
@@ -831,6 +832,19 @@ async function winCmd(name, args = {}) {
   }
 }
 
+/** 让「最大化/还原」按钮的图标与窗口真实状态一致（§3.1）。 */
+async function syncMaxIcon() {
+  if (!api?.core?.invoke) return;
+  try {
+    const max = await api.core.invoke("win_is_maximized");
+    S.maximized = !!max;
+    $("btn-max").innerHTML = S.maximized ? ICONS.restore : ICONS.maximize;
+    $("btn-max").title = S.maximized ? "还原" : "最大化";
+  } catch {
+    // 静态预览或非 tauri 环境：保持默认图标即可
+  }
+}
+
 async function toggleCompact() {
   S.compact = !S.compact;
   document.body.dataset.mode = S.compact ? "compact" : "normal";
@@ -1123,6 +1137,7 @@ function bind() {
   $("btn-compact").innerHTML = ICONS.compact;
   $("btn-top").innerHTML = ICONS.pinOff;
   $("btn-min").innerHTML = ICONS.minimize;
+  $("btn-max").innerHTML = ICONS.maximize;
   $("btn-close").innerHTML = ICONS.close;
   $("btn-compact2").innerHTML = `${ICONS.compact}小窗`;
   $("btn-top2").innerHTML = `${ICONS.pinOff}置顶`;
@@ -1132,8 +1147,17 @@ function bind() {
   $("sb-restart").onclick = () => rpc("restart_app", {});
 
   $("btn-min").onclick = () => winCmd("win_minimize");
+  // 最大化/还原：图标随窗口真实状态切换（§3.1），窗口尺寸变化时再同步一次
+  $("btn-max").onclick = async () => {
+    await winCmd("win_toggle_max");
+    await syncMaxIcon();
+  };
+  window.addEventListener("resize", () => void syncMaxIcon());
   $("btn-close").onclick = () => winCmd("win_close");
-  $("drag-region").ondblclick = () => winCmd("win_toggle_max");
+  $("drag-region").ondblclick = async () => {
+    await winCmd("win_toggle_max");
+    await syncMaxIcon();
+  };
   $("drag-region").onmousedown = (e) => {
     if (e.button === 0) void winCmd("win_start_drag");
   };
