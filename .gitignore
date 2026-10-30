@@ -44,3 +44,8 @@ Desktop.ini
 gui/src-tauri/target/
 gui/src-tauri/gen/
 gui/node_modules/
+
+# aoci 生成的索引含本机绝对路径，不入库
+/aoci.txt
+/aoci.meta.txt
+/aoci.code.txt
