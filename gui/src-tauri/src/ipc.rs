@@ -11,7 +11,9 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
+
+use crate::protocol::{build_request, classify_line, strip_id, Classified};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -38,20 +40,15 @@ impl Ipc {
         let writer = file
             .try_clone()
             .map_err(|e| format!("复制管道句柄失败: {e}"))?;
-        let pending: Arc<Mutex<HashMap<u64, Sender<String>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let pending_for_reader = pending.clone();
 
         std::thread::spawn(move || {
             for line in BufReader::new(file).lines() {
                 let Ok(text) = line else { break };
-                if text.trim().is_empty() {
-                    continue;
-                }
-                let Ok(v) = serde_json::from_str::<Value>(&text) else {
-                    continue;
-                };
-                match v.get("id").and_then(|id| id.as_u64()) {
-                    Some(id) => {
+                match classify_line(&text) {
+                    Classified::Reply { id, text } => {
                         let tx = pending_for_reader
                             .lock()
                             .ok()
@@ -60,7 +57,8 @@ impl Ipc {
                             let _ = tx.send(text);
                         }
                     }
-                    None => on_event(v),
+                    Classified::Event(value) => on_event(value),
+                    Classified::Skip => {}
                 }
             }
         });
@@ -81,7 +79,7 @@ impl Ipc {
             .lock()
             .map_err(|_| "pending 锁中毒".to_string())?
             .insert(id, tx);
-        let line = json!({"id": id, "method": method, "params": params, "token": self.token});
+        let line = build_request(id, method, params, &self.token);
         {
             let mut guard = self.out.lock().map_err(|_| "管道锁中毒".to_string())?;
             let writer = guard.as_mut().ok_or_else(|| "管道未连接".to_string())?;
@@ -90,11 +88,8 @@ impl Ipc {
         let text = rx
             .recv_timeout(CALL_TIMEOUT)
             .map_err(|_| format!("等待 {method} 应答超时"))?;
-        let mut v: Value =
+        let v: Value =
             serde_json::from_str(&text).map_err(|e| format!("应答不是合法 JSON: {e}"))?;
-        if let Some(obj) = v.as_object_mut() {
-            obj.remove("id");
-        }
-        Ok(v)
+        Ok(strip_id(v))
     }
 }

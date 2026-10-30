@@ -1,0 +1,97 @@
+name: GUI
+
+# T7 多语言门禁：Rust 与前端各自一道闸，全部阻塞。
+# 设计取舍：
+#   * 只做 build，不做 tauri bundle —— MSI 打包在 windows-latest 要下载 WiX，
+#     属于发布流程（release 的职责），不放进每次 PR 的必过门禁。
+#   * 覆盖率只统计「纯逻辑」：Rust 的窗口装配段（main.rs 的命令注册/托盘/窗口事件）
+#     与前端 DOM 装配段（app.js）不计入，清单见 docs/覆盖率报告.md 的「多语言分档」。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gui/**"
+      - ".github/workflows/gui.yml"
+  pull_request:
+    paths:
+      - "gui/**"
+      - ".github/workflows/gui.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: gui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: 前端（biome / vitest / 覆盖率 / 快照）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: Lint（biome check）
+        run: npx biome check src tests
+
+      - name: 单元测试 + 覆盖率（纯逻辑 ≥80%）
+        run: npx vitest run --coverage
+
+      - name: 快照（深浅 × 两套标题栏 = 4 组，差异 ≤0.1%）
+        working-directory: .
+        run: python scripts/gui_snapshot.py
+
+      - name: 上传快照差异
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-snapshots-diff
+          path: gui/.snapshots-tmp/
+          if-no-files-found: ignore
+
+  rust:
+    name: Rust（fmt / clippy / test / 覆盖率）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: gui/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: 格式检查（cargo fmt --check）
+        run: cargo fmt --all -- --check
+
+      - name: Clippy（-D warnings）
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: 单元测试
+        run: cargo test --lib --bins
+
+      - name: 覆盖率（cargo llvm-cov，纯逻辑 ≥60%）
+        # 只统计 protocol.rs（纯协议逻辑，有单测）；main.rs 是窗口/托盘装配段、
+        # ipc.rs 是 OS 管道胶水，二者由 GUI 冒烟与 4 组快照覆盖，不做行覆盖统计。
+        run: cargo llvm-cov --bins --summary-only --ignore-filename-regex "(src[\\/]main\.rs|src[\\/]ipc\.rs|gen[\\/]|build\.rs)" --fail-under-lines 60
+        env:
+          RUSTFLAGS: "-C instrument-coverage"
+
+      - name: 构建（release 二进制能编出来）
+        run: cargo build --release

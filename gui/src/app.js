@@ -3,6 +3,7 @@
 // 约定：GUI 不读日志文件、不碰文件系统；所有数据来自 IPC（Rust 侧 core_call 转发）。
 // 界面文案里的业务值（阈值、文案模板、命令模板）一律来自核下发的配置，本文件不复制。
 
+import { ICONS } from "./icons/icons.js";
 import { Ring, categoryVar, dotClass, foldBatch, trayState } from "./lib/events.js";
 import {
   filterRows,
@@ -795,13 +796,19 @@ async function winCmd(name, args = {}) {
 async function toggleCompact() {
   S.compact = !S.compact;
   document.body.dataset.mode = S.compact ? "compact" : "normal";
-  $("btn-compact").textContent = S.compact ? "⤢" : "⤡";
+  // 图标随模式切换方向（§3.2）：小窗时显示「还原成大窗」的图标
+  $("btn-compact").innerHTML = S.compact ? ICONS.expand : ICONS.compact;
+  $("btn-compact2").innerHTML = `${S.compact ? ICONS.expand : ICONS.compact}小窗`;
   await winCmd("win_set_compact", { on: S.compact });
   await rpc("window", { mode: S.compact ? "compact" : "normal", on_top: S.topmost });
 }
 
 async function toggleTop() {
   S.topmost = !S.topmost;
+  // 置顶用实心图钉，未置顶用描边图钉（§4.4）
+  const icon = S.topmost ? ICONS.pin : ICONS.pinOff;
+  $("btn-top").innerHTML = icon;
+  $("btn-top2").innerHTML = `${icon}置顶`;
   $("btn-top").classList.toggle("active", S.topmost);
   $("btn-top2").classList.toggle("active", S.topmost);
   await winCmd("win_set_top", { on: S.topmost });
@@ -1074,6 +1081,13 @@ function unlockTabs() {
 
 // ── 事件绑定 ───────────────────────────────────────────────────────────
 function bind() {
+  // 图标全部来自 icons.js 的内联 SVG（§4.4：禁 emoji 与字符字形）
+  $("btn-compact").innerHTML = ICONS.compact;
+  $("btn-top").innerHTML = ICONS.pinOff;
+  $("btn-min").innerHTML = ICONS.minimize;
+  $("btn-close").innerHTML = ICONS.close;
+  $("btn-compact2").innerHTML = `${ICONS.compact}小窗`;
+  $("btn-top2").innerHTML = `${ICONS.pinOff}置顶`;
   for (const tab of document.querySelectorAll(".tab")) {
     tab.onclick = () => switchTab(tab.dataset.tab);
   }

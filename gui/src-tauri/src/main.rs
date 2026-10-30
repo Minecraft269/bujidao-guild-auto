@@ -7,6 +7,7 @@
 //! 由本进程自己存（不经过核），业务数据一律走 IPC。
 
 mod ipc;
+mod protocol;
 
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -139,7 +140,12 @@ fn win_set_compact(state: tauri::State<'_, AppState>, w: WebviewWindow, on: bool
 }
 
 #[tauri::command]
-fn win_set_close_policy(state: tauri::State<'_, AppState>, enabled: bool, action: String, ask: bool) {
+fn win_set_close_policy(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+    action: String,
+    ask: bool,
+) {
     *lock(&state.policy) = ClosePolicy {
         enabled,
         action,
@@ -229,7 +235,10 @@ fn load_icon(app: &tauri::AppHandle, file: &str) -> Option<tauri::image::Image<'
 
 // ── 几何记忆（§三 窗口） ─────────────────────────────────────────────────
 fn geo_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join("window.json"))
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("window.json"))
 }
 
 fn save_geo(app: &tauri::AppHandle, w: &WebviewWindow) {

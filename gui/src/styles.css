@@ -82,6 +82,20 @@ body {
   color: var(--accent);
 }
 
+/* 图标（§4.4）：24 单位画布缩到 16px 显示；描边用 non-scaling-stroke 保持 1.5px */
+.icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+  pointer-events: none;
+}
+
+.ctl .icon {
+  display: inline-block;
+  vertical-align: -3px;
+  margin-right: var(--sp-1);
+}
+
 /* 原生标题栏方案下的 32px 工具条（§3.1 B） */
 .toolbar {
   display: none;
