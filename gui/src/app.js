@@ -845,14 +845,19 @@ async function syncMaxIcon() {
   }
 }
 
-async function toggleCompact() {
-  S.compact = !S.compact;
+/** 应用窗口模式（§3.2）。启动时也走这里 —— 重开 bug 的根因是"只改了窗口尺寸、
+ *  没有按 ui.start_mode 重建布局"，导致小窗尺寸里塞着正常模式的整套 chrome。 */
+async function applyMode(compact) {
+  S.compact = !!compact;
   document.body.dataset.mode = S.compact ? "compact" : "normal";
-  // 图标随模式切换方向（§3.2）：小窗时显示「还原成大窗」的图标
-  const compactIcon = S.compact ? "tb-icon tb-icon--expand" : "tb-icon tb-icon--compact";
-  $("btn-compact").innerHTML = `<span class="${compactIcon}"></span>`;
-  $("btn-compact2").innerHTML = `<span class="${compactIcon}"></span>小窗`;
+  const icon = S.compact ? "tb-icon tb-icon--expand" : "tb-icon tb-icon--compact";
+  $("btn-compact").innerHTML = `<span class="${icon}"></span>`;
+  $("btn-compact2").innerHTML = `<span class="${icon}"></span>小窗`;
   await winCmd("win_set_compact", { on: S.compact });
+}
+
+async function toggleCompact() {
+  await applyMode(!S.compact);
   await rpc("window", { mode: S.compact ? "compact" : "normal", on_top: S.topmost });
 }
 
@@ -1124,13 +1129,16 @@ async function boot() {
     $("sb-conn").textContent = `连接异常：${e.payload}`;
   });
   await api.event.listen("ipc-closed", () => {
-    $("sb-conn").textContent = "核心已断开";
+    // 不是死路：告诉用户该从哪里重新拉起（方案 B 落地后由核自动拉起界面）
+    $("sb-conn").textContent = "核心已退出";
     $("st-dot").className = "dot danger";
+    $("ctl-hint").textContent = "核心已退出。请重新启动主程序（核会自动拉起界面）。";
   });
   await api.event.listen("gui-close-request", () => void askClosePolicy());
   await api.event.listen("tray-command", (e) => handleTray(e.payload));
 
-  // 前端可能先于核就绪：订阅后轮询握手快照，直到拿到应答
+  // 前端可能先于核就绪：订阅后轮询握手快照，直到拿到应答（期间给出等待态，不白屏）
+  $("sb-conn").textContent = "等待核心…（自动重连中）";
   for (let i = 0; i < 60; i++) {
     const snap = await api.core.invoke("hello_snapshot").catch(() => null);
     if (snap) {
@@ -1138,6 +1146,11 @@ async function boot() {
       break;
     }
     await sleep(150);
+  }
+  if (!S.hello) {
+    $("sb-conn").textContent = "未连接核心";
+    $("ctl-hint").textContent =
+      "未连接核心。请通过主程序启动（核会自动拉起界面并连上管道），或在主程序里点「开始」。";
   }
 
   await rpc("config", {});
