@@ -624,6 +624,19 @@ def prepare_config(args, console_fn=None, exit_fn=None):
 from guild_auto.domain.decisions import build_summary_message, count_actions  # noqa: E402,F401
 
 
+def _gui_bridge():
+    """当前 GUI 会话（未用 --ui 时为 None）。延迟导入，控制台模式不加载界面模块。"""
+    from guild_auto.ui import binding as _b
+
+    return _b.active()
+
+
+def _gui_rows(records, failures):
+    from guild_auto.ui import binding as _b
+
+    return _b.rows_from_records(records, failures)
+
+
 def main():
     # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
     # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。
@@ -643,12 +656,25 @@ def main():
                 "配置未启用 UI 入口（ui.enabled=false）。"
                 "请先在 config.json 把 ui.enabled 改为 true，或去掉 --ui 使用控制台模式。"
             )
-        from guild_auto.ui.app import run_ui
+        from guild_auto.ui import binding as ui_bridge_mod
 
-        # run_ui 返回 True = 用户点了「开始运行」：重新读取刚保存的配置，
+        if ui_bridge_mod.gui_executable() is None:
+            raise SystemExit(
+                "找不到 Gui.exe。请先构建 GUI："
+                "cd gui/src-tauri && cargo build --release（见 docs/GUI设计规范.md §10）。"
+            )
+        bridge = ui_bridge_mod.GuiBridge(
+            cfg,
+            args.config,
+            report_dir=cfg["report_dir"],
+            log_dir=cfg["log"]["dir"],
+            controller=ui_bridge_mod.RuntimeController(),
+        )
+        # launch() 返回 True = 用户点了「开始」：重新读取刚保存的配置，
         # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
-        if not run_ui(args.config):
+        if not bridge.launch():
             return 0
+        ui_bridge_mod.set_active(bridge)
         cfg = config_mod.load_config(args.config)
     # 功能开关的本地别名。此前 main() 里直接引用 `sw` 却从未定义 —— 查询阶段的
     # 详细输出、执行阶段的三个开关判断、dry-run 分支全都挂在未定义名上,
@@ -866,6 +892,21 @@ def main():
                     console("[2/5] 逐人查询(异步模式:主线程快速发送,后台验证)...")
                     records, async_failures = stage_query_async(rt, targets, cfg)
                     failures.extend(async_failures)
+                    _g = _gui_bridge()
+                    if _g is not None:
+                        # GUI 玩家表随查询结果增量刷新（§3.3）
+                        _g.push_players(_gui_rows(records, async_failures), replace=True)
+                        _g.push_failures(
+                            [
+                                {
+                                    "player": f.get("player"),
+                                    "kind": "屏蔽词" if f.get("blocked") else "查询失败",
+                                    "reason": f.get("reason"),
+                                }
+                                for f in async_failures
+                            ]
+                        )
+                        _g.push_state(stage="查询完成", done=len(records), total=len(targets))
                     # 屏蔽词玩家(blocked)不是"验证失败":身份不可读是客观事实,
                     # 计入失败会让任何有屏蔽词成员的公会每轮都停在半途。
                     _real_failures = [f for f in async_failures if not f.get("blocked")]

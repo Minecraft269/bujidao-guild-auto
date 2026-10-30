@@ -138,9 +138,8 @@ jobs:
           } else {
             $pyinstaller_args += @("--exclude-module", "winsdk")
           }
-          if ($caps -notcontains 'gui') {
-            $pyinstaller_args += @("--exclude-module", "tkinter")
-          }
+          # 界面已迁到独立的 tauri 进程，核不再 import 任何 GUI 库，
+          # 所以这里不再按能力排除 tkinter（核里已经没有它）。
           # 以下为体积优化,与能力无关。
           $pyinstaller_args += @(
             "--exclude-module", "cv2",
