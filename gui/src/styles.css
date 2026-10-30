@@ -268,9 +268,12 @@ main {
 .bar > i {
   display: block;
   height: 100%;
-  width: 0;
+  width: 100%;
   background: var(--accent);
-  transition: width var(--dur) ease-out;
+  /* 用 transform 而不是 width 做进度动画：不触发布局，长列表下也不掉帧 */
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--dur) ease-out;
 }
 
 /* ── 按钮与输入 ────────────────────────────────────────────────────── */
@@ -419,7 +422,8 @@ table.grid td.wrap {
   display: grid;
   grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto;
   gap: var(--sp-2);
-  padding: var(--sp-1) 0;
+  /* 左右留 8px：列表在卡片边框内，文字不能贴着边线 */
+  padding: 6px var(--sp-2);
   border-bottom: 1px solid var(--border);
 }
 

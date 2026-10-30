@@ -121,18 +121,18 @@ function applyAction(p) {
 }
 
 function applyPlayers(p) {
-  const items = (p && p.items) || [];
-  S.players = p && p.replace === false ? [...S.players, ...items] : items;
+  const items = p?.items ?? [];
+  S.players = p?.replace === false ? [...S.players, ...items] : items;
   renderPlayers();
 }
 
 function applyPending(p) {
-  S.pending = (p && p.items) || [];
+  S.pending = p?.items ?? [];
   renderPending();
 }
 
 function applyFails(p) {
-  S.fails = (p && p.items) || [];
+  S.fails = p?.items ?? [];
   renderFails();
 }
 
@@ -143,7 +143,7 @@ function applyReports(p) {
 }
 
 function applyConfig(p) {
-  S.cfg.fields = (p && p.fields) || [];
+  S.cfg.fields = p?.fields ?? [];
   S.cfg.dirty.clear();
   S.cfg.errors = {};
   renderConfig();
@@ -191,8 +191,9 @@ function renderState() {
   $("st-progress").textContent = prog;
   $("c-progress").textContent = prog;
   const p = pct(s.done, s.total);
-  $("st-bar").style.width = `${p}%`;
-  $("c-bar").style.width = `${p}%`;
+  // 进度条用 transform 驱动（见 styles.css），不写 width，避免触发布局
+  $("st-bar").style.transform = `scaleX(${p / 100})`;
+  $("c-bar").style.transform = `scaleX(${p / 100})`;
   $("st-elapsed").textContent = fmtDuration(s.elapsed_ms);
   $("st-player").textContent = s.player || "—";
   $("c-player").textContent = `当前玩家：${s.player || "—"}`;
@@ -442,7 +443,7 @@ async function saveConfig() {
 
 // ── 规则页（§7） ───────────────────────────────────────────────────────
 function applyRules(p) {
-  S.rules.view = fromEngine((p && p.rules) || []);
+  S.rules.view = fromEngine(p?.rules ?? []);
   S.rules.dirty = false;
   if (S.rules.jsonMode) syncJsonFromView();
   renderRules();
