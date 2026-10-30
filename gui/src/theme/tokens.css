@@ -1,0 +1,77 @@
+/* 设计 token —— docs/GUI设计规范.md §4.1 / §4.2 / §6.4
+ * 规范要求：两套主题的全部色值只存在于本目录；业务样式与脚本禁止写字面色值。
+ * 主题切换 = <html data-theme="dark|light">，auto 由 app.js 读系统偏好后落到这两个值之一。
+ */
+
+:root {
+  /* 深色（默认） */
+  --bg: #1e1f22;
+  --panel: #2b2d31;
+  --panel-2: #313338;
+  --border: #3a3d42;
+  --text: #e6e6e6;
+  --text-dim: #9aa0a6;
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --danger: #f87171;
+  --warn: #fbbf24;
+  --ok: #4ade80;
+
+  /* 事件类别着色（§6.4） */
+  --cat-send: #60a5fa;
+  --cat-parse: #2dd4bf;
+  --cat-async: #a78bfa;
+  --cat-pause: #fbbf24;
+  --cat-action: #fb923c;
+  --cat-exit: #f87171;
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --panel-2: #f0f2f5;
+  --border: #e3e6ea;
+  --text: #1f2328;
+  --text-dim: #6b7280;
+  --accent: #2563eb;
+  --accent-hover: #3b82f6;
+  --danger: #dc2626;
+  --warn: #d97706;
+  --ok: #16a34a;
+
+  --cat-send: #2563eb;
+  --cat-parse: #0d9488;
+  --cat-async: #7c3aed;
+  --cat-pause: #d97706;
+  --cat-action: #ea580c;
+  --cat-exit: #dc2626;
+
+  color-scheme: light;
+}
+
+/* 尺度（§4.2）：与主题无关 */
+:root {
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --radius-card: 8px;
+  --radius-ctl: 6px;
+  --radius-compact: 10px;
+  --fs-title: 15px;
+  --fs-body: 13px;
+  --fs-dim: 12px;
+  --fs-mono: 12px;
+  --lh-body: 1.6;
+  --lh-log: 1.5;
+  --ctl-h: 28px;
+  --tab-h: 32px;
+  --titlebar-h: 36px;
+  --statusbar-h: 28px;
+  --dur: 150ms;
+  /* 浮层阴影（§4.2：仅浮层使用） */
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.45);
+}

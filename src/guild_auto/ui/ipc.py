@@ -34,10 +34,11 @@ _PIPE_UNLIMITED_INSTANCES = 255
 _ERROR_PIPE_CONNECTED = 535
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
+# WinDLL 是动态属性代理，注解成 WinDLL 后 mypy 会把各方法当真实签名逐处校验，
+# 反而逼出一串 union-attr 噪音；这里显式标 Any，只保留"非 Windows 上为 None"这一事实。
+_kernel32: Any = None
 if os.name == "nt":  # pragma: no cover - 非 Windows 上只用于 import
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-else:  # pragma: no cover
-    _kernel32 = None
 
 
 class IpcError(RuntimeError):

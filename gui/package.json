@@ -5,9 +5,18 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "lint": "biome check src tests",
+    "format": "biome format --write src tests",
+    "snapshot": "python ../scripts/gui_snapshot.py"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@biomejs/biome": "^1.9.4",
+    "@tauri-apps/cli": "^2",
+    "@vitest/coverage-v8": "^2.1.9",
+    "playwright-core": "^1.64.1",
+    "vitest": "^2.1.9"
   }
 }
