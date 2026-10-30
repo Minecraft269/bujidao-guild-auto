@@ -154,7 +154,7 @@ function applyConfig(p) {
 }
 
 function applyConfigErrors(p) {
-  S.cfg.errors = (p && p.fields) || {};
+  S.cfg.errors = p?.fields ?? {};
   renderConfig();
 }
 
@@ -479,7 +479,7 @@ async function saveConfig() {
     pendingEdits.clear();
     S.cfg.dirty.clear();
     $("cfg-save").textContent = "保存";
-    const restart = (r.result && r.result.restart_required) || [];
+    const restart = r.result?.restart_required ?? [];
     // §3.5：有需重启项就给出明确提示与「立即重启」入口，不假装已生效
     $("sb-restart").hidden = restart.length === 0;
     $("sb-dirty").textContent = restart.length ? `有 ${restart.length} 项需重启生效` : "";
@@ -748,7 +748,7 @@ function removeRule(id) {
 function touchRules() {
   S.rules.dirty = true;
   renderRules();
-  $("sb-dirty").textContent = `未保存（规则）`;
+  $("sb-dirty").textContent = "未保存（规则）";
   if (S.rules.jsonMode) syncJsonFromView();
 }
 

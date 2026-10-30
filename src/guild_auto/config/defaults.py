@@ -419,7 +419,7 @@ CONFIG_COMMENTS = {
     "ui.window.remember_geometry": "是否记住窗口位置与大小。作用=true 记住上次位置;上次落在屏幕外(换显示器)时自动回落居中。可填值=true(默认)/false",
     "ui.tray.enabled": "托盘常驻开关。作用=false 时点关闭直接退出,不询问也不驻留。可填值=true(默认)/false",
     "ui.tray.close_action": "关闭窗口的行为。作用=决定点关闭后做什么。可填值=ask(每次询问,默认)/minimize(最小化到托盘)/exit(直接退出)",
-    "ui.tray.ask_on_close": "首次关闭时是否询问。作用=true 弹一次对话框让用户选并勾选\"不再询问\";勾选后本键写 false,可在设置页改回。可填值=true(默认)/false",
+    "ui.tray.ask_on_close": '首次关闭时是否询问。作用=true 弹一次对话框让用户选并勾选"不再询问";勾选后本键写 false,可在设置页改回。可填值=true(默认)/false',
     "update.mode": "自动更新档位。作用=check 仅后台查一次并在关于页提示;notify 弹窗让用户决定(默认);auto 静默下载安装、退出后生效。可填值=check/notify/auto",
     "update.manifest_url": "更新清单 latest.json 的地址。作用=留空则不做更新检查;填写后按变体匹配下载。可填值=https URL 或空字符串(默认)",
     "ui": "UI 配置界面(阶段 3):是否允许图形入口、窗口初始形态、是否置顶、"

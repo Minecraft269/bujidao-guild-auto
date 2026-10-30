@@ -95,7 +95,9 @@ def main() -> int:
                 continue
             pct = diff_pct(cur, base)
             ok = pct <= THRESHOLD_PCT
-            print(f"[snapshot] {name}: 差异 {pct:.3f}%（阈值 {THRESHOLD_PCT}%）→ {'OK' if ok else 'FAIL'}")
+            print(
+                f"[snapshot] {name}: 差异 {pct:.3f}%（阈值 {THRESHOLD_PCT}%）→ {'OK' if ok else 'FAIL'}"
+            )
             if not ok:
                 failed.append(f"{name}: 差异 {pct:.3f}%")
         if failed:

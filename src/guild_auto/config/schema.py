@@ -195,20 +195,22 @@ def validate_config(cfg):
                 issues.append(
                     ("error", f"配置项 ui.kick_confirm_text 必须是非空字符串,当前: {txt!r}")
                 )
+
             # ── tauri 版新增键(GUI设计规范 §3/§4/§5)─────────────────────
             def _enum(block, key, allowed, path):
                 if key in block and block[key] not in allowed:
                     issues.append(
                         (
                             "error",
-                            f"配置项 {path} 取值非法: {block[key]!r},"
-                            f"应为 {allowed} 之一",
+                            f"配置项 {path} 取值非法: {block[key]!r},应为 {allowed} 之一",
                         )
                     )
 
             def _bool(block, key, path):
                 if key in block and not isinstance(block[key], bool):
-                    issues.append(("error", f"配置项 {path} 必须是 true/false,当前: {block[key]!r}"))
+                    issues.append(
+                        ("error", f"配置项 {path} 必须是 true/false,当前: {block[key]!r}")
+                    )
 
             _enum(ui, "theme", ("auto", "dark", "light"), "ui.theme")
             _bool(ui, "custom_titlebar", "ui.custom_titlebar")
@@ -223,14 +225,21 @@ def validate_config(cfg):
                 if not isinstance(block, dict):
                     continue
                 for f in fields:
-                    if f in block and not isinstance(block[f], bool) and f != "width" and f != "height":
+                    if (
+                        f in block
+                        and not isinstance(block[f], bool)
+                        and f != "width"
+                        and f != "height"
+                    ):
                         issues.append(
                             ("error", f"配置项 ui.{sub}.{f} 必须是 true/false,当前: {block[f]!r}")
                         )
                 if sub == "window":
                     for f in ("width", "height"):
                         v = block.get(f)
-                        if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v <= 0):
+                        if v is not None and (
+                            not isinstance(v, int) or isinstance(v, bool) or v <= 0
+                        ):
                             issues.append(
                                 ("error", f"配置项 ui.window.{f} 必须是正整数,当前: {v!r}")
                             )

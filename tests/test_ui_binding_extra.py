@@ -173,9 +173,7 @@ def test_empty_key_name_is_ignored():
 
 def test_press_after_deadline_reports_timeout():
     now = {"t": 0.0}
-    session = K.KeyCapture(
-        listener_factory=lambda _cb: _L(), timeout=1.0, clock=lambda: now["t"]
-    )
+    session = K.KeyCapture(listener_factory=lambda _cb: _L(), timeout=1.0, clock=lambda: now["t"])
     session.start()
     now["t"] = 5.0
     session._on_press(types.SimpleNamespace(name="f3", char=None))

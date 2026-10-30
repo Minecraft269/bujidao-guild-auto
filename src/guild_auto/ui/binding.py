@@ -490,7 +490,9 @@ def pending_rows(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
         rows.append(
             {
                 "player": str(it.get("player") or ""),
-                "action": ",".join(str(a) for a in acts) if isinstance(acts, list) else str(acts or ""),
+                "action": ",".join(str(a) for a in acts)
+                if isinstance(acts, list)
+                else str(acts or ""),
                 "reason": str(it.get("reason") or it.get("error") or ""),
                 "enqueued_at": str(it.get("enqueued_at") or it.get("ts") or ""),
                 "retries": int(it.get("retries") or 0),

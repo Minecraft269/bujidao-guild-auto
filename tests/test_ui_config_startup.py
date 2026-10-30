@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -64,8 +65,23 @@ def test_save_config_reports_restart_required_only_for_restart_paths(bridge):
     assert out2["result"]["restart_required"] == ["log.dir"]
 
 
-def test_restart_app_is_registered_and_does_not_block(bridge):
-    """立即重启：回包必须先到，替换进程在后台线程里做。"""
-    out = bridge.server.handle_line('{"id":3,"method":"restart_app","params":{}}')
+def test_restart_app_replies_then_calls_injected_restart(tmp_path):
+    """立即重启：回包必须先到，替换进程在后台线程里做（这里注入假实现，绝不真 execv）。"""
+    path = tmp_path / "config.json"
+    save_config(path, json.loads(json.dumps(DEFAULT_CONFIG)))
+    called = []
+    br = B.GuiBridge(
+        load_config(path),
+        path,
+        report_dir=tmp_path,
+        log_dir=tmp_path,
+        restart_impl=lambda: called.append(True),
+    )
+    out = br.server.handle_line('{"id":3,"method":"restart_app","params":{}}')
     assert out["ok"] is True
     assert out["result"] == {}
+    for _ in range(200):
+        if called:
+            break
+        time.sleep(0.01)
+    assert called == [True]

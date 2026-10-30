@@ -59,7 +59,11 @@ def test_save_config_rejects_readonly_field(bridge):
 def test_save_config_writes_and_reloads(bridge):
     out = bridge.server.handle_line(
         json.dumps(
-            {"id": 4, "method": "save_config", "params": {"values": {"thresholds.low_demote": 4321}}}
+            {
+                "id": 4,
+                "method": "save_config",
+                "params": {"values": {"thresholds.low_demote": 4321}},
+            }
         )
     )
     assert out["ok"] is True, out

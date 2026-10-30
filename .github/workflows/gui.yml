@@ -84,7 +84,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: 单元测试
-        run: cargo test --lib --bins
+        # 本工程只有 bin target（没有 lib），用 --lib 会报 "no library targets found"
+        run: cargo test --bins
 
       - name: 覆盖率（cargo llvm-cov，纯逻辑 ≥60%）
         # 只统计 protocol.rs（纯协议逻辑，有单测）；main.rs 是窗口/托盘装配段、
