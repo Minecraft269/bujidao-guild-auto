@@ -59,7 +59,28 @@ def build_latest_json(variant: str, version: str, zip_name: str, zip_path: Path)
     }
 
 
+def _ensure_utf8_stdout() -> None:
+    """CI 的 Windows 控制台默认 cp1252/cp437，打印中文（文件名/提示）会 UnicodeEncodeError。
+
+    CI 实测：run 41049130275 的 4 个含 gui 变体全挂在这里 —— 产物其实都生成好了，
+    只是 print 中文时抛异常把步骤判成失败。与 scripts/gui_snapshot.py 同款守卫；
+    刻意各留一份，避免脚本之间互相 import（发布脚本要能单文件跑）。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            try:
+                reconfigure(encoding="ascii", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--core", required=True, type=Path, help="核 exe 路径")
     ap.add_argument("--gui", required=True, type=Path, help="Gui.exe 路径")
