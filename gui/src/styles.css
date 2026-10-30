@@ -106,6 +106,31 @@ body {
   pointer-events: none;
 }
 
+/* 小窗/大窗图标改用参考图导出的位图遮罩（§4.4 定稿）：
+   形状与参考图逐像素一致，颜色靠 background-color: currentColor 跟随主题 */
+.tb-icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: 16px 16px;
+  mask-size: 16px 16px;
+}
+
+.tb-icon--compact {
+  -webkit-mask-image: url(icons/compact_16.png);
+  mask-image: url(icons/compact_16.png);
+}
+
+.tb-icon--expand {
+  -webkit-mask-image: url(icons/expand_16.png);
+  mask-image: url(icons/expand_16.png);
+}
+
 .ctl .icon {
   display: inline-block;
   vertical-align: -3px;

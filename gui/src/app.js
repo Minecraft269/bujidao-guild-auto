@@ -849,8 +849,9 @@ async function toggleCompact() {
   S.compact = !S.compact;
   document.body.dataset.mode = S.compact ? "compact" : "normal";
   // 图标随模式切换方向（§3.2）：小窗时显示「还原成大窗」的图标
-  $("btn-compact").innerHTML = S.compact ? ICONS.expand : ICONS.compact;
-  $("btn-compact2").innerHTML = `${S.compact ? ICONS.expand : ICONS.compact}小窗`;
+  const compactIcon = S.compact ? "tb-icon tb-icon--expand" : "tb-icon tb-icon--compact";
+  $("btn-compact").innerHTML = `<span class="${compactIcon}"></span>`;
+  $("btn-compact2").innerHTML = `<span class="${compactIcon}"></span>小窗`;
   await winCmd("win_set_compact", { on: S.compact });
   await rpc("window", { mode: S.compact ? "compact" : "normal", on_top: S.topmost });
 }
@@ -1178,12 +1179,12 @@ function unlockTabs() {
 // ── 事件绑定 ───────────────────────────────────────────────────────────
 function bind() {
   // 图标全部来自 icons.js 的内联 SVG（§4.4：禁 emoji 与字符字形）
-  $("btn-compact").innerHTML = ICONS.compact;
+  $("btn-compact").innerHTML = '<span class="tb-icon tb-icon--compact"></span>';
   $("btn-top").innerHTML = ICONS.pinOff;
   $("btn-min").innerHTML = ICONS.minimize;
   $("btn-max").innerHTML = ICONS.maximize;
   $("btn-close").innerHTML = ICONS.close;
-  $("btn-compact2").innerHTML = `${ICONS.compact}小窗`;
+  $("btn-compact2").innerHTML = '<span class="tb-icon tb-icon--compact"></span>小窗';
   $("btn-top2").innerHTML = `${ICONS.pinOff}置顶`;
   for (const tab of document.querySelectorAll(".tab")) {
     tab.onclick = () => switchTab(tab.dataset.tab);
