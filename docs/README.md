@@ -230,4 +230,4 @@ guild_auto_v2/
 > `infrastructure` 只被调用不反向 import;`concurrency` 经接口注入。
 > 详见 [流程与架构图.md](流程与架构图.md)。
 >
-> 构建变体的权威标识是拼接名（如 `Lite-Async-Gui-Vision`）；`Full` 只是它的别名，产物名一律用拼接名。
+> 构建变体的权威标识是拼接名（如 `Lite-Async-Gui-Vision`）；`Full` 是它的别名。全能力变体的产物名在拼接名后追加 `-Full` 后缀（如 `布吉岛公会管理脚本-Lite-Async-Gui-Vision-Full.exe`），其余变体不带后缀，启动横幅一律只显示拼接名。
