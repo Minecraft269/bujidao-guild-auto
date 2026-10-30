@@ -254,7 +254,30 @@ class GuiBridge:
             "check_update": lambda _p: self._check_update(),
             "confirm_reply": self._on_confirm_reply,
             "restart_app": self._restart_app,
+            "capture_key": self._capture_key,
         }
+
+    def _capture_key(self, params: dict[str, Any]) -> dict[str, Any]:
+        """键位捕获（§3.6）：钩子起不来就抛错让界面保住原值；冲突只提示不阻止。"""
+        from guild_auto.ui import keybind  # noqa: PLC0415
+
+        path = str(params.get("path") or "")
+        try:
+            result = keybind.capture()
+        except keybind.KeyCaptureError as e:
+            raise ValueError(str(e)) from e
+        key = result.get("key")
+        conflict = self._find_key_conflict(key, path) if key else None
+        return {**result, "path": path, "conflict": conflict}
+
+    def _find_key_conflict(self, key: str, path: str) -> str:
+        """同名键位只提示不阻止：真的冲突时用户自己决定。"""
+        for spec in ui_binding.flatten_config(self.cfg):
+            if spec.path == path:
+                continue
+            if str(spec.value).strip().lower() == key:
+                return f"与「{spec.path}」绑定相同"
+        return ""
 
     def _hello(self) -> dict[str, Any]:
         from guild_auto import __version__  # noqa: PLC0415

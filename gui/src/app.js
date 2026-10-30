@@ -423,7 +423,45 @@ function controlFor(f) {
   el.disabled = !!f.readonly;
   el.dataset.path = f.path;
   if (f.readonly) el.title = "只读字段，由构建期决定";
+  // 键位类字段给一个「绑定」按钮（§3.6）：点一下捕获实体按键
+  if (!f.readonly && el.tagName === "INPUT" && el.type === "text" && /key/i.test(f.path)) {
+    const wrap = document.createElement("span");
+    wrap.style.display = "inline-flex";
+    wrap.style.gap = "var(--sp-1)";
+    wrap.style.width = "100%";
+    const btn = document.createElement("button");
+    btn.className = "ctl";
+    btn.textContent = "绑定";
+    btn.onclick = () => captureKey(f, el, btn);
+    wrap.append(el, btn);
+    return wrap;
+  }
   return el;
+}
+
+/** 捕获一次按键并写回（§3.6）：Esc 取消、10 秒超时、冲突只提示。 */
+async function captureKey(f, input, btn) {
+  btn.disabled = true;
+  btn.textContent = "请按键…";
+  const r = await rpc("capture_key", { path: f.path });
+  btn.disabled = false;
+  btn.textContent = "绑定";
+  if (!r.ok) {
+    // 钩子起不来：保持原值并显式报错
+    $("sb-dirty").textContent = `绑定失败：${r.error}`;
+    return;
+  }
+  const res = r.result || {};
+  if (!res.ok) {
+    $("sb-dirty").textContent =
+      res.reason === "timeout" ? "绑定超时（10 秒内没有按键）" : "已取消绑定";
+    return;
+  }
+  input.value = res.key;
+  markDirty(f.path, res.key);
+  $("sb-dirty").textContent = res.conflict
+    ? `已绑定 ${res.display}（${res.conflict}）`
+    : `已绑定 ${res.display}`;
 }
 
 const pendingEdits = new Map();
