@@ -267,7 +267,7 @@ jobs:
             '--core', $core.FullName,
             '--gui', $gui.FullName,
             '--variant', '${{ matrix.variant }}',
-            '--full-suffix', '${{ matrix.artifact_suffix }}',
+            '--full-suffix=${{ matrix.artifact_suffix }}',
             '--out', 'dist'
           )
           if ($msi) { $args += @('--msi', $msi.FullName) }
