@@ -62,10 +62,51 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "构建矩阵: $matrix" >> "$GITHUB_STEP_SUMMARY"
 
+  # ---------------------------------------------------------------------------
+  # GUI 只构建一次（规范 §10.1）：4 个含 gui 的变体共用同一份 Gui.exe，
+  # 按变体各编一遍既浪费机时，又会让版本漂移。
+  # ---------------------------------------------------------------------------
+  build-gui:
+    name: Build GUI (tauri)
+    needs: variants
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: Install frontend deps
+        working-directory: gui
+        run: npm ci
+
+      - name: Build Gui.exe + MSI
+        working-directory: gui
+        run: npx tauri build --bundles msi
+
+      - name: Upload Gui.exe + MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-bundle
+          path: |
+            gui/src-tauri/target/release/bujidao-guild-gui.exe
+            gui/src-tauri/target/release/bundle/msi/*.msi
+          retention-days: 7
+          if-no-files-found: error
+
   build:
     # 每个变体一条独立产物:构建期写入能力常量,运行时据此打印代号并拦截缺失功能。
     name: PyInstaller ${{ matrix.variant }}
-    needs: variants
+    needs: [variants, build-gui]
     runs-on: windows-latest
     permissions:
       # 仅 tag 构建需要写权限创建 Release;PR 构建用不到。
@@ -200,6 +241,38 @@ jobs:
           "| --- | --- |" >> $env:GITHUB_STEP_SUMMARY
           "| $($exe.Name) | $mb MB |" >> $env:GITHUB_STEP_SUMMARY
           Write-Host "产物: $($exe.FullName) ($($exe.Length) 字节, $mb MB)"
+
+
+      - name: Download shared Gui.exe + MSI
+        if: contains(matrix.capabilities, 'gui')
+        uses: actions/download-artifact@v4
+        with:
+          name: gui-bundle
+          path: gui-dist
+
+      - name: Assemble GUI bundle
+        # 含 gui 的变体：取回共用 Gui.exe → 与核 exe 同目录 → 启动.cmd → zip → MSI → latest.json
+        if: contains(matrix.capabilities, 'gui')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path gui-dist | Out-Null
+                    $core = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $core) { throw 'dist/ 下没有核 exe' }
+          $gui = Get-ChildItem gui-dist -Recurse -Filter 'bujidao-guild-gui.exe' | Select-Object -First 1
+          if (-not $gui) { throw 'gui-dist 下没有 Gui.exe' }
+          $msi = Get-ChildItem gui-dist -Recurse -Filter '*.msi' | Select-Object -First 1
+          $args = @(
+            'scripts/package.py',
+            '--core', $core.FullName,
+            '--gui', $gui.FullName,
+            '--variant', '${{ matrix.variant }}',
+            '--full-suffix', '${{ matrix.artifact_suffix }}',
+            '--out', 'dist'
+          )
+          if ($msi) { $args += @('--msi', $msi.FullName) }
+          & python @args
+          Get-ChildItem dist | ForEach-Object { "  {0}  {1} bytes" -f $_.Name, $_.Length }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

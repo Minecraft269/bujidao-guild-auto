@@ -67,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--full-suffix", default="", help="全能力变体的 -Full 后缀")
     ap.add_argument("--version", default="2.0.0")
     ap.add_argument("--out", default="dist", type=Path)
+    ap.add_argument("--msi", type=Path, default=None, help="随包附带的 MSI（可选）")
     ap.add_argument("--skip-zip", action="store_true")
     args = ap.parse_args(argv)
 
@@ -83,8 +84,18 @@ def main(argv: list[str] | None = None) -> int:
     core_name = f"{stem}.exe"
     core_dst = out / core_name
     gui_dst = out / "Gui.exe"
-    shutil.copy2(args.core, core_dst)
-    shutil.copy2(args.gui, gui_dst)
+    if args.core.resolve() != core_dst.resolve():
+        shutil.copy2(args.core, core_dst)
+    if args.gui.resolve() != gui_dst.resolve():
+        shutil.copy2(args.gui, gui_dst)
+    msi_dst = None
+    if args.msi is not None:
+        if not args.msi.exists():
+            print(f"找不到 MSI：{args.msi}", file=sys.stderr)
+            return 2
+        msi_dst = out / args.msi.name
+        if args.msi.resolve() != msi_dst.resolve():
+            shutil.copy2(args.msi, msi_dst)
 
     # .cmd 用 GBK：cmd.exe 在中文 Windows 上按 OEM 代码页读批处理
     cmd_path = out / "启动.cmd"
@@ -95,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for p in (core_dst, gui_dst, cmd_path):
                 zf.write(p, p.name)
+            if msi_dst is not None:
+                zf.write(msi_dst, msi_dst.name)
 
     latest = build_latest_json(args.variant, args.version, zip_path.name, zip_path)
     (out / "latest.json").write_text(
@@ -105,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Gui.exe   : {gui_dst}（4 个 gui 变体共用一份）")
     print(f"启动.cmd  : {cmd_path}")
     print(f"便携 zip  : {zip_path if not args.skip_zip else '(跳过)'}")
+    if msi_dst is not None:
+        print(f"MSI       : {msi_dst}")
     print(f"latest    : {out / 'latest.json'}")
     return 0
 
