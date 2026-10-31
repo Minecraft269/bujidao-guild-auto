@@ -1279,10 +1279,18 @@ async function boot() {
 
 // ── 页签与首次运行硬门禁（§3.5） ─────────────────────────────────────
 function switchTab(name) {
-  for (const t of document.querySelectorAll(".tab")) {
-    if (t.disabled && t.dataset.tab !== name) return; // 门禁期间不许切走
-    t.setAttribute("aria-selected", String(t.dataset.tab === name));
+  const tabs = [...document.querySelectorAll(".tab")];
+  const target = tabs.find((t) => t.dataset.tab === name);
+  if (!target) return;
+  // 门禁只看**目标页**是否被禁用。以前写成「任何其它 tab 被禁用就 return」，
+  // 结果 lockTabsToConfig() 里的 switchTab("config") 自己也被挡掉，
+  // 首启永远停在运行页（实机观察到的就是这个）。
+  if (target.disabled) {
+    glog("info", `切页被拦：${name}（首次运行需先保存配置）`);
+    $("sb-dirty").textContent = "首次运行：请先核对并保存配置";
+    return;
   }
+  for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
   for (const p of document.querySelectorAll(".page"))
     p.dataset.active = String(p.dataset.page === name);
   document.body.dataset.page = name;
