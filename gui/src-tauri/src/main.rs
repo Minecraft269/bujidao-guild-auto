@@ -830,7 +830,19 @@ fn main() {
                                 // 握手：把核下发的变体/能力存快照并推给前端
                                 let hello_started = Instant::now();
                                 logger::info("ipc", "[ENTER] hello 发送");
-                                match client.call("hello", json!({})) {
+                                // 实测约 1/4 的启动（打包态更高）会出现「管道连接成功、
+                                // 但 hello 字节没到核」：核的读循环仍在 ReadFile 上等，
+                                // 此时在同一连接上重发一次就能到，比重新建连便宜得多。
+                                let mut hello_reply = client.call("hello", json!({}));
+                                if hello_reply.is_err() {
+                                    let why = hello_reply.as_ref().err().cloned().unwrap_or_default();
+                                    logger::warn(
+                                        "ipc",
+                                        &format!("hello 首次失败，在同一连接上重发: {why}"),
+                                    );
+                                    hello_reply = client.call("hello", json!({}));
+                                }
+                                match hello_reply {
                                     Ok(reply) => {
                                         let elapsed = hello_started.elapsed().as_millis();
                                         let ok =

@@ -29,6 +29,10 @@ PIPE_PREFIX = "bujidao-"
 BUFFER_SIZE = 64 * 1024
 # GUI 拉起后应在短时间内连上管道；超过这个上限就放弃等待并记 WARNING（§6.2 禁止无超时阻塞）。
 CONNECT_TIMEOUT = 60.0
+# 连上后等首帧的上限：实测约 1/4 的启动（打包态更高）会出现「连接成功、
+# 但 GUI 的 hello 字节一个都没到核」——读线程会永远阻塞在 ReadFile。
+# 超时就断开本次连接、重建实例，让 GUI 重连重发（§6.2 阻塞点必须有上限）。
+FIRST_FRAME_TIMEOUT = 4.0
 
 # ── Win32 常量 ────────────────────────────────────────────────────────────
 _PIPE_ACCESS_DUPLEX = 0x00000003
@@ -292,7 +296,13 @@ class IpcServer:
                     yield line.decode("utf-8", "replace")
 
     def serve_forever(self) -> None:
-        """接受一个连接并循环处理请求，直到对端断开或 stop()。"""
+        """接受一个连接并循环处理请求，直到对端断开或 stop()。
+
+        首帧看门狗只用于**诊断并解除阻塞**（否则读线程永远停在 ReadFile 上），
+        不做自动重连：断开后立刻重建同名实例会让客户端的挂起连接瞬间被
+        ERROR_PIPE_CONNECTED 接受，形成「连上-超时-断开」死循环（实测刷出 15MB 日志）。
+        真正的重连交给 GUI 侧重发。
+        """
         if not self.accept():
             return
         handle = self._handle
@@ -302,8 +312,27 @@ class IpcServer:
             f"[阶段] S6 ipc serve 开始读取 connected={self._connected.is_set()} "
             f"stop={self._stop.is_set()} 管道={self.masked_path}"
         )
+        # 首帧看门狗：连上了但一个字节都没来（实测约 1/4 概率，打包态更高），
+        # 读线程会永远阻塞在 ReadFile。这里主动断开，让外层循环重建实例等 GUI 重连。
+        first_frame = threading.Event()
+
+        def _first_frame_watchdog(_handle: Any = handle, _seen: threading.Event = first_frame) -> None:
+            if _seen.wait(FIRST_FRAME_TIMEOUT):
+                return
+            logger.log_warning(
+                f"[阶段] S6 ipc 首帧超时: 已连接 {FIRST_FRAME_TIMEOUT:.0f}s 仍未收到任何字节，"
+                f"断开本次连接等 GUI 重连 管道={self.masked_path}"
+            )
+            try:
+                _kernel32.DisconnectNamedPipe(_handle)
+            except Exception as e:  # 断开失败也必须继续，外层会关闭句柄
+                logger.log_warning(f"[阶段] S6 首帧超时断开失败(继续): {e!r}")
+
+        watchdog = threading.Thread(target=_first_frame_watchdog, daemon=True)
+        watchdog.start()
         try:
             for line in self._read_lines(handle):
+                first_frame.set()
                 reply = self.handle_line(line)
                 # 每处理一行都留痕：只有「首包已读」无法回答
                 # 「第二个请求到底有没有到核、有没有被应答」。
@@ -316,6 +345,7 @@ class IpcServer:
                 with self._lock:
                     self._write_line(reply)
         finally:
+            first_frame.set()  # 正常断开时别让看门狗再打一条误导性 WARNING
             self._connected.clear()
             self._close_handle()
 
