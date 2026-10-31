@@ -224,12 +224,23 @@ impl Ipc {
 
     /// 发一条请求并等应答。返回核的原始应答体（含 ok / result / error）。
     pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.call_with_timeout(method, params, CALL_TIMEOUT)
+    }
+
+    /// 指定超时的版本：hello 要用**更短**的超时，才能赶在核的首帧看门狗
+    /// 断开连接之前重发（否则重发时连接已死，兜底形同虚设）。
+    pub fn call_with_timeout(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         logger::debug(
             "ipc",
             &format!(
                 "[ENTER] RPC method={method} id={id} 超时={}ms",
-                CALL_TIMEOUT.as_millis()
+                timeout.as_millis()
             ),
         );
         let started = Instant::now();
@@ -268,7 +279,7 @@ impl Ipc {
                 return Err(format!("写管道失败: {e}"));
             }
         }
-        match rx.recv_timeout(CALL_TIMEOUT) {
+        match rx.recv_timeout(timeout) {
             Ok(text) => {
                 let elapsed = started.elapsed().as_millis();
                 match serde_json::from_str::<Value>(&text) {
@@ -308,7 +319,7 @@ impl Ipc {
                     "ipc",
                     &format!(
                         "RPC 超时 method={method} id={id} 已等待={elapsed}ms 超时值={}ms 原因={e}",
-                        CALL_TIMEOUT.as_millis()
+                        timeout.as_millis()
                     ),
                 );
                 Err(format!("等待 {method} 应答超时"))

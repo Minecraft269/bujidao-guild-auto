@@ -887,14 +887,22 @@ fn main() {
                                 // 实测约 1/4 的启动（打包态更高）会出现「管道连接成功、
                                 // 但 hello 字节没到核」：核的读循环仍在 ReadFile 上等，
                                 // 此时在同一连接上重发一次就能到，比重新建连便宜得多。
-                                let mut hello_reply = client.call("hello", json!({}));
+                                let mut hello_reply = client.call_with_timeout(
+                                    "hello",
+                                    json!({}),
+                                    std::time::Duration::from_millis(2500),
+                                );
                                 if hello_reply.is_err() {
                                     let why = hello_reply.as_ref().err().cloned().unwrap_or_default();
                                     logger::warn(
                                         "ipc",
                                         &format!("hello 首次失败，在同一连接上重发: {why}"),
                                     );
-                                    hello_reply = client.call("hello", json!({}));
+                                    hello_reply = client.call_with_timeout(
+                                        "hello",
+                                        json!({}),
+                                        std::time::Duration::from_millis(2500),
+                                    );
                                 }
                                 match hello_reply {
                                     Ok(reply) => {
