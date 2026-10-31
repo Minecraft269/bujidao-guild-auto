@@ -193,6 +193,24 @@ class TestUiAndRulesValidation(unittest.TestCase):
         cfg["rules_enabled"] = "true"
         self.assertTrue(any("rules_enabled" in e for e in _errors(cfg)))
 
+    def test_switches_must_be_object(self):
+        """switches 写成列表 → 报错（不然后面逐个开关的校验会静默跳过）。"""
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["switches"] = ["promote_enabled"]
+        self.assertTrue(any("switches 应为对象" in e for e in _errors(cfg)))
+
+    def test_missing_update_section_is_fine(self):
+        """没有 update 段是合法的（可选段），不得报错。"""
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg.pop("update", None)
+        self.assertFalse([e for e in _errors(cfg) if "update" in e])
+
+    def test_ui_tray_bool_field_rejects_string(self):
+        """布尔字段写成字符串 "yes" → 必须报错（"false" 加引号永远为真是最常见的坑）。"""
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["ui"]["tray"]["enabled"] = "yes"
+        self.assertTrue(any("ui.tray.enabled" in e for e in _errors(cfg)))
+
     def test_rules_strategy_enum(self):
         cfg = self._cfg()
         cfg["rules_strategy"] = "first"

@@ -125,9 +125,7 @@ class LoggerTempCase(unittest.TestCase):
     def lines_of(self, name="latest.log"):
         # 去掉行首的 [core] 标记再比对：这些用例关心的是时间戳/级别/正文，
         # 不是「哪一行来自核」的归属标记（归属由 test_core_tag_present 单独断言）。
-        return [
-            ln.removeprefix("[core] ") for ln in self.read_log(name).splitlines() if ln.strip()
-        ]
+        return [ln.removeprefix("[core] ") for ln in self.read_log(name).splitlines() if ln.strip()]
 
     def messages(self, name="latest.log"):
         """取出每行 [Level] 之后、(+X.XXXs) 之前的正文。"""

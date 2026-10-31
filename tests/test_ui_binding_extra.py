@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import time
 import types
 
 import pytest
@@ -128,6 +129,38 @@ def test_controller_none_is_safe(bridge):
     assert bridge._on_pause() == {}
     assert bridge._on_resume() == {}
     assert bridge._on_stop() == {}
+
+
+def test_launch_returns_immediately_when_gui_disconnects(tmp_path, monkeypatch):
+    """GUI 断开（用户关界面）必须立刻结束 S5 等待。
+
+    以前只轮询进程是否退出，实机出现「关掉界面后核空等 196.5s」。
+    """
+    br = B.GuiBridge(DEFAULT_CONFIG, tmp_path / "c.json", report_dir=tmp_path, log_dir=tmp_path)
+    fake_exe = tmp_path / "Gui.exe"
+    fake_exe.write_bytes(b"MZ")
+    monkeypatch.setattr(B, "gui_executable", lambda: fake_exe)
+    monkeypatch.setattr(br.server, "create", lambda: None)
+    monkeypatch.setattr(br.server, "serve_forever", lambda: None)
+
+    class _LongRunningProc:
+        pid = 4242
+        returncode = None
+
+        def poll(self):
+            return None  # 进程一直活着（界面被关掉但进程还没退）
+
+        def terminate(self):
+            pass
+
+    monkeypatch.setattr(B.subprocess, "Popen", lambda _cmd: _LongRunningProc())
+    # 连上过、现在断了 → 应立刻判定「用户关闭」
+    br.server._ever_connected = True
+    br.server._connected.clear()
+
+    started = time.monotonic()
+    assert br.launch(timeout=30) is False
+    assert time.monotonic() - started < 5, "GUI 断开后不该再空等"
 
 
 # ── keybind：取消与超时边界 ──────────────────────────────────────────────
