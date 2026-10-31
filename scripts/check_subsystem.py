@@ -21,6 +21,25 @@ from pathlib import Path
 SUBSYSTEM_NAMES = {2: "gui", 3: "console"}
 
 
+def _ensure_utf8_stdout() -> None:
+    """CI 的 Windows 控制台默认 cp1252，打印中文会 UnicodeEncodeError。
+
+    本项目已踩过两次（package.py、gui_snapshot.py），这是第三次：
+    断言逻辑没问题，是 print 把整个步骤判成失败。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            try:
+                reconfigure(encoding="ascii", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def read_subsystem(path: Path) -> int:
     """读 PE 可选头里的 Subsystem（uint16）。文件不对就抛 ValueError。"""
     with path.open("rb") as f:
@@ -40,6 +59,7 @@ def read_subsystem(path: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _ensure_utf8_stdout()
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", required=True, type=Path)
     ap.add_argument("--expect", required=True, choices=("gui", "console"))
