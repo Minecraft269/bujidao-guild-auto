@@ -40,6 +40,15 @@ def test_merge_appends_with_gui_prefix_and_is_incremental(logdir):
     assert "[gui] [+0.2s][INFO][ipc] bye" in (logdir / "latest.log").read_text(encoding="utf-8")
 
 
+def test_merge_drop_removes_intermediate_file(logdir):
+    """drop=True：合并后删掉 gui.log —— 用户要求「对外只留 latest.log」。"""
+    (logdir / "gui.log").write_text("[+0.1s][INFO] x\n", encoding="utf-8")
+
+    assert L.merge_gui_log(drop=True) == 1
+    assert not (logdir / "gui.log").exists()
+    assert "[gui] [+0.1s][INFO] x" in (logdir / "latest.log").read_text(encoding="utf-8")
+
+
 def test_merge_without_gui_log_is_noop(logdir):
     assert L.merge_gui_log() == 0
     assert not (logdir / "latest.log").exists()

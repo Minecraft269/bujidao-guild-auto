@@ -250,8 +250,11 @@ def _log(level, msg):
 _GUI_MERGE_OFFSET = 0  # 已并入 latest.log 的 gui.log 字节数(只并新增部分)
 
 
-def merge_gui_log(log_dir=None):
+def merge_gui_log(log_dir=None, drop=False):
     """把 GUI 侧 `gui.log` 的新增行并入 `latest.log`，每行前缀 `[gui]`。
+
+    drop=True 时在成功合并后删除中间文件 gui.log —— 用户要求「对外只留 latest.log」。
+    删除失败（GUI 进程仍持有句柄）只记 WARNING：下一轮启动时会再合并一次，不会丢。
 
     设计约束（为什么不是两边直写一个文件）：
     * 两边同时直写同一文件，轮转改名时句柄会失效（Windows 上尤其明显）；
@@ -289,6 +292,12 @@ def merge_gui_log(log_dir=None):
         log_warning(f"[日志] 聚合 gui.log 到 latest.log 失败: {e!r}")
         return 0
     log_info(f"[日志] 已聚合 {len(lines)} 行 GUI 日志到 latest.log")
+    if drop:
+        try:
+            os.remove(gui_path)
+            _GUI_MERGE_OFFSET = 0
+        except OSError as e:  # GUI 进程可能还没放开句柄；下轮启动会再合并
+            log_warning(f"[日志] 聚合后删除 gui.log 失败(下次启动再合并): {e!r}")
     return len(lines)
 
 
