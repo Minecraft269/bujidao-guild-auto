@@ -112,6 +112,9 @@ DEFAULT_CONFIG = {
         # 会「明确报错 + 回落控制台」，不会静默卡住。
         "enabled": True,
         "start_mode": "normal",
+        # GUI 拉起后等用户点「开始」的上限（秒）。用户关掉界面会立即结束等待，
+        # 这里只是"既没点开始也没关界面"时的兜底；默认从 900 缩到 120。
+        "start_timeout": 120,
         "always_on_top": False,
         "kick_confirm_mode": "dialog",
         "kick_confirm_text": "kick-confirm",
@@ -439,6 +442,8 @@ CONFIG_COMMENTS = {
     "无 --ui 参数时默认走控制台,向后兼容",
     "ui.start_mode": "窗口初始形态:'normal'=窗口化 600x400(默认);'compact'=小窗 200x150"
     "(只显示状态与进度)。运行时可用工具栏按钮切换",
+    "ui.start_timeout": "GUI 拉起后等用户点「开始」的上限(秒),默认 120。"
+    "用户关闭界面会立即结束等待;只有既没点开始也没关界面时才会等到这个上限",
     "ui.always_on_top": "窗口是否始终置顶:true=用 win32gui 设为 HWND_TOPMOST;false=普通窗口。"
     "运行时可用图钉按钮切换",
     "ui.kick_confirm_mode": "踢出二次确认的方式:'dialog'=弹窗(默认,需输入确认词);"

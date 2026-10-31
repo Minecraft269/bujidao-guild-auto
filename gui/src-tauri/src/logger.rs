@@ -14,18 +14,39 @@ const LEVEL_NAMES: [&str; 6] = ["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG",
 
 static SINK: OnceLock<Mutex<Option<std::fs::File>>> = OnceLock::new();
 static START: OnceLock<Instant> = OnceLock::new();
-static MIN_LEVEL: OnceLock<u8> = OnceLock::new();
+static MIN_LEVEL: OnceLock<Mutex<u8>> = OnceLock::new();
+
+/// 运行时改级别：GUI 启动时只知道 env，真正的 `log.level` 要等 hello 下发配置。
+/// 之前这里写死默认 6（TRACE 全开），与 config 的 4 不一致。
+pub fn set_level(level: u8) {
+    if !(1..=6).contains(&level) {
+        return;
+    }
+    let cell = MIN_LEVEL.get_or_init(|| Mutex::new(level));
+    if let Ok(mut guard) = cell.lock() {
+        *guard = level;
+    }
+}
+
+fn min_level() -> u8 {
+    MIN_LEVEL
+        .get()
+        .and_then(|cell| cell.lock().ok().map(|g| *g))
+        .unwrap_or(4)
+}
 
 /// 打开 `logs/gui.log`（相对 cwd，与核的 `logs/` 相同）。失败时不阻断进程，
 /// 降级到 stderr 并继续运行（桌面版 stderr 不可见，但绝不能因此起不来）。
 pub fn init() {
     START.get_or_init(Instant::now);
+    // env 只作覆盖；没设时默认 4（信息级），与 config 的默认一致 ——
+    // 之前默认 6 会把 TRACE 全打进 gui.log，和核的 log.level 对不上。
     let level = std::env::var("BUJIDAO_GUI_LOG_LEVEL")
         .ok()
         .and_then(|v| v.trim().parse::<u8>().ok())
         .filter(|v| (1..=6).contains(v))
-        .unwrap_or(6);
-    let _ = MIN_LEVEL.set(level);
+        .unwrap_or(4);
+    let _ = MIN_LEVEL.set(Mutex::new(level));
 
     let dir = std::path::Path::new("logs");
     let opened = std::fs::create_dir_all(dir).and_then(|_| {
@@ -72,7 +93,7 @@ pub fn log(level: u8, category: &str, msg: &str) {
     if SINK.get().is_none() {
         init();
     }
-    let min = *MIN_LEVEL.get().unwrap_or(&6);
+    let min = min_level();
     if level > min {
         return;
     }

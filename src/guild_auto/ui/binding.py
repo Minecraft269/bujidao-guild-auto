@@ -149,9 +149,12 @@ class GuiBridge:
         return self.server.masked_path
 
     # ── 生命周期 ────────────────────────────────────────────────────────
-    def launch(self, *, timeout: float = START_TIMEOUT) -> bool:
+    def launch(self, *, timeout: float | None = None) -> bool:
         """起管道 + 拉 Gui，等用户点「开始」。True=开始，False=关窗/超时。"""
         started = time.monotonic()
+        # 超时优先用调用方参数，其次 config 的 ui.start_timeout（默认 120s，可配）
+        if timeout is None:
+            timeout = float(self.cfg.get("ui", {}).get("start_timeout", START_TIMEOUT))
         exe = gui_executable()
         if exe is None:
             logger.log_error(
@@ -187,6 +190,11 @@ class GuiBridge:
                 break
             if self._proc.poll() is not None:
                 outcome = f"进程已退出 code={self._proc.returncode}"
+                break
+            # GUI 断开（用户关界面/崩溃）必须立刻结束等待：
+            # 以前只能干等满超时，实测关掉界面后核空等 196.5s。
+            if self.server.ever_connected and not self.server.connected:
+                outcome = "GUI 已断开（用户关闭或崩溃）"
                 break
             # 分片等待：这样进程崩溃时能立即发现，而不是睡满整个超时
             self._started.wait(min(remaining, 1.0))
@@ -411,6 +419,8 @@ class GuiBridge:
             # 启动形态随握手下发：hello 是唯一稳定可用的通道，
             # 前端靠它决定小窗/大窗（否则重开时窗口是小窗、内容还是大窗那套）。
             "start_mode": str(self.cfg.get("ui", {}).get("start_mode", "normal")),
+            # GUI 日志级别与核保持一致（config 的 log.level）；GUI 侧 env 只作覆盖。
+            "log_level": int(self.cfg.get("log", {}).get("level", 4)),
         }
         if self._hello_at is None:
             self._hello_at = time.monotonic()

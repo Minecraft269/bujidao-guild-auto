@@ -281,10 +281,15 @@ fn win_close(app: tauri::AppHandle, w: WebviewWindow, state: tauri::State<'_, Ap
             p.enabled, p.action, p.ask
         ),
     );
-    if p.enabled && !matches!(p.action.as_str(), "exit" | "minimize") {
-        logger::warn(
+    // Python 侧合法值是 ask / minimize / exit（config 的 ui.tray.close_action）。
+    // 以前只排除 exit|minimize，于是 ask 被当成"未知值"刷 WARNING。
+    if p.enabled && !matches!(p.action.as_str(), "ask" | "minimize" | "exit") {
+        logger::error(
             "close",
-            &format!("未知 close_action={}，按 ask/hide 默认分支处理", p.action),
+            &format!(
+                "非法 close_action={}，按 ask 处理（合法值：ask/minimize/exit）",
+                p.action
+            ),
         );
     }
     if !p.enabled || p.action == "exit" {
@@ -351,8 +356,17 @@ fn win_set_tray_state(
         format!("tray-{state}.png")
     };
     if let Some(tray) = lock(&app_state.tray).as_ref() {
-        if let Some(img) = load_icon(&app, &icon_file) {
-            let _ = tray.set_icon(Some(img));
+        match load_icon(&app, &icon_file) {
+            Some(img) => {
+                if let Err(e) = tray.set_icon(Some(img)) {
+                    logger::warn("tray", &format!("设置托盘图标失败 file={icon_file}: {e}"));
+                }
+            }
+            // 绝不静默：托盘透明是用户直接可见的缺陷，必须在日志里说清
+            None => logger::warn(
+                "tray",
+                &format!("托盘图标不可用 file={icon_file}（内置/资源/同级目录都失败），保留上一个图标"),
+            ),
         }
         let _ = tray.set_tooltip(Some(tip));
     } else {
@@ -360,8 +374,41 @@ fn win_set_tray_state(
     }
 }
 
-/// 图标查找顺序：资源目录 → exe 同级 icons/（便携包布局）
+/// 图标查找顺序：**编进二进制** → 资源目录 → exe 同级 icons/（便携包布局）。
+/// 内置优先：成品目录里没有 icons/，纯按路径找必然失败 —— 实测就是托盘全透明，
+/// 且调用点 `let _ = set_icon(...)` 把错误吞了，日志里只剩一条 DEBUG。
+fn builtin_icon(file: &str) -> Option<&'static [u8]> {
+    Some(match file {
+        "tray-idle.png" => include_bytes!("../icons/tray-idle.png"),
+        "tray-running.png" => include_bytes!("../icons/tray-running.png"),
+        "tray-paused.png" => include_bytes!("../icons/tray-paused.png"),
+        "tray-failed.png" => include_bytes!("../icons/tray-failed.png"),
+        "tray-failed-1.png" => include_bytes!("../icons/tray-failed-1.png"),
+        "tray-failed-2.png" => include_bytes!("../icons/tray-failed-2.png"),
+        "tray-failed-3.png" => include_bytes!("../icons/tray-failed-3.png"),
+        "tray-failed-4.png" => include_bytes!("../icons/tray-failed-4.png"),
+        "tray-failed-5.png" => include_bytes!("../icons/tray-failed-5.png"),
+        "tray-failed-6.png" => include_bytes!("../icons/tray-failed-6.png"),
+        "tray-failed-7.png" => include_bytes!("../icons/tray-failed-7.png"),
+        "tray-failed-8.png" => include_bytes!("../icons/tray-failed-8.png"),
+        "tray-failed-9.png" => include_bytes!("../icons/tray-failed-9.png"),
+        _ => return None,
+    })
+}
+
 fn load_icon(app: &tauri::AppHandle, file: &str) -> Option<tauri::image::Image<'static>> {
+    if let Some(bytes) = builtin_icon(file) {
+        match tauri::image::Image::from_bytes(bytes) {
+            Ok(img) => {
+                logger::debug("tray", &format!("图标加载成功 file={file} 来源=内置"));
+                return Some(img);
+            }
+            Err(e) => logger::warn(
+                "tray",
+                &format!("内置图标解码失败 file={file}: {e}（继续尝试外部路径）"),
+            ),
+        }
+    }
     let rel = format!("icons/{file}");
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     for base in [
@@ -682,10 +729,13 @@ fn main() {
                             p.enabled, p.action, p.ask
                         ),
                     );
-                    if p.enabled && !matches!(p.action.as_str(), "exit" | "minimize") {
+                    if p.enabled && !matches!(p.action.as_str(), "ask" | "minimize" | "exit") {
                         logger::warn(
                             "close",
-                            &format!("未知 close_action={}，按 ask/hide 默认分支处理", p.action),
+                            &format!(
+                                "非法 close_action={}，按 ask 处理（合法值：ask/minimize/exit）",
+                                p.action
+                            ),
                         );
                     }
                     if !p.enabled || p.action == "exit" {
@@ -797,8 +847,10 @@ fn main() {
                         }
                     }
                 });
-            if let Some(img) = load_icon(&handle, "tray-idle.png") {
-                builder = builder.icon(img);
+            match load_icon(&handle, "tray-idle.png") {
+                Some(img) => builder = builder.icon(img),
+                // 透明托盘的元凶就是这里曾经静默跳过
+                None => logger::warn("tray", "托盘初始图标不可用，托盘会显示为空（见上一条失败原因）"),
             }
             let tray = builder.build(app).map_err(|e| {
                 logger::error("tray", &format!("托盘创建失败（build 返回 Err）: {e}"));
@@ -867,6 +919,18 @@ fn main() {
                                                 .get("first_run")
                                                 .and_then(|v| v.as_bool())
                                                 .unwrap_or(false);
+                                            // GUI 日志级别以配置为准（env 只作覆盖）：
+                                            // 启动时只知道 env，真正的 log.level 要等这里。
+                                            if let Some(level) = result
+                                                .get("log_level")
+                                                .and_then(|v| v.as_u64())
+                                            {
+                                                logger::set_level(level as u8);
+                                                logger::info(
+                                                    "log",
+                                                    &format!("日志级别已按配置调整 level={level}"),
+                                                );
+                                            }
                                             logger::info(
                                                 "ipc",
                                                 &format!(

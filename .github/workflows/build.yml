@@ -213,7 +213,21 @@ jobs:
             "--exclude-module", "pytest",
             "src/guild_auto/main.py"
           )
+          if ($caps -contains 'gui') {
+            # gui 变体：双击即出界面，不该再弹一个控制台窗口（PE 子系统 = GUI）
+            $pyinstaller_args += @("--noconsole")
+          }
           pyinstaller @pyinstaller_args
+
+      - name: Assert exe subsystem
+        # 断言比"看起来对"可靠：gui 变体必须是 WINDOWS_GUI（无控制台），
+        # 非 gui 变体必须保留控制台（它们是纯 CLI）。
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw 'dist/ 下没有 exe' }
+          $expect = if ("${{ matrix.capabilities }}" -like "*gui*") { 'gui' } else { 'console' }
+          python scripts/check_subsystem.py --exe $exe.FullName --expect $expect
 
       - name: Smoke test variant banner
         # 冒烟:清掉环境变量,强制读刚写入的打包期常量 —— 这才能证明
