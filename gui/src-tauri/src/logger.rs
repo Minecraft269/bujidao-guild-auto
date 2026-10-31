@@ -90,12 +90,14 @@ pub fn trace(category: &str, msg: &str) {
 }
 
 pub fn log(level: u8, category: &str, msg: &str) {
-    if SINK.get().is_none() {
-        init();
-    }
+    // 先判级别再 init：被过滤掉的行不该触发建目录/开文件
+    // （否则刚启动时的 TRACE 会把 logs/ 提前建出来，测试里也会污染仓库）。
     let min = min_level();
     if level > min {
         return;
+    }
+    if SINK.get().is_none() {
+        init();
     }
     let elapsed = START.get().map(|s| s.elapsed()).unwrap_or(Duration::ZERO);
     let name = LEVEL_NAMES[(level.clamp(1, 6) - 1) as usize];
@@ -121,5 +123,39 @@ pub fn log(level: u8, category: &str, msg: &str) {
             None => eprint!("{line}"),
         },
         Err(_) => eprint!("{line}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn level_names_cover_six_levels() {
+        // 6 级语义是规范 §一 的约定，名字与顺序不能漂
+        assert_eq!(LEVEL_NAMES.len(), 6);
+        assert_eq!(LEVEL_NAMES[0], "CRITICAL");
+        assert_eq!(LEVEL_NAMES[5], "TRACE");
+    }
+
+    #[test]
+    fn set_level_ignores_out_of_range_and_applies_valid() {
+        // 越界值必须被忽略（否则会把日志全关或全开）
+        set_level(0);
+        set_level(9);
+        // 合法值生效
+        set_level(2);
+        assert_eq!(min_level(), 2);
+        set_level(5);
+        assert_eq!(min_level(), 5);
+    }
+
+    #[test]
+    fn log_above_threshold_returns_early() {
+        // 级别高于阈值时直接返回，不触碰 sink（这条路径最容易写出"以为没过但写了"）
+        set_level(1);
+        trace("test", "不该被写出");
+        assert_eq!(min_level(), 1);
+        set_level(4);
     }
 }

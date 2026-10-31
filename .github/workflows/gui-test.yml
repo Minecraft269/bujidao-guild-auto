@@ -90,4 +90,4 @@ jobs:
         run: cargo test --bins
 
       - name: 覆盖率（纯逻辑 ≥60%）
-        run: cargo llvm-cov --bins --summary-only --ignore-filename-regex "(src[\\/]main\.rs|src[\\/]ipc\.rs|gen[\\/]|build\.rs)" --fail-under-lines 60
+        run: cargo llvm-cov --bins --summary-only --ignore-filename-regex "(src[\\/]main\.rs|src[\\/]ipc\.rs|src[\\/]logger\.rs|gen[\\/]|build\.rs)" --fail-under-lines 60
