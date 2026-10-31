@@ -203,6 +203,9 @@ class IpcServer:
         err = result["err"]
         if not ok and err == _ERROR_PIPE_CONNECTED:
             ok = True  # 客户端在 ConnectNamedPipe 之前就连上了
+            logger.log_info(
+                f"[阶段] S6 ipc.accept 客户端先连上(ERROR_PIPE_CONNECTED) 管道={self.masked_path}"
+            )
         if ok:
             self._connected.set()
             self._ever_connected = True
@@ -263,10 +266,22 @@ class IpcServer:
         buf = b""
         chunk = ctypes.create_string_buffer(BUFFER_SIZE)
         read = wintypes.DWORD(0)
+        total = 0
         while not self._stop.is_set():
             ok = _kernel32.ReadFile(handle, chunk, BUFFER_SIZE, ctypes.byref(read), None)
             if not ok or read.value == 0:
+                # 读侧必须留痕：否则「GUI 说发了、核说没收到」时无从判断
+                logger.log_warning(
+                    f"[阶段] S6 ipc 读循环结束 ok={bool(ok)} 本次字节={read.value} "
+                    f"累计字节={total} 管道={self.masked_path}"
+                )
                 return
+            total += read.value
+            if total == read.value:
+                # 只记首包：首包到了说明连接真的通了（后续按行记录会刷屏）
+                logger.log_info(
+                    f"[阶段] S6 ipc 首包已读 字节={read.value} 管道={self.masked_path}"
+                )
             buf += chunk.raw[: read.value]
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)

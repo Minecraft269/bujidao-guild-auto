@@ -27,6 +27,11 @@ import zipfile
 from datetime import date
 from pathlib import Path
 
+# 产物名单一真源在 guild_auto.ui.binding（规范 §9）：这里只 import，不写字面量。
+# 打包脚本要能单文件跑，所以显式把 src/ 插进 sys.path，不依赖 pip install -e。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from guild_auto.ui.binding import GUI_EXE_NAME, GUI_EXE_NAMES, find_gui_in  # noqa: E402
+
 LAUNCH_CMD = """@echo off
 rem Portable entry: launches the core exe (Gui.exe gets no shortcut)
 setlocal
@@ -104,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     stem = f"布吉岛公会管理脚本-{args.variant}{args.full_suffix}"
     core_name = f"{stem}.exe"
     core_dst = out / core_name
-    gui_dst = out / "Gui.exe"
+    gui_dst = out / GUI_EXE_NAME
     if args.core.resolve() != core_dst.resolve():
         shutil.copy2(args.core, core_dst)
     if args.gui.resolve() != gui_dst.resolve():
@@ -117,6 +122,15 @@ def main(argv: list[str] | None = None) -> int:
         msi_dst = out / args.msi.name
         if args.msi.resolve() != msi_dst.resolve():
             shutil.copy2(args.msi, msi_dst)
+
+    # 打包自检（规范 §9）：用与 gui_executable() **相同**的判定在产物目录里找一次。
+    # 名字对不上就在这里失败，别等用户双击后才发现「未找到 Gui.exe」。
+    if find_gui_in(out) is None:
+        print(
+            f"打包自检失败：{out} 里没有运行时能识别的界面产物（白名单 {list(GUI_EXE_NAMES)}）",
+            file=sys.stderr,
+        )
+        return 3
 
     # .cmd 用 GBK：cmd.exe 在中文 Windows 上按 OEM 代码页读批处理
     cmd_path = out / "启动.cmd"
@@ -136,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     print(f"核 exe    : {core_dst}")
-    print(f"Gui.exe   : {gui_dst}（4 个 gui 变体共用一份）")
+    print(f"{GUI_EXE_NAME}   : {gui_dst}（4 个 gui 变体共用一份）")
     print(f"启动.cmd  : {cmd_path}")
     print(f"便携 zip  : {zip_path if not args.skip_zip else '(跳过)'}")
     if msi_dst is not None:

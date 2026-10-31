@@ -437,6 +437,23 @@ Windows「应用和功能」里显示的版本与实际不一致，也会让第�
 **单 exe 约束**：gui 变体的安装目录与 zip 里**只能有一个 exe**；核在运行期解包到
 `%LOCALAPPDATA%\布吉岛公会管理脚本\runtime\<拼接名>-<版本>\`，不得出现在安装目录或 zip 中。
 
+**过渡形态（本轮交付，方案 B 未落地前）**：gui 变体是**两个文件**——
+核 exe + 同目录的界面 exe。界面 exe 的名字**只有一个真源**：
+
+```
+GUI_EXE_NAME = "Gui.exe"        # src/guild_auto/ui/binding.py，唯一真源
+```
+
+- `gui/src-tauri/Cargo.toml` 的 `[[bin]] name = "Gui"` 让 `cargo build --release` **直接产出** `Gui.exe`；
+- `gui/src-tauri/tauri.conf.json` 的 `mainBinaryName = "Gui"` 让 tauri bundle 按同一名字取二进制；
+- `scripts/package.py` 从 binding 导入该常量，不再写字面量；组装完用 `find_gui_in()` 自检，不命中即打包失败；
+- `.github/workflows/build.yml` 用 `python -c "from guild_auto.ui.binding import GUI_EXE_NAME; print(GUI_EXE_NAME)"` 取名字；
+- 兼容列表 `GUI_EXE_NAMES = (GUI_EXE_NAME, "布吉岛公会管理脚本-Gui.exe", "bujidao-guild-gui.exe")` 只用于**查找**老产物，
+  不得再新增第四种名字。以上一致性由 `tests/test_gui_exe_name.py` 守卫。
+
+> 历史教训（2026-10-31 实机）：磁盘是 `Gui.exe`、CI 找 `bujidao-guild-gui.exe`、白名单里又没有 `Gui.exe`，
+> 三处不一致 → 双击 `启动.cmd` 不弹界面，日志只说「未找到 Gui.exe」。
+
 **入口规则（2026-10-30 定稿：方案 B —— 单 exe、内嵌核）**：
 - 非 gui 变体：单文件纯 CLI。
 - gui 变体：**对外只有 1 个 exe**。核的二进制在编译期嵌入 tauri 外壳，运行时解包后再拉起。

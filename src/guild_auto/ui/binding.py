@@ -35,7 +35,13 @@ START_TIMEOUT = 900.0
 # 确认模态：GUI 断开/不回车时不能永远挂住主流程（§6.2/§6.3）。
 CONFIRM_TIMEOUT = 600.0
 UPDATE_TIMEOUT = 8.0
-GUI_EXE_NAMES = ("布吉岛公会管理脚本-Gui.exe", "bujidao-guild-gui.exe")
+# GUI 可执行名**唯一真源**（GUI设计规范 §9）：磁盘产物、打包复制、CI 取名字、
+# 运行时白名单全部从这里取。`cargo` 的 bin name（gui/src-tauri/Cargo.toml）与
+# `gui/src-tauri/tauri.conf.json` 的 mainBinaryName 必须与它对齐，
+# 由 tests/test_gui_exe_name.py 三道守卫。
+GUI_EXE_NAME = "Gui.exe"
+# 兼容列表：历史产物名留在后面，老版本残留的 Gui 仍能被找到（顺序即优先级）。
+GUI_EXE_NAMES = (GUI_EXE_NAME, "布吉岛公会管理脚本-Gui.exe", "bujidao-guild-gui.exe")
 
 # 热重载分级（§3.5）：这些键改了必须重启才生效，其余保存即生效
 RESTART_REQUIRED_PATHS = ("log.dir", "ui.enabled")
@@ -51,6 +57,19 @@ def set_active(bridge: GuiBridge | None) -> None:
 
 def active() -> GuiBridge | None:
     return _ACTIVE
+
+
+def find_gui_in(root: Path) -> Path | None:
+    """在指定目录里按 GUI_EXE_NAMES 找界面可执行文件。
+
+    运行时定位与打包自检共用**同一判定**：scripts/package.py 组装完用它验一次，
+    找不到就让打包失败，避免「产物名和代码白名单对不上」这类问题流到用户手里。
+    """
+    for name in GUI_EXE_NAMES:
+        candidate = root / name
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def gui_executable() -> Path | None:
@@ -70,11 +89,11 @@ def gui_executable() -> Path | None:
     )
     for root in roots:
         for name in GUI_EXE_NAMES:
-            candidate = root / name
-            logger.log_debug(f"[阶段] S4 检查候选: {candidate}")
-            if candidate.exists():
-                logger.log_info(f"[阶段] S4 Gui.exe 命中: {candidate}")
-                return candidate
+            logger.log_debug(f"[阶段] S4 检查候选: {root / name}")
+        hit = find_gui_in(root)
+        if hit is not None:
+            logger.log_info(f"[阶段] S4 Gui.exe 命中: {hit}")
+            return hit
     logger.log_warning("[阶段] S4 未找到 Gui.exe: 以上候选目录均无命中")
     return None
 

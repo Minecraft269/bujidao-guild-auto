@@ -93,12 +93,24 @@ jobs:
         working-directory: gui
         run: npx tauri build --bundles msi
 
+      - name: Resolve GUI executable name
+        id: gui_name
+        # 产物名单一真源（规范 §9）：从 guild_auto.ui.binding 取，本文件不写字面量，
+        # 由 tests/test_gui_exe_name.py 守卫。
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = 'src'
+          $name = (python -c "from guild_auto.ui.binding import GUI_EXE_NAME; print(GUI_EXE_NAME)").Trim()
+          if (-not $name) { throw 'GUI_EXE_NAME 为空' }
+          Write-Host "GUI 可执行名: $name"
+          "name=$name" >> $env:GITHUB_OUTPUT
+
       - name: Upload Gui.exe + MSI
         uses: actions/upload-artifact@v4
         with:
           name: gui-bundle
           path: |
-            gui/src-tauri/target/release/bujidao-guild-gui.exe
+            gui/src-tauri/target/release/${{ steps.gui_name.outputs.name }}
             gui/src-tauri/target/release/bundle/msi/*.msi
           retention-days: 7
           if-no-files-found: error
@@ -261,8 +273,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path gui-dist | Out-Null
                     $core = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
           if (-not $core) { throw 'dist/ 下没有核 exe' }
-          $gui = Get-ChildItem gui-dist -Recurse -Filter 'bujidao-guild-gui.exe' | Select-Object -First 1
-          if (-not $gui) { throw 'gui-dist 下没有 Gui.exe' }
+          $env:PYTHONPATH = 'src'
+          $guiName = (python -c "from guild_auto.ui.binding import GUI_EXE_NAME; print(GUI_EXE_NAME)").Trim()
+          if (-not $guiName) { throw 'GUI_EXE_NAME 为空' }
+          $gui = Get-ChildItem gui-dist -Recurse -Filter $guiName | Select-Object -First 1
+          if (-not $gui) { throw "gui-dist 下没有 $guiName" }
           $msi = Get-ChildItem gui-dist -Recurse -Filter '*.msi' | Select-Object -First 1
           $args = @(
             'scripts/package.py',
