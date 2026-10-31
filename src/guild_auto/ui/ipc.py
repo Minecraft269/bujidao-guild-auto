@@ -286,9 +286,7 @@ class IpcServer:
             total += read.value
             if total == read.value:
                 # 只记首包：首包到了说明连接真的通了（后续按行记录会刷屏）
-                logger.log_info(
-                    f"[阶段] S6 ipc 首包已读 字节={read.value} 管道={self.masked_path}"
-                )
+                logger.log_info(f"[阶段] S6 ipc 首包已读 字节={read.value} 管道={self.masked_path}")
             buf += chunk.raw[: read.value]
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
@@ -316,7 +314,9 @@ class IpcServer:
         # 读线程会永远阻塞在 ReadFile。这里主动断开，让外层循环重建实例等 GUI 重连。
         first_frame = threading.Event()
 
-        def _first_frame_watchdog(_handle: Any = handle, _seen: threading.Event = first_frame) -> None:
+        def _first_frame_watchdog(
+            _handle: Any = handle, _seen: threading.Event = first_frame
+        ) -> None:
             if _seen.wait(FIRST_FRAME_TIMEOUT):
                 return
             logger.log_warning(

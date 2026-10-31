@@ -49,9 +49,7 @@ def test_package_py_has_no_hardcoded_name():
     tree = ast.parse(PACKAGE_PY.read_text(encoding="utf-8"))
     docstrings = set()
     for node in ast.walk(tree):
-        if isinstance(
-            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             body = getattr(node, "body", [])
             if body and isinstance(body[0], ast.Expr):
                 docstrings.add(id(body[0].value))
