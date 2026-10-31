@@ -21,6 +21,29 @@ from guild_auto.infrastructure import logger
 # 业务规则 §1:入门成员 → 低活跃 → 中等活跃 → 高活跃
 RANK_ORDER = ["entry", "low", "mid", "high"]
 
+_SNIP_MAX = 80
+
+
+def _snip(value, limit=_SNIP_MAX):
+    """值 → 单行短片段(超长截断),用于日志里带玩家名/条件明细。"""
+    if value is None:
+        return "None"
+    s = value if isinstance(value, str) else repr(value)
+    s = s.replace("\r", " ").replace("\n", " ")
+    return s if len(s) <= limit else s[:limit] + f"...(+{len(s) - limit}字符)"
+
+
+def _log_decision(rank, weekly, trigger, threshold_value, comparison, actions):
+    """单条阈值决策的 DEBUG 埋点(第 5 级可见输入值与结论)。
+
+    只新增日志,不参与任何判定;每条玩家决策一行,与上层 decide_for_player
+    的 debug 行合并,不额外刷屏。
+    """
+    logger.log_debug(
+        f"[阈值决策] rank={rank} weekly={weekly} trigger={trigger} "
+        f"threshold_value={threshold_value} comparison={comparison} actions={actions}"
+    )
+
 
 def decide_actions(rank, weekly, thresholds):
     """按业务规则 §1 的阈值矩阵判定动作,是整个脚本的决策真源。
@@ -55,55 +78,76 @@ def decide_actions(rank, weekly, thresholds):
     t = thresholds
     if rank == "high":
         # 高活跃:无升职分支,<= 30000 直接降职(含边界)
-        if weekly <= t.get("high_demote", 30000):
+        limit = t.get("high_demote", 30000)
+        if weekly <= limit:
             res = (["demote"], "high_demote")
+            _log_decision(rank, weekly, "high_demote", limit, f"weekly<={limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
     elif rank == "mid":
         # 先升职(>= 30000),后降职(< 5000);中间区间无操作
-        if weekly >= t.get("mid_promote", 30000):
+        limit = t.get("mid_promote", 30000)
+        if weekly >= limit:
             res = (["promote"], "mid_promote")
+            _log_decision(rank, weekly, "mid_promote", limit, f"weekly>={limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
-        if weekly < t.get("mid_demote", 5000):
+        limit = t.get("mid_demote", 5000)
+        if weekly < limit:
             res = (["demote"], "mid_demote")
+            _log_decision(rank, weekly, "mid_demote", limit, f"weekly<{limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
     elif rank == "low":
         # 降序阈值:30000 → ×2,10000 → ×1,最后才是 < 3500 降职
-        if weekly >= t.get("low_promote_2", 30000):
+        limit = t.get("low_promote_2", 30000)
+        if weekly >= limit:
             res = (["promote", "promote"], "low_promote_2")
+            _log_decision(rank, weekly, "low_promote_2", limit, f"weekly>={limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
-        if weekly >= t.get("low_promote_1", 10000):
+        limit = t.get("low_promote_1", 10000)
+        if weekly >= limit:
             res = (["promote"], "low_promote_1")
+            _log_decision(rank, weekly, "low_promote_1", limit, f"weekly>={limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
-        if weekly < t.get("low_demote", 3500):
+        limit = t.get("low_demote", 3500)
+        if weekly < limit:
             res = (["demote"], "low_demote")
+            _log_decision(rank, weekly, "low_demote", limit, f"weekly<{limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
     elif rank == "entry":
         # 降序阈值:30000 → ×3,10000 → ×2,3500 → ×1,最后才是 < 3500 踢出。
         # entry_promote_1(>= 3500)与 entry_kick(< 3500)在 3500 处分段无缝衔接,
         # 3500 本身归升职一侧(踢出不含边界)。
-        if weekly >= t.get("entry_promote_3", 30000):
+        limit = t.get("entry_promote_3", 30000)
+        if weekly >= limit:
             res = (["promote", "promote", "promote"], "entry_promote_3")
+            _log_decision(rank, weekly, "entry_promote_3", limit, f"weekly>={limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
-        if weekly >= t.get("entry_promote_2", 10000):
+        limit = t.get("entry_promote_2", 10000)
+        if weekly >= limit:
             res = (["promote", "promote"], "entry_promote_2")
+            _log_decision(rank, weekly, "entry_promote_2", limit, f"weekly>={limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
-        if weekly >= t.get("entry_promote_1", 3500):
+        limit = t.get("entry_promote_1", 3500)
+        if weekly >= limit:
             res = (["promote"], "entry_promote_1")
+            _log_decision(rank, weekly, "entry_promote_1", limit, f"weekly>={limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
-        if weekly < t.get("entry_kick", 3500):
+        limit = t.get("entry_kick", 3500)
+        if weekly < limit:
             res = (["kick"], "entry_kick")
+            _log_decision(rank, weekly, "entry_kick", limit, f"weekly<{limit}", res[0])
             logger.trace_return("decide_actions", res)
             return res
     # 未命中任何分支(含未知 rank)→ 不做任何操作
+    _log_decision(rank, weekly, None, None, "无匹配分支", [])
     logger.trace_return("decide_actions", ([], None))
     return [], None
 
@@ -356,6 +400,10 @@ def decide_for_player(
     """
     blocked = name_list_block_reason(player, cfg)
     if blocked is not None:
+        logger.log_debug(
+            f"[决策] 名单短路 | player={_snip(player)} rank={rank} weekly={weekly} "
+            f"blocked_reason={blocked} trigger={blocked} actions_in=[] actions_out=[]"
+        )
         return [], blocked
 
     # 规则引擎（阶段 4）：开启时，内置阈值规则作为"一条默认规则"参与同一接口。
@@ -374,15 +422,37 @@ def decide_for_player(
         # 自定义规则在前、内置阈值作兜底：first_match 下自定义优先；
         # highest_priority 下由 priority 决定（内置默认 0）。
         table = list(cfg.get("rules") or []) + [builtin_default_rule(cfg)]
-        actions, hits, _traces = evaluate_rules(
+        actions, hits, traces = evaluate_rules(
             table, member, cfg.get("rules_strategy", "first_match")
         )
         trigger = f"rule:{hits[0]}" if hits else None
+        cond_trace = "; ".join(
+            f"{rec.get('rule_id')}[{c.get('index')}]={c.get('detail')}"
+            for rec in traces
+            for c in rec.get("conditions") or []
+        )
         if actions and is_protected(player, cfg):
             # 保护名单只免「踢出」:升降职照常(plan.txt 验收 16)。
             # 早先连 demote 一起剥夺,等于把保护名单变成了"冻结名单"。
             kept = [a for a in actions if a in ("promote", "demote")]
-            return (kept, trigger) if kept else ([], "whitelist_protected")
+            if kept:
+                logger.log_debug(
+                    f"[决策] 保护名单保留升降职 | player={_snip(player)} rank={rank} "
+                    f"weekly={weekly} rule_id={hits} actions_in={actions} "
+                    f"actions_out={kept} trigger={trigger} conditions={_snip(cond_trace)}"
+                )
+                return kept, trigger
+            logger.log_warning(
+                f"[决策] 保护名单剥夺全部动作(含踢出) | player={_snip(player)} rank={rank} "
+                f"weekly={weekly} rule_id={hits} actions_in={actions} actions_out=[] "
+                f"trigger={trigger} kept_actions=[] conditions={_snip(cond_trace)}"
+            )
+            return [], "whitelist_protected"
+        logger.log_debug(
+            f"[决策] 规则引擎结论 | player={_snip(player)} rank={rank} weekly={weekly} "
+            f"rule_id={hits} actions_in={actions} actions_out={actions} "
+            f"trigger={trigger} conditions={_snip(cond_trace)}"
+        )
         return actions, trigger
 
     actions, trigger = decide_actions(rank, weekly, cfg["thresholds"])
@@ -390,7 +460,20 @@ def decide_for_player(
     if actions and is_protected(player, cfg):
         # 保护名单:只剥夺 kick,降职照常
         kept = [a for a in actions if a in ("promote", "demote")]
-        if not kept:
-            return [], "whitelist_protected"
-        return kept, trigger
+        if kept:
+            logger.log_debug(
+                f"[决策] 保护名单保留升降职 | player={_snip(player)} trigger={trigger} "
+                f"actions_in={actions} actions_out={kept}"
+            )
+            return kept, trigger
+        logger.log_warning(
+            f"[决策] 保护名单剥夺全部动作(含踢出) | player={_snip(player)} rank={rank} "
+            f"weekly={weekly} trigger={trigger} actions_in={actions} actions_out=[] "
+            f"kept_actions=[]"
+        )
+        return [], "whitelist_protected"
+    logger.log_debug(
+        f"[决策] 阈值结论 | player={_snip(player)} rank={rank} weekly={weekly} "
+        f"trigger={trigger} actions_in={actions} actions_out={actions}"
+    )
     return actions, trigger

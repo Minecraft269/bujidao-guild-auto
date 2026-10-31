@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from guild_auto.infrastructure import logger
+
 DEFAULT_TIMEOUT = 10.0
 CANCEL_KEY = "esc"
 
@@ -111,9 +113,9 @@ class KeyCapture:
         if callable(stop):
             try:
                 stop()
-            except Exception:
-                # 关钩子失败不该覆盖真正的结果（例如已经捕获到键）
-                pass
+            except Exception as e:
+                # 关钩子失败不该覆盖真正的结果（例如已经捕获到键），但不能静默
+                logger.log_warning(f"keybind: 关闭键盘钩子失败(忽略): {e!r}")
 
     # ── 回调 ────────────────────────────────────────────────────────────
     def _on_press(self, key: Any) -> bool:

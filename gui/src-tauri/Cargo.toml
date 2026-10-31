@@ -3,6 +3,13 @@ name = "bujidao-guild-gui"
 version = "0.1.0"
 edition = "2021"
 
+# 产物名单一真源的另一半：cargo 直接吐 Gui.exe，打包不再靠复制改名。
+# 与 src/guild_auto/ui/binding.py 的 GUI_EXE_NAME、tauri.conf.json 的
+# mainBinaryName 三者必须一致，由 tests/test_gui_exe_name.py 守卫。
+[[bin]]
+name = "Gui"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

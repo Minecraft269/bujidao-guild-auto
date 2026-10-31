@@ -37,6 +37,46 @@ _UNSAFE_FNAME_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 # 60 字符远大于任何真实公会名,又能把完整路径压在系统上限内。
 _MAX_GUILD_NAME_LEN = 60
 
+# 报告相关日志的截断/去重:坏时间字段只记一次,避免每行刷一条;
+# 原始值片段截断,防止脏数据把日志撑爆。
+_SNIP_MAX = 80
+_REPORT_WARNED: set[str] = set()
+
+
+def _snip(value, limit=_SNIP_MAX):
+    """值 → 单行短片段(超长截断),用于日志里带原始值。"""
+    if value is None:
+        return "None"
+    s = value if isinstance(value, str) else repr(value)
+    s = s.replace("\r", " ").replace("\n", " ")
+    return s if len(s) <= limit else s[:limit] + f"...(+{len(s) - limit}字符)"
+
+
+def _warn_once(key, msg):
+    """同一来源只记一条 WARNING(报告大量行共用同一个格式化函数,避免刷屏)。"""
+    if key in _REPORT_WARNED:
+        return
+    _REPORT_WARNED.add(key)
+    logger.log_warning(msg)
+
+
+def _report_path_for_log(path):
+    """报告路径的脱敏形式:相对路径,绝不写本机绝对路径(§四 隐私)。"""
+    try:
+        return os.path.relpath(path)
+    except ValueError:  # Windows 跨盘符无法求相对路径
+        return os.path.basename(path)
+
+
+def _action_counts_text(records):
+    """报告条数统计片段:升/降/踢/失败各几人(第 4 级日志可见)。"""
+    c = action_counts(records)
+    failed = sum(1 for r in records or [] if r.get("error"))
+    return (
+        f"record_count={len(records or [])} promote={c['promote']} demote={c['demote']} "
+        f"kick={c['kick']} failed={failed}"
+    )
+
 
 def _safe_guild_name(guild_name):
     """把公会名净化成可安全用于文件名的片段。
@@ -119,6 +159,10 @@ def write_contribution_report(report_dir, guild_name, records, admin=""):
     with open(fpath, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).rstrip() + "\n")
     logger.trace_file_write(fpath)
+    logger.log_info(
+        f"[报告] 全员贡献报告已写入 | report_kind=contribution "
+        f"| path={_report_path_for_log(fpath)} | {_action_counts_text(records)}"
+    )
     return fpath
 
 
@@ -160,6 +204,10 @@ def write_action_report(report_dir, guild_name, action_records, cfg):
     with open(fpath, "w", encoding="utf-8") as f:
         f.write("\n".join(lines).rstrip() + "\n")
     logger.trace_file_write(fpath)
+    logger.log_info(
+        f"[报告] 群公告报告已写入 | report_kind=action "
+        f"| path={_report_path_for_log(fpath)} | {_action_counts_text(action_records)}"
+    )
     return fpath
 
 
@@ -231,7 +279,13 @@ def _fmt_seconds(seconds):
     """秒 → 报告时间文本(0m04s / 53m39s / 1h02m03s);非数值给占位符。"""
     try:
         total = max(0, int(round(float(seconds))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
+        # 报告里出现「——」时,要能区分"字段缺失"与"格式坏了" —— 必须留痕。
+        _warn_once(
+            "seconds",
+            f"[报告] 秒数字段无法格式化,使用占位符 | field=seconds "
+            f"| raw_value={_snip(seconds)} | fallback={_PLACEHOLDER!r} | error={e!r}",
+        )
         return _PLACEHOLDER
     hours, rem = divmod(total, 3600)
     minutes, secs = divmod(rem, 60)
@@ -247,11 +301,18 @@ def _parse_ts(value):
     if not value:
         return None
     text = str(value).strip()
+    last_err = None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
             return datetime.strptime(text, fmt)
-        except ValueError:
+        except ValueError as e:
+            last_err = e
             continue
+    _warn_once(
+        "timestamp",
+        f"[报告] 时间戳无法解析,使用占位符 | field=timestamp "
+        f"| raw_value={_snip(value)} | fallback=None | error={last_err!r}",
+    )
     return None
 
 
@@ -809,6 +870,10 @@ def write_analysis_report(report_dir, guild_name, records, cfg, run_meta):
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(text)
         logger.trace_file_write(fpath)
+        logger.log_info(
+            f"[报告] 运行分析报告已写入 | report_kind=analysis "
+            f"| path={_report_path_for_log(fpath)} | {_action_counts_text(records)}"
+        )
         return fpath
     except Exception as e:
         logger.log_warning(f"运行分析报告写入失败(不影响运行): {e!r}")

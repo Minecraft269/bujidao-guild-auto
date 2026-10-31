@@ -99,9 +99,18 @@ class LogWatcher:
     # ---- 打开 ----
     def open(self, wait_seconds=60):
         """打开日志文件;若文件不存在则轮询等待(wait_seconds 内)。"""
-        deadline = time.time() + wait_seconds
+        t0 = time.time()
+        logger.log_info(
+            f"S8 日志等待打开 ENTER | path={self.path} | wait_seconds={wait_seconds:.1f}"
+        )
+        deadline = t0 + wait_seconds
         while not os.path.exists(self.path):
             if time.time() > deadline:
+                waited_s = time.time() - t0
+                logger.log_warning(
+                    f"S8 等待游戏日志超时 | waited_s={waited_s:.1f} | path={self.path}"
+                    f" | rotation_reopen=False"
+                )
                 raise FileNotFoundError(
                     f"游戏日志不存在: {self.path}\n请确认游戏已启动且路径配置正确(--log 或 config.json 的 game_log)。"
                 )
@@ -112,6 +121,10 @@ class LogWatcher:
         # 跳到末尾:只关心本次运行之后的新日志
         self._fh.seek(0, os.SEEK_END)
         self._size = self._fh.tell()
+        logger.log_info(
+            f"S8 日志打开完成 | elapsed_s={time.time() - t0:.2f}"
+            f" | encoding={self.encoding} | file_size={self._size}"
+        )
 
     def close(self):
         if self._fh:

@@ -23,6 +23,9 @@ from guild_auto.infrastructure import logger
 MENU_KEYWORDS = ["回到游戏", "断开连接", "断开链接", "保存并退出", "暂停菜单"]
 # 聊天栏输入框提示词(不同客户端/版本可能不同,可在配置中调整)
 CHAT_BAR_KEYWORDS = ["输入消息", "输入聊天", "输入内容", "输入文字", "说点什么"]
+# OCR 单次识别超时(秒):引擎/解码器卡住时不让发送线程永久阻塞。
+# 取 5s:正常截图+识别远小于此值,同时给慢机器留足余量。
+_OCR_TIMEOUT_S = 5.0
 
 try:
     from winsdk.windows.graphics.imaging import BitmapDecoder
@@ -47,22 +50,56 @@ class GameStateDetector:
         self.chat_bar_state = chat_bar_state  # "auto" / "open" / "closed"
         self._cache = None  # (time, text)
         self._engine = None
+        self._engine_lang = "unknown"  # 实际命中的引擎来源:zh-CN / user-profile / none
         self.available = _WINSDK_OK
 
     # ---- OCR ----
     def _get_engine(self):
         if self._engine is None:
             self._engine = OcrEngine.try_create_from_language(Language("zh-CN"))
-            if self._engine is None:  # 无中文语言包:退回用户语言
+            if self._engine is not None:
+                self._engine_lang = "zh-CN"
+            else:  # 无中文语言包:退回用户语言
                 self._engine = OcrEngine.try_create_from_user_profile_languages()
+                self._engine_lang = "user-profile" if self._engine is not None else "none"
+                if self._engine is None:
+                    # 配置了 OCR 却两个引擎都创建失败 → 检测会永久静默返回 (False, False),
+                    # 菜单处理"悄悄失效"。必须在默认级别可见。
+                    logger.log_warning(
+                        "OCR 引擎缺失 | tried=zh-CN,user-profile | 后续行为=检测禁用"
+                    )
         return self._engine
 
     def _ocr_text(self):
         """截取屏幕并识别文字(同步包装)。"""
-        img = pyautogui.screenshot()
+        t0 = time.time()
+        logger.log_info(f"OCR_START | op=screenshot | timeout_s={_OCR_TIMEOUT_S:.1f}")
+        try:
+            img = pyautogui.screenshot()
+        except Exception as e:
+            logger.log_warning(
+                f"OCR 截图失败 | op=screenshot | elapsed_ms={int((time.time() - t0) * 1000)}"
+                f" | {e!r}"
+            )
+            raise
+        logger.log_info(f"OCR_DONE | op=screenshot | elapsed_ms={int((time.time() - t0) * 1000)}")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
-        return asyncio.run(self._ocr_async(buf.getvalue()))
+        t1 = time.time()
+        logger.log_info(f"OCR_START | op=ocr | timeout_s={_OCR_TIMEOUT_S:.1f}")
+        try:
+            # asyncio.run + wait_for:BitmapDecoder / recognize 卡住时按超时抛出,
+            # 避免发送线程永久阻塞(日志能看到卡在 ocr 且等了多久)。
+            text = asyncio.run(asyncio.wait_for(self._ocr_async(buf.getvalue()), _OCR_TIMEOUT_S))
+        except asyncio.TimeoutError:
+            waited_ms = int((time.time() - t1) * 1000)
+            logger.log_warning(f"OCR 超时 | waited_ms={waited_ms} | engine={self._engine_lang}")
+            raise
+        logger.log_info(
+            f"OCR_DONE | op=ocr | elapsed_ms={int((time.time() - t1) * 1000)}"
+            f" | text_len={len(text)}"
+        )
+        return text
 
     async def _ocr_async(self, png_bytes):
         stream = InMemoryRandomAccessStream()
@@ -87,27 +124,36 @@ class GameStateDetector:
             return False, False
         now = time.time()
         try:
+            cached = not (force or self._cache is None or now - self._cache[0] > self.cache_seconds)
+            t0 = time.time()
             if force or self._cache is None or now - self._cache[0] > self.cache_seconds:
                 text = self._ocr_text()
                 self._cache = (now, text)
-            text = self._cache[1]
+            else:
+                text = self._cache[1]
             # 关键:winsdk OCR 中文输出为"逐字带空格"(如"回 到 游 戏"),
             # 匹配前必须去除所有空白,否则子串匹配永远失败
             compact = text.replace(" ", "").replace("　", "").replace("\n", "")
             in_menu = any(k and k in compact for k in self.menu_keywords)
             chat_open = any(k and k in compact for k in self.chat_keywords)
+            # 识别结论在默认 4 级不可见(trace_return 仅 6 级)→ 单独留 DEBUG 便于排查菜单误判
+            logger.log_debug(
+                f"OCR 识别结论 | in_menu={in_menu} | chat_open={chat_open}"
+                f" | cached={cached} | elapsed_ms={int((time.time() - t0) * 1000)}"
+                f" | compact_len={len(compact)}"
+            )
             logger.trace_return(
                 "game_state.detect",
                 {
                     "in_menu": in_menu,
                     "chat_open": chat_open,
-                    "cached": not (
-                        force or self._cache is None or now - self._cache[0] > self.cache_seconds
-                    ),
+                    "cached": cached,
                 },
             )
             return in_menu, chat_open
         except Exception as e:
+            # 4 级下原本完全静默;菜单检测失效时必须可检索
+            logger.log_warning(f"OCR 识别异常 | {e!r} | 降级=(False, False)")
             logger.trace_exception("game_state.detect", e)
             return False, False
 

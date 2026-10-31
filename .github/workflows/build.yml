@@ -62,10 +62,63 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "构建矩阵: $matrix" >> "$GITHUB_STEP_SUMMARY"
 
+  # ---------------------------------------------------------------------------
+  # GUI 只构建一次（规范 §10.1）：4 个含 gui 的变体共用同一份 Gui.exe，
+  # 按变体各编一遍既浪费机时，又会让版本漂移。
+  # ---------------------------------------------------------------------------
+  build-gui:
+    name: Build GUI (tauri)
+    needs: variants
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: Install frontend deps
+        working-directory: gui
+        run: npm ci
+
+      - name: Build Gui.exe + MSI
+        working-directory: gui
+        run: npx tauri build --bundles msi
+
+      - name: Resolve GUI executable name
+        id: gui_name
+        # 产物名单一真源（规范 §9）：从 guild_auto.ui.binding 取，本文件不写字面量，
+        # 由 tests/test_gui_exe_name.py 守卫。
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = 'src'
+          $name = (python -c "from guild_auto.ui.binding import GUI_EXE_NAME; print(GUI_EXE_NAME)").Trim()
+          if (-not $name) { throw 'GUI_EXE_NAME 为空' }
+          Write-Host "GUI 可执行名: $name"
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Gui.exe + MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-bundle
+          path: |
+            gui/src-tauri/target/release/${{ steps.gui_name.outputs.name }}
+            gui/src-tauri/target/release/bundle/msi/*.msi
+          retention-days: 7
+          if-no-files-found: error
+
   build:
     # 每个变体一条独立产物:构建期写入能力常量,运行时据此打印代号并拦截缺失功能。
     name: PyInstaller ${{ matrix.variant }}
-    needs: variants
+    needs: [variants, build-gui]
     runs-on: windows-latest
     permissions:
       # 仅 tag 构建需要写权限创建 Release;PR 构建用不到。
@@ -131,7 +184,9 @@ jobs:
           $pyinstaller_args = @(
             "--onefile", "--clean", "--noconfirm",
             "--name", "$env:APP_NAME-${{ matrix.variant }}${{ matrix.artifact_suffix }}",
-            "--paths", "src"
+            "--paths", "src",
+            # 与 GUI 共用同一枚图标（gui/src-tauri/icons/icon.ico），不复制第二份
+            "--icon", "gui/src-tauri/icons/icon.ico"
           )
           if ($caps -contains 'vision') {
             $pyinstaller_args += @("--collect-all", "winsdk")
@@ -158,7 +213,26 @@ jobs:
             "--exclude-module", "pytest",
             "src/guild_auto/main.py"
           )
+          if ($caps -contains 'gui') {
+            # gui 变体：双击即出界面，不该再弹一个控制台窗口（PE 子系统 = GUI）
+            $pyinstaller_args += @("--noconsole")
+          }
           pyinstaller @pyinstaller_args
+
+      - name: Assert exe subsystem
+        # 断言比"看起来对"可靠：gui 变体必须是 WINDOWS_GUI（无控制台），
+        # 非 gui 变体必须保留控制台（它们是纯 CLI）。
+        # 环境变量是双保险：脚本自身也做了 utf-8 重配（CI 控制台默认 cp1252，
+        # 打印中文会 UnicodeEncodeError —— 曾让 8 个变体全红）。
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw 'dist/ 下没有 exe' }
+          $expect = if ("${{ matrix.capabilities }}" -like "*gui*") { 'gui' } else { 'console' }
+          python scripts/check_subsystem.py --exe $exe.FullName --expect $expect
 
       - name: Smoke test variant banner
         # 冒烟:清掉环境变量,强制读刚写入的打包期常量 —— 这才能证明
@@ -200,6 +274,41 @@ jobs:
           "| --- | --- |" >> $env:GITHUB_STEP_SUMMARY
           "| $($exe.Name) | $mb MB |" >> $env:GITHUB_STEP_SUMMARY
           Write-Host "产物: $($exe.FullName) ($($exe.Length) 字节, $mb MB)"
+
+
+      - name: Download shared Gui.exe + MSI
+        if: contains(matrix.capabilities, 'gui')
+        uses: actions/download-artifact@v4
+        with:
+          name: gui-bundle
+          path: gui-dist
+
+      - name: Assemble GUI bundle
+        # 含 gui 的变体：取回共用 Gui.exe → 与核 exe 同目录 → 启动.cmd → zip → MSI → latest.json
+        if: contains(matrix.capabilities, 'gui')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path gui-dist | Out-Null
+                    $core = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $core) { throw 'dist/ 下没有核 exe' }
+          $env:PYTHONPATH = 'src'
+          $guiName = (python -c "from guild_auto.ui.binding import GUI_EXE_NAME; print(GUI_EXE_NAME)").Trim()
+          if (-not $guiName) { throw 'GUI_EXE_NAME 为空' }
+          $gui = Get-ChildItem gui-dist -Recurse -Filter $guiName | Select-Object -First 1
+          if (-not $gui) { throw "gui-dist 下没有 $guiName" }
+          $msi = Get-ChildItem gui-dist -Recurse -Filter '*.msi' | Select-Object -First 1
+          $args = @(
+            'scripts/package.py',
+            '--core', $core.FullName,
+            '--gui', $gui.FullName,
+            '--variant', '${{ matrix.variant }}',
+            '--full-suffix=${{ matrix.artifact_suffix }}',
+            '--out', 'dist'
+          )
+          if ($msi) { $args += @('--msi', $msi.FullName) }
+          & python @args
+          Get-ChildItem dist | ForEach-Object { "  {0}  {1} bytes" -f $_.Name, $_.Length }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -20,7 +20,7 @@ from guild_auto.infrastructure.action_executor import ActionExecutor
 from guild_auto.config import console
 from guild_auto.infrastructure.game_state import GameStateDetector
 from guild_auto.infrastructure.log_watcher import LogWatcher
-from guild_auto.infrastructure.window_input import HumanInput, find_game_window
+from guild_auto.infrastructure.window_input import CHAT_SEND_KEYS, HumanInput, find_game_window
 
 from guild_auto.infrastructure import logger
 
@@ -44,6 +44,26 @@ _force_stop = False  # Ctrl+C 标志:sig handler 置位,阻塞调用据此中断
 # pynput 监听线程对回调抛出的异常只 log 不重抛,导致主线程根本收不到 KeyboardInterrupt。
 # 现在 on_press 仅设事件,主线程的阻塞调用通过 event.wait() 主动感知。
 _pause_event = threading.Event()
+
+# 暂停门/暂停等待的日志上下文:调用方在进入阻塞前写入"哪个阶段/哪条命令"。
+# 用线程局部而非全局 —— 后台 sender 线程与主线程会各自卡在同一道门上,
+# 共用一个变量会互相覆盖,日志就定位不到真正的调用方。
+_pause_ctx = threading.local()
+# 暂停门是否已记录过"开始阻塞":逐条发送/重试会反复调 pause_gate,
+# 只在状态变化那一刻记一次,避免刷屏。
+_pause_gate_reported = False
+
+
+def set_pause_context(stage="?", command="?"):
+    """记录接下来的暂停阻塞属于哪个阶段/哪条命令(仅用于日志定位)。"""
+    _pause_ctx.stage = stage
+    _pause_ctx.command = command
+
+
+def pause_context():
+    """取当前线程上次写入的暂停上下文;未设置时返回 ('?', '?')。"""
+    return getattr(_pause_ctx, "stage", "?"), getattr(_pause_ctx, "command", "?")
+
 
 # ---------------------------------------------------------------------------
 # 自动暂停(US-009):UI 模式执行中检测到用户键鼠活动
@@ -349,9 +369,10 @@ class Runtime:
         """
         try:
             return bool(self.ask_confirm(prompt, default))
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt) as e:
             # 终端被关闭 / 用户按 Ctrl+C:一律按"拒绝"处理 ——
             # 宁可停下,也不能在状态不明时继续发命令
+            logger.log_warning(f"确认点中断({type(e).__name__}) prompt={prompt!r}，按拒绝处理: {e}")
             return False
 
     def ask(self, prompt, default=False):
@@ -365,7 +386,8 @@ class Runtime:
         """
         try:
             return bool(self.ask_confirm(prompt, default))
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt) as e:
+            logger.log_warning(f"确认点中断({type(e).__name__}) prompt={prompt!r}，按拒绝处理: {e}")
             return False
 
     def ask_text(self, prompt):
@@ -377,7 +399,8 @@ class Runtime:
         """
         try:
             return str(self.ask_text_fn(prompt) or "").strip()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt) as e:
+            logger.log_warning(f"确认点中断({type(e).__name__}) prompt={prompt!r}，按拒绝处理: {e}")
             return ""
 
     def pause_gate(self):
@@ -385,11 +408,24 @@ class Runtime:
 
         所有阶段函数(查询/通知/执行)发送前都要过这道门 —— 规格要求
         "暂停期间绝不发出任何指令"。
+
+        阻塞可观测性:进入等待时记一条 WARNING(带阶段/命令,仅在状态变化
+        那一刻记一次——逐条发送/重试会反复调本函数),解除时记 INFO 带耗时。
         """
+        global _pause_gate_reported
         if self.is_paused():
-            console("执行暂停，等待恢复...")
+            stage, command = pause_context()
+            started = time.monotonic()
+            if not _pause_gate_reported:
+                _pause_gate_reported = True
+                console("执行暂停，等待恢复...")
+                logger.log_warning(
+                    f"暂停门阻塞 stage={stage} 命令={command} 已等待=0.0s 等待=用户恢复(无限)"
+                )
             while self.is_paused():
                 self.sleep(0.1)
+            _pause_gate_reported = False
+            logger.log_info(f"暂停门解除 已等待={time.monotonic() - started:.1f}s")
         self.reset_window_state_after_pause(self.hwnd, self.detector)
 
     def async_verify_submit(self, command, player, meta=None):
@@ -403,9 +439,11 @@ class Runtime:
         from guild_auto.concurrency.async_system import AsyncVerifySystem
 
         if self.async_system is None:
+            task_timeout = float(self.cfg.get("timeouts", {}).get("response_wait", 12.0)) + 5.0
+            logger.log_debug(f"AsyncVerifySystem 建立 task_timeout={task_timeout:.1f}s")
             self.async_system = AsyncVerifySystem(
                 verify_fn=self._async_verify_fn,
-                task_timeout=float(self.cfg.get("timeouts", {}).get("response_wait", 12.0)) + 5.0,
+                task_timeout=task_timeout,
             )
             self.async_system.attach_sender(self._async_send_fn)
             self.async_system.start()
@@ -419,6 +457,7 @@ class Runtime:
         (通知阶段表现为"广播失败: 轮询超时",实际一条都没发出去)。
         恢复后还要再确认本轮没被主线程放弃,否则就是"报告记失败、游戏里真发了"。
         """
+        set_pause_context(stage="后台发送", command=command)
         self.pause_gate()
         if self.async_system is not None and self.async_system.is_stopped():
             logger.log_warning("后台发送已取消(本轮已收工),跳过发送:" + str(command))
@@ -431,11 +470,15 @@ class Runtime:
 
     def _async_verify_fn(self, command, player, meta):
         """后台验证:读日志 → 提取块 → 判定(按命令类型分流)。"""
-        block = self.watcher.wait_for_chat_block(
-            timeout=float(self.cfg.get("timeouts", {}).get("response_wait", 12.0)),
-            stop_check=self.is_paused,
-        )
+        timeout = float(self.cfg.get("timeouts", {}).get("response_wait", 12.0))
+        logger.log_debug(f"异步验证 ENTER command={command} 超时={timeout:.1f}s")
+        started = time.monotonic()
+        block = self.watcher.wait_for_chat_block(timeout=timeout, stop_check=self.is_paused)
+        elapsed = time.monotonic() - started
+        block_text = "None" if block is None else f"{len(block)}行"
+        logger.log_debug(f"异步验证 EXIT 耗时={elapsed:.1f}s block={block_text}")
         if block is None:
+            logger.log_warning(f"异步验证超时 command={command} timeout={timeout:.1f}s")
             return False, "等待响应超时", None
         if str(meta.get("msg", "")).startswith("/gc "):
             text = "\n".join(block)
@@ -471,20 +514,40 @@ class Runtime:
 
 
 def _default_confirm(prompt, default=False):
-    """默认的终端确认实现。空输入时按 default 取值。"""
+    """默认的终端确认实现。空输入时按 default 取值。
+
+    这是无超时的阻塞点(input),所以进入前/返回后各记一条 INFO ——
+    无人值守时日志停在上一阶段也能看出"卡在等确认"。
+    """
     suffix = " [Y/n] " if default else " [y/N] "
+    logger.log_info(f"确认点 ENTER func=confirm prompt={prompt!r} 等待=用户输入(无限)")
+    started = time.monotonic()
     try:
         ans = input(prompt + suffix).strip().lower()
-    except EOFError:
+    except (EOFError, KeyboardInterrupt) as e:
+        logger.log_warning(f"确认点中断({type(e).__name__}) prompt={prompt!r}，按拒绝处理: {e}")
         return False
     if not ans:
-        return default
-    return ans in ("y", "yes", "是", "好", "确认")
+        result = default
+    else:
+        result = ans in ("y", "yes", "是", "好", "确认")
+    logger.log_info(f"确认点 EXIT 耗时={time.monotonic() - started:.1f}s result={result}")
+    return result
 
 
 def _default_ask_text(prompt):
     """默认的终端原文输入:原样返回(不 trim、不布尔化),由调用方逐字比对。"""
-    return input(prompt)
+    logger.log_info(f"确认点 ENTER func=ask_text prompt={prompt!r} 等待=用户输入(无限)")
+    started = time.monotonic()
+    try:
+        text = input(prompt)
+    except (EOFError, KeyboardInterrupt) as e:
+        logger.log_warning(f"确认点中断({type(e).__name__}) prompt={prompt!r}，按拒绝处理: {e}")
+        raise
+    logger.log_info(
+        f"确认点 EXIT 耗时={time.monotonic() - started:.1f}s result=原文({len(str(text))}字符)"
+    )
+    return text
 
 
 def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
@@ -501,6 +564,9 @@ def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
     失败(SystemExit / 异常)由调用方处理;本函数不吞异常。
     """
     console_fn = console_fn or console
+    build_started = time.monotonic()
+    step_started = build_started
+    logger.log_info("[阶段][ENTER] S7 build_runtime.watcher")
     watcher = LogWatcher(
         cfg["game_log"],
         encoding=cfg.get("log_encoding", "auto"),
@@ -508,23 +574,42 @@ def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
     )
     watcher.open()
     console_fn(f"日志已连接: {cfg['game_log']} (编码 {watcher.encoding})")
+    logger.log_info(
+        f"[阶段][EXIT ] S7 build_runtime.watcher "
+        f"耗时={time.monotonic() - step_started:.2f}s 编码={watcher.encoding}"
+    )
 
     def is_paused():
         return _paused
 
+    step_started = time.monotonic()
+    logger.log_info("[阶段][ENTER] S7 build_runtime.human")
     human = HumanInput(cfg, stop_check=is_paused)
     console_fn(
         f"聊天键: {human.chat_key}(来自 {'options.txt' if cfg['chat_key'] == 'auto' else '配置'})"
     )
 
-    # 聊天键是 enter 时警告但不拒绝:网易版 enter 是发送键不是开聊天栏键
-    if human.chat_key == "enter":
-        console_fn("⚠ 警告:聊天键设置为 'enter',网易版 enter 是发送键不是开聊天栏键,")
-        console_fn("  可能导致 _open_chat 按下后聊天栏未开,后续重试死循环")
-        console_fn("  建议:config.json chat_key 改为 't' 或 '/' 之类(读取开聊天栏的键)")
-        console_fn("  仍然继续运行——若发生死循环,可按 u 暂停/Ctrl+C 退出")
+    # 聊天键被解析成"发送键"时必须阻断启动（2026-10-31 用户要求）。
+    # 网易版 options.txt 的 key_key.chat 常是 enter —— 那是"发送消息",不是"打开聊天栏"。
+    # 继续运行只会:按 enter → 没打开聊天栏 → 判定失败 → 重试 → 每一轮都真的发一条空消息。
+    if human.chat_key in CHAT_SEND_KEYS:
+        logger.log_error(
+            f"[阶段] S7 启动阻断 聊天键={human.chat_key} 属于发送键 {list(CHAT_SEND_KEYS)}，"
+            f"无法打开聊天栏（来源={'options.txt' if cfg['chat_key'] == 'auto' else 'config.json'}）"
+        )
+        console_fn(f"✗ 无法启动:聊天键被解析成发送键 '{human.chat_key}'")
+        console_fn("  网易版 enter 是『发送消息』,不是『打开聊天栏』;继续运行会死循环并反复发消息")
+        console_fn("  处理办法:config.json 里把 chat_key 改成 't' 或 '/'")
+        console_fn("            (游戏里按 T 或 / 能打开聊天栏的那个键;auto 识别不准时手工指定)")
+        raise SystemExit(2)
+    logger.log_info(
+        f"[阶段][EXIT ] S7 build_runtime.human "
+        f"耗时={time.monotonic() - step_started:.2f}s 聊天键={human.chat_key}"
+    )
 
     # 界面状态检测器(菜单 OCR;不可用自动降级为纯试错式发送)
+    step_started = time.monotonic()
+    logger.log_info("[阶段][ENTER] S7 build_runtime.detector")
     detector = None
     sc = cfg.get("state_check", {})
     if sc.get("enabled", True):
@@ -541,13 +626,27 @@ def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
                 "界面状态检测已启用(菜单界面自动 Esc;发送:首条直接粘贴试探,"
                 "无响应自动开聊天栏重试,仍失败暂停等待用户)"
             )
+    logger.log_info(
+        f"[阶段][EXIT ] S7 build_runtime.detector "
+        f"耗时={time.monotonic() - step_started:.2f}s "
+        f"available={getattr(detector, 'available', None)}"
+    )
 
+    step_started = time.monotonic()
+    logger.log_info(f"[阶段][ENTER] S8 find_game_window keywords={list(cfg['window_keywords'])}")
     hwnd = find_game_window(cfg["window_keywords"])
     if hwnd:
         console_fn("游戏窗口已找到(将在倒计时结束后自动置前)")
     else:
         console_fn("⚠ 未找到游戏窗口(请确认游戏已启动、窗口标题包含关键词)")
+    hwnd_text = f"hwnd={hwnd}" if hwnd else "未命中,转入等待用户输入"
+    logger.log_info(
+        f"[阶段][EXIT ] S8 find_game_window 耗时={time.monotonic() - step_started:.2f}s "
+        f"结果={hwnd_text}"
+    )
 
+    step_started = time.monotonic()
+    logger.log_info("[阶段][ENTER] S7 build_runtime.executor")
     executor = ActionExecutor(
         cfg, human, watcher, hwnd=hwnd, detector=detector, stop_check=is_paused
     )
@@ -558,6 +657,12 @@ def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
     from guild_auto.application.pause import _consume_reset_flag
 
     executor.set_reset_hook(_consume_reset_flag)
+    logger.log_info(
+        f"[阶段][EXIT ] S7 build_runtime.executor 耗时={time.monotonic() - step_started:.2f}s"
+    )
+    logger.log_info(
+        f"[阶段][EXIT ] S7 build_runtime 总耗时={time.monotonic() - build_started:.2f}s"
+    )
 
     return Runtime(
         cfg=cfg,

@@ -16,6 +16,7 @@ ui_mode.py —— UI 识别模式的查询阶段(US-007 主流程接线)
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from guild_auto.application import runtime as runtime_mod
@@ -288,6 +289,10 @@ def _build_outcome(
     records, failures = [], []
     online_sampled = False
     online_total = 0
+    # 三类剔除原因分开计数：日志里要能核对「失败 N 人」由哪些原因构成（§3 第5类）
+    blocked_count = 0
+    unknown_rank_count = 0
+    unreadable_count = 0
 
     for raw in ui_records:
         record = dict(raw)
@@ -302,32 +307,50 @@ def _build_outcome(
             online_total += 1 if record["online"] else 0
 
         if is_masked_name(player):
+            blocked_count += 1
+            reason = "屏蔽词玩家: 界面名字为星号,身份不可读,需人工确认"
+            logger.log_debug(
+                f"[解析] 剔除 player={player!r} display_rank={display_rank!r} "
+                f"类别=blocked 原因={reason}"
+            )
             failures.append(
                 {
                     "player": player,
                     "rank": group_rank,
                     "blocked": True,
-                    "reason": "屏蔽词玩家: 界面名字为星号,身份不可读,需人工确认",
+                    "reason": reason,
                 }
             )
             continue
         if rank is None:
+            unknown_rank_count += 1
+            reason = f"无法识别的公会身份: 界面显示 {display_rank!r}"
+            logger.log_debug(
+                f"[解析] 剔除 player={player!r} display_rank={display_rank!r} "
+                f"类别=unknown_rank 原因={reason}"
+            )
             failures.append(
                 {
                     "player": player,
                     "rank": group_rank,
-                    "reason": f"无法识别的公会身份: 界面显示 {display_rank!r}",
+                    "reason": reason,
                 }
             )
             continue
 
         missing = [name for name in CRITICAL_FIELDS if name in (record.get("unreadable") or [])]
         if missing:
+            unreadable_count += 1
+            reason = f"UI 识别字段不可读: {', '.join(missing)},需人工确认"
+            logger.log_debug(
+                f"[解析] 剔除 player={player!r} display_rank={display_rank!r} "
+                f"类别=unreadable 原因={reason}"
+            )
             failures.append(
                 {
                     "player": player,
                     "rank": rank,
-                    "reason": f"UI 识别字段不可读: {', '.join(missing)},需人工确认",
+                    "reason": reason,
                 }
             )
             continue
@@ -337,6 +360,19 @@ def _build_outcome(
         if rank in skip_ranks or (scope != "all" and rank != scope):
             continue
         records.append(record)
+
+    total_failed = blocked_count + unknown_rank_count + unreadable_count
+    if total_failed:
+        logger.log_info(
+            f"[解析] UI 名册失败汇总: blocked={blocked_count} "
+            f"unknown_rank={unknown_rank_count} unreadable={unreadable_count} "
+            f"合计={total_failed} / 原始记录={len(ui_records)}"
+        )
+    if unknown_rank_count or unreadable_count:
+        logger.log_warning(
+            f"[解析] 需要人工确认: {unknown_rank_count} 名成员身份无法识别、"
+            f"{unreadable_count} 名成员关键字段不可读（均已剔除，不进入判定）"
+        )
 
     guild_name = str(cfg.get("guild_name") or "").strip() or UI_GUILD_NAME_UNKNOWN
     if member_total is None:
@@ -364,21 +400,61 @@ def stage_query_ui(rt, cfg, *, adapters=None, runner=None) -> UiQueryOutcome:
     adapters/runner 可注入:测试用假实现驱动,不碰真实屏幕。
     失败一律抛 UiCollectionError / AdapterError,调用方不得降级到指令模式。
     """
-    if adapters is None:
-        adapters = build_default_adapters(cfg, on_simulated_input=runtime_mod.note_simulated_input)
+    started = time.monotonic()
+    logger.log_info("[阶段][ENTER] stage_query_ui 开始 UI 识别查询")
     stats = UiRunStats()
     gate = _make_gate()
-    if runner is None:
-        runner = build_pipeline(cfg, adapters, stats, gate)
-
-    runtime_mod.set_auto_pause_guard(True)
     try:
-        result = _collect_with_rescan(runner, adapters, stats)
-    finally:
-        runtime_mod.set_auto_pause_guard(False)
+        if adapters is None:
+            step = time.monotonic()
+            logger.log_info("[阶段][ENTER] stage_query_ui.build_adapters")
+            adapters = build_default_adapters(
+                cfg, on_simulated_input=runtime_mod.note_simulated_input
+            )
+            logger.log_info(
+                f"[阶段][EXIT ] stage_query_ui.build_adapters "
+                f"耗时={time.monotonic() - step:.2f}s "
+                f"截图源={getattr(adapters, 'screenshot_source', '?')} "
+                f"OCR源={getattr(adapters, 'ocr_source', '?')}"
+            )
+        if runner is None:
+            step = time.monotonic()
+            logger.log_info("[阶段][ENTER] stage_query_ui.build_pipeline")
+            runner = build_pipeline(cfg, adapters, stats, gate)
+            logger.log_info(
+                f"[阶段][EXIT ] stage_query_ui.build_pipeline 耗时={time.monotonic() - step:.2f}s"
+            )
 
-    if not result.ok:
-        raise UiCollectionError(f"UI 识别查询失败:{result.reason}")
-    stats.key_used = result.key_used
-    console(f"UI 识别查询完成: {len(result.records)} 条成员记录")
-    return _build_outcome(cfg, result.records, stats, result.member_total)
+        runtime_mod.set_auto_pause_guard(True)
+        try:
+            result = _collect_with_rescan(runner, adapters, stats)
+        finally:
+            runtime_mod.set_auto_pause_guard(False)
+
+        if not result.ok:
+            # 失败细节不能只靠上层 excepthook 的通用 traceback：经 except 统一记 ERROR（§6.2）
+            raise UiCollectionError(f"UI 识别查询失败:{result.reason}")
+        stats.key_used = result.key_used
+        console(f"UI 识别查询完成: {len(result.records)} 条成员记录")
+        outcome = _build_outcome(cfg, result.records, stats, result.member_total)
+        logger.log_info(
+            f"[阶段][EXIT ] stage_query_ui 耗时={time.monotonic() - started:.2f}s "
+            f"records={len(outcome.records)} failures={len(outcome.failures)} "
+            f"ocr_calls={stats.ocr_calls} low_confidence={stats.low_confidence_calls} "
+            f"rescans={stats.rescans} navigation_enters={stats.navigation_enters} "
+            f"member_total_source={outcome.guild.get('total_source')}"
+        )
+        return outcome
+    except UiCollectionError as e:
+        # 采集失败必须留下 ERROR 原文（reason 已带在异常文本里），不依赖上层 traceback
+        logger.log_error(
+            f"[阶段] stage_query_ui 采集失败: {e} 已耗时={time.monotonic() - started:.2f}s "
+            f"ocr_calls={stats.ocr_calls} low_confidence={stats.low_confidence_calls} "
+            f"rescans={stats.rescans} key_presses={len(stats.key_presses)}"
+        )
+        raise
+    except Exception as e:
+        logger.log_error(
+            f"[阶段] stage_query_ui 异常已终止: {e!r} 已耗时={time.monotonic() - started:.2f}s"
+        )
+        raise

@@ -18,6 +18,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from guild_auto.infrastructure import logger
 from guild_auto.vision.tooltip import TITLE_GUILD, TITLE_SETTINGS, classify_title
 
 if TYPE_CHECKING:  # 仅用于类型注解
@@ -74,15 +75,26 @@ class Navigator:
 
     def current_screen(self) -> str:
         """重新全扫当前界面标题并分类 —— 禁止凭记忆断言界面。"""
-        return classify_title(self._scan_title())
+        screen = classify_title(self._scan_title())
+        logger.log_debug(f"vision.navigator: 标题分类结果 screen={screen}")
+        return screen
 
-    def _recover(self) -> None:
+    def _recover(self, screen_before: str, misses: int) -> None:
         """连续误按后按 Esc 回到干净状态,并重新全扫(不带着错误界面继续)。"""
         if self._escape is None:
+            logger.log_warning(
+                f"vision.navigator: 连续误按需 Esc 恢复,但未注入 escape"
+                f"(恢复前 screen={screen_before},误按 {misses} 次),保持现状"
+            )
             return
+        logger.log_warning(
+            f"vision.navigator: 连续误按触发 Esc 恢复"
+            f"(恢复前 screen={screen_before},误按次数={misses},阈值={self._max_misclick})"
+        )
         self._escape()
         self._sleep(self._render_ms / 1000.0)
-        self.current_screen()
+        screen_after = self.current_screen()
+        logger.log_info(f"vision.navigator: Esc 恢复完成(screen={screen_after})")
 
     def enter_guild_ui(self, open_guild: Callable[[], None] | None = None) -> str:
         """按键试探进入公会系统界面,返回成功的按键;失败抛 NavigationError。
@@ -91,38 +103,68 @@ class Navigator:
         它自身负责先悬停读 tooltip 再点击)。本方法只做导航与确认。
         """
         keys = self.candidate_keys
+        logger.log_info(
+            f"vision.navigator: 导航开始(候选键顺序={keys},"
+            f"max_misclick={self._max_misclick},render_ms={self._render_ms},"
+            f"cached_key={self.cached_key!r})"
+        )
         if not keys:
+            logger.log_warning("vision.navigator: 未解析到 hotbar 绑定且未配置候选键,导航无法开始")
             raise NavigationError(
                 "未解析到 hotbar 绑定且未配置候选键:不提供任何默认键值,请检查 "
                 "game_options 指向游戏实际写入的 options.txt,或在配置中补充候选键"
             )
 
         misses = 0
+        screen = ""
         for key in keys:
+            used_cache = key == self.cached_key
+            logger.log_debug(
+                f"vision.navigator: 按键试探 key={key!r} cached={used_cache} misses={misses}"
+            )
             self._press(key)
             self._sleep(self._render_ms / 1000.0)
             screen = self.current_screen()  # 每次按键后截图确认
+            logger.log_debug(
+                f"vision.navigator: 试探结果 key={key!r} screen={screen} "
+                f"cached={used_cache} misses={misses}"
+            )
             if screen not in (TITLE_SETTINGS, TITLE_GUILD):
                 misses += 1
                 if misses >= self._max_misclick:
-                    self._recover()
+                    self._recover(screen, misses)
                     misses = 0
                 continue
 
             if screen == TITLE_GUILD:
                 self.cached_key = key
+                logger.log_info(f"vision.navigator: 导航成功(key={key!r},命中缓存={used_cache})")
                 return key
 
             # 已到设置界面:点击公会物品后再全扫确认
             if open_guild is None:
+                logger.log_warning(
+                    f"vision.navigator: 已进入设置界面但未提供公会入口动作"
+                    f"(key={key!r},screen={screen})"
+                )
                 raise NavigationError("已进入装扮与个人设定,但未提供公会入口动作,无法继续(不盲点)")
+            logger.log_debug("vision.navigator: 已到设置界面,执行公会入口动作")
             open_guild()
             screen = self.current_screen()
             if screen != TITLE_GUILD:
+                logger.log_warning(
+                    f"vision.navigator: 点击公会物品后界面不是公会系统(实际 {screen}),停止导航"
+                )
                 raise NavigationError(
                     f"点击公会物品后界面不是公会系统(实际: {screen}),停止导航(不盲点)"
                 )
             self.cached_key = key
+            logger.log_info(
+                f"vision.navigator: 导航成功(经设置界面,key={key!r},命中缓存={used_cache})"
+            )
             return key
 
+        logger.log_warning(
+            f"vision.navigator: 全部候选键失败(候选键={keys},最后 screen={screen!r})"
+        )
         raise NavigationError(f"按键试探失败:候选键 {keys} 均未进入装扮与个人设定界面")

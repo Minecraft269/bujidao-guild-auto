@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import re
 
-from guild_auto.vision.models import DAILY_ROWS, UNREADABLE, MemberData
+from guild_auto.infrastructure import logger
+from guild_auto.vision.models import DAILY_ROWS, UNREADABLE, MemberData, mask_player
 
 # ── 界面标题 → 所处界面 ────────────────────────────────────────────────────
 TITLE_SETTINGS = "settings"
@@ -126,7 +127,7 @@ def parse_member_tooltip(text: str, online: bool | None = None) -> MemberData:
             if value is not None:
                 daily.append((date_match.group(1), value))
 
-    return MemberData(
+    member = MemberData(
         player=player,
         rank=rank,
         joined_at=joined_at,
@@ -136,6 +137,25 @@ def parse_member_tooltip(text: str, online: bool | None = None) -> MemberData:
         online=UNREADABLE if online is None else bool(online),
         daily=tuple(daily[:DAILY_ROWS]),
     )
+    hits = {
+        "rank": bool(rank_match),
+        "joined_at": bool(joined_match),
+        "last_online": bool(online_match),
+        "weekly_total": weekly != UNREADABLE,
+        "daily": len(daily) >= DAILY_ROWS,
+    }
+    logger.log_debug(
+        f"vision.tooltip: 成员解析结果 player={mask_player(player)!r} "
+        f"命中={[name for name, hit in hits.items() if hit]} "
+        f"未命中={[name for name, hit in hits.items() if not hit]} "
+        f"daily行数={len(daily)} online={'未采样' if online is None else online}"
+    )
+    unreadable = member.unreadable_fields()
+    if unreadable:
+        logger.log_warning(
+            f"vision.tooltip: 成员字段不可读 player={mask_player(player)!r} fields={unreadable}"
+        )
+    return member
 
 
 def parse_guild_detail(text: str) -> int | None:

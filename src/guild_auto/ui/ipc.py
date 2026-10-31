@@ -19,11 +19,22 @@ import json
 import os
 import secrets
 import threading
+import time
 from ctypes import wintypes
 from typing import Any, Callable
 
+from guild_auto.infrastructure import logger
+
 PIPE_PREFIX = "bujidao-"
 BUFFER_SIZE = 64 * 1024
+# GUI 拉起后应在短时间内连上管道；超过这个上限就放弃等待并记 WARNING（§6.2 禁止无超时阻塞）。
+CONNECT_TIMEOUT = 60.0
+# 连上后等首帧的上限：实测约 1/4 的启动（打包态更高）会出现「连接成功、
+# 但 GUI 的 hello 字节一个都没到核」——读线程会永远阻塞在 ReadFile。
+# 超时就断开本次连接、重建实例，让 GUI 重连重发（§6.2 阻塞点必须有上限）。
+# 取值必须**大于** GUI 侧 hello 的重发窗口（2.5s × 2 次），否则核先断开、
+# 重发落在死连接上，兜底形同虚设（实机踩过）。
+FIRST_FRAME_TIMEOUT = 8.0
 
 # ── Win32 常量 ────────────────────────────────────────────────────────────
 _PIPE_ACCESS_DUPLEX = 0x00000003
@@ -33,12 +44,31 @@ _PIPE_WAIT = 0x00000000
 _PIPE_UNLIMITED_INSTANCES = 255
 _ERROR_PIPE_CONNECTED = 535
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+_DUPLICATE_SAME_ACCESS = 0x00000002
 
 # WinDLL 是动态属性代理，注解成 WinDLL 后 mypy 会把各方法当真实签名逐处校验，
 # 反而逼出一串 union-attr 噪音；这里显式标 Any，只保留"非 Windows 上为 None"这一事实。
 _kernel32: Any = None
 if os.name == "nt":  # pragma: no cover - 非 Windows 上只用于 import
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # 显式原型：GetCurrentThread/GetCurrentProcess 返回伪句柄 (-1/-2)，
+    # 默认按 c_int 传会把 64 位 HANDLE 截断，DuplicateHandle 会报 ERROR_INVALID_HANDLE。
+    # 超时取消 ConnectNamedPipe 依赖 CancelSynchronousIo，必须拿到真实线程句柄。
+    _kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    _kernel32.GetCurrentThread.restype = wintypes.HANDLE
+    _kernel32.DuplicateHandle.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE),
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    _kernel32.DuplicateHandle.restype = wintypes.BOOL
+    _kernel32.CancelSynchronousIo.argtypes = [wintypes.HANDLE]
+    _kernel32.CancelSynchronousIo.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 
 class IpcError(RuntimeError):
@@ -66,7 +96,25 @@ class IpcServer:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._connected = threading.Event()
+        self._ever_connected = False
         self.last_error: str | None = None
+        # 事件推送失败统计：同一方法只记一条 warning，避免 GUI 断开后刷屏（§四 不得刷屏）
+        self._event_fail_count = 0
+        self._event_fail_methods: set[str] = set()
+
+    @property
+    def masked_path(self) -> str:
+        """管道名（一次性 token 脱敏），供日志使用（§6.1 S6）。"""
+        return self.path.replace(self.token, "***") if self.token else self.path
+
+    @property
+    def connected(self) -> bool:
+        return self._connected.is_set()
+
+    @property
+    def ever_connected(self) -> bool:
+        """是否曾经连上过：用来区分「GUI 从未连上」与「连上后断开」。"""
+        return self._ever_connected
 
     # ── 生命周期 ──────────────────────────────────────────────────────────
     def create(self) -> None:
@@ -86,15 +134,96 @@ class IpcServer:
             raise IpcError(f"创建命名管道失败: WinError {ctypes.get_last_error()}")
         self._handle = handle
 
-    def accept(self) -> bool:
-        """等待 GUI 连接；返回是否连上（stop() 后返回 False）。"""
+    def accept(self, timeout: float | None = CONNECT_TIMEOUT) -> bool:
+        """等待 GUI 连接；返回是否连上（stop()/超时后返回 False）。
+
+        ConnectNamedPipe 本身是无限阻塞的，这里放到工作线程里等，
+        超时后关闭管道中止等待，保证服务端线程不会永远停在「等管道连接」（§6.2）。
+        """
         if self._handle is None:
             self.create()
-        ok = _kernel32.ConnectNamedPipe(self._handle, None)
-        if not ok and ctypes.get_last_error() == _ERROR_PIPE_CONNECTED:
+        if self._stop.is_set():
+            logger.log_info(f"[阶段] S6 ipc.accept 已停止，不再等待连接 管道={self.masked_path}")
+            return False
+        timeout = CONNECT_TIMEOUT if timeout is None else float(timeout)
+        started = time.monotonic()
+        logger.log_info(
+            f"[阶段][ENTER] S6 ipc.accept 等待 GUI 连接 管道={self.masked_path} 超时={timeout:.0f}s"
+        )
+        result: dict[str, Any] = {"ok": False, "err": None, "thread": None}
+        done = threading.Event()
+
+        def _connect() -> None:
+            try:
+                # 复制出真实线程句柄：超时时用它 CancelSynchronousIo 中止 ConnectNamedPipe
+                thread_handle = wintypes.HANDLE()
+                if _kernel32.DuplicateHandle(
+                    _kernel32.GetCurrentProcess(),
+                    _kernel32.GetCurrentThread(),
+                    _kernel32.GetCurrentProcess(),
+                    ctypes.byref(thread_handle),
+                    0,
+                    False,
+                    _DUPLICATE_SAME_ACCESS,
+                ):
+                    result["thread"] = thread_handle
+                result["ok"] = bool(_kernel32.ConnectNamedPipe(self._handle, None))
+                result["err"] = ctypes.get_last_error()
+            except Exception as e:  # ctypes 调用异常也要唤醒等待方并留痕
+                result["err"] = e
+            finally:
+                done.set()
+
+        threading.Thread(target=_connect, name="ipc-accept", daemon=True).start()
+        finished = done.wait(timeout)
+        elapsed = time.monotonic() - started
+        thread_handle = result.get("thread")
+        if not finished:
+            logger.log_warning(
+                f"[阶段] S6 ipc.accept 超时: 已等待={elapsed:.1f}s(上限 {timeout:.0f}s) "
+                f"管道={self.masked_path}，中止等待"
+            )
+            self._stop.set()
+            if thread_handle is not None:
+                _kernel32.CancelSynchronousIo(thread_handle)
+            finished = done.wait(2.0)  # 给被阻塞的 ConnectNamedPipe 一个有限时间返回
+            if not finished:
+                # 取消未生效：关闭句柄可能阻塞，交给后台线程，绝不再阻塞主流程
+                logger.log_warning(
+                    f"[阶段] S6 ipc.accept 取消等待未生效，改由后台关闭管道 管道={self.masked_path}"
+                )
+                threading.Thread(target=self._close_handle, daemon=True).start()
+            else:
+                self._close_handle()
+            if thread_handle is not None:
+                _kernel32.CloseHandle(thread_handle)
+            logger.log_info(
+                f"[阶段][EXIT ] S6 ipc.accept 耗时={time.monotonic() - started:.2f}s "
+                f"结果=超时未连接"
+            )
+            return False
+        if thread_handle is not None:
+            _kernel32.CloseHandle(thread_handle)
+
+        ok = bool(result["ok"])
+        err = result["err"]
+        if not ok and err == _ERROR_PIPE_CONNECTED:
             ok = True  # 客户端在 ConnectNamedPipe 之前就连上了
+            logger.log_info(
+                f"[阶段] S6 ipc.accept 客户端先连上(ERROR_PIPE_CONNECTED) 管道={self.masked_path}"
+            )
         if ok:
             self._connected.set()
+            self._ever_connected = True
+            logger.log_info(
+                f"[阶段][EXIT ] S6 ipc.accept 耗时={elapsed:.2f}s 结果=已连接 "
+                f"管道={self.masked_path}"
+            )
+        else:
+            logger.log_warning(
+                f"[阶段] S6 ipc.accept 失败: WinError {err} 已等待={elapsed:.2f}s "
+                f"管道={self.masked_path}"
+            )
         return bool(ok)
 
     def stop(self) -> None:
@@ -106,8 +235,8 @@ class IpcServer:
         if handle:
             try:
                 _kernel32.DisconnectNamedPipe(handle)
-            except Exception:
-                pass
+            except Exception as e:  # 断开失败仍要继续关闭句柄，但不能静默
+                logger.log_warning(f"[阶段] S6 断开命名管道失败(继续关闭): {e!r}")
             _kernel32.CloseHandle(handle)
 
     # ── 收发 ──────────────────────────────────────────────────────────────
@@ -130,15 +259,36 @@ class IpcServer:
                 self._write_line({"method": method, "params": params})
             except IpcError as e:  # GUI 断开不该影响核
                 self.last_error = str(e)
+                self._event_fail_count += 1
+                # 同一事件方法只记第一次（GUI 断开后每次推送都会失败，不能刷屏）
+                if method not in self._event_fail_methods:
+                    self._event_fail_methods.add(method)
+                    logger.log_warning(
+                        f"[阶段] S6 IPC 事件推送失败 method={method} "
+                        f"累计失败={self._event_fail_count} 原因={e}"
+                    )
 
     def _read_lines(self, handle: Any):
         buf = b""
         chunk = ctypes.create_string_buffer(BUFFER_SIZE)
         read = wintypes.DWORD(0)
+        total = 0
+        logger.log_info(
+            f"[阶段] S6 ipc 读循环进入 stop={self._stop.is_set()} 管道={self.masked_path}"
+        )
         while not self._stop.is_set():
             ok = _kernel32.ReadFile(handle, chunk, BUFFER_SIZE, ctypes.byref(read), None)
             if not ok or read.value == 0:
+                # 读侧必须留痕：否则「GUI 说发了、核说没收到」时无从判断
+                logger.log_warning(
+                    f"[阶段] S6 ipc 读循环结束 ok={bool(ok)} 本次字节={read.value} "
+                    f"累计字节={total} 管道={self.masked_path}"
+                )
                 return
+            total += read.value
+            if total == read.value:
+                # 只记首包：首包到了说明连接真的通了（后续按行记录会刷屏）
+                logger.log_info(f"[阶段] S6 ipc 首包已读 字节={read.value} 管道={self.masked_path}")
             buf += chunk.raw[: read.value]
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
@@ -146,18 +296,58 @@ class IpcServer:
                     yield line.decode("utf-8", "replace")
 
     def serve_forever(self) -> None:
-        """接受一个连接并循环处理请求，直到对端断开或 stop()。"""
+        """接受一个连接并循环处理请求，直到对端断开或 stop()。
+
+        首帧看门狗只用于**诊断并解除阻塞**（否则读线程永远停在 ReadFile 上），
+        不做自动重连：断开后立刻重建同名实例会让客户端的挂起连接瞬间被
+        ERROR_PIPE_CONNECTED 接受，形成「连上-超时-断开」死循环（实测刷出 15MB 日志）。
+        真正的重连交给 GUI 侧重发。
+        """
         if not self.accept():
             return
         handle = self._handle
+        # 进入读循环前留痕：若 _stop 已置位，读循环会一条日志都不打就结束，
+        # 这类静默退出必须先被看见（否则「已连接但没有任何后续」无从解释）。
+        logger.log_info(
+            f"[阶段] S6 ipc serve 开始读取 connected={self._connected.is_set()} "
+            f"stop={self._stop.is_set()} 管道={self.masked_path}"
+        )
+        # 首帧看门狗：连上了但一个字节都没来（实测约 1/4 概率，打包态更高），
+        # 读线程会永远阻塞在 ReadFile。这里主动断开，让外层循环重建实例等 GUI 重连。
+        first_frame = threading.Event()
+
+        def _first_frame_watchdog(
+            _handle: Any = handle, _seen: threading.Event = first_frame
+        ) -> None:
+            if _seen.wait(FIRST_FRAME_TIMEOUT):
+                return
+            logger.log_warning(
+                f"[阶段] S6 ipc 首帧超时: 已连接 {FIRST_FRAME_TIMEOUT:.0f}s 仍未收到任何字节，"
+                f"断开本次连接等 GUI 重连 管道={self.masked_path}"
+            )
+            try:
+                _kernel32.DisconnectNamedPipe(_handle)
+            except Exception as e:  # 断开失败也必须继续，外层会关闭句柄
+                logger.log_warning(f"[阶段] S6 首帧超时断开失败(继续): {e!r}")
+
+        watchdog = threading.Thread(target=_first_frame_watchdog, daemon=True)
+        watchdog.start()
         try:
             for line in self._read_lines(handle):
+                first_frame.set()
                 reply = self.handle_line(line)
+                # 每处理一行都留痕：只有「首包已读」无法回答
+                # 「第二个请求到底有没有到核、有没有被应答」。
+                logger.log_debug(
+                    f"[阶段] S6 ipc 已应答 行字节={len(line)} "
+                    f"ok={reply.get('ok') if isinstance(reply, dict) else None}"
+                )
                 if reply is None:
                     continue
                 with self._lock:
                     self._write_line(reply)
         finally:
+            first_frame.set()  # 正常断开时别让看门狗再打一条误导性 WARNING
             self._connected.clear()
             self._close_handle()
 

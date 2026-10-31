@@ -229,6 +229,13 @@ class AsyncVerifySystem:
 
         先把队列里还没发出去的任务标 STOPPED,再把已提交但未验证的任务标 STOPPED,
         保证 wait_all() 不会因残留任务永久挂起、任务不丢失。"""
+        with self._tasks_lock:
+            unfinished_now = sum(1 for t in self._tasks.values() if not t.is_done())
+        logger.log_info(
+            f"[异步-停止] stop.enter: queued={self._send_q.qsize()}, "
+            f"unfinished={unfinished_now}, join_timeout={timeout}s"
+        )
+        started = time.monotonic()
         self._stop_event.set()
         stopped = 0
         # 1) 排空发送队列中未取走的任务
@@ -254,13 +261,22 @@ class AsyncVerifySystem:
         with self._count_lock:
             self._pending_count = 0
         self._all_done.set()
+        join_started = time.monotonic()
         for t in self._threads:
             t.join(timeout=timeout)
+            if t.is_alive():
+                logger.log_warning(
+                    f"[异步-停止] thread_still_alive: thread_name={t.name}, "
+                    f"waited_s={time.monotonic() - join_started:.2f}s, "
+                    f"sent_backlog={sum(1 for x in self.get_results() if x['state'] == SENT)}"
+                )
         if stopped:
             logger.log_warning(
                 f"(异步系统)停止前把 {stopped} 条未完成任务标记为 stopped 并入补做队列"
             )
-        logger.log_info("(异步系统)已停止")
+        logger.log_info(
+            f"[异步-停止] stop.exit: stopped={stopped}, elapsed={time.monotonic() - started:.2f}s"
+        )
 
     def is_alive(self):
         return any(t.is_alive() for t in self._threads)
@@ -408,17 +424,49 @@ class AsyncVerifySystem:
         """主线程**全部工作完成后**才调用:等待后台返回完成信号。
 
         带总超时(默认 task_timeout*2);超时返回 False 表示后台未全部完成,
-        但绝不无限阻塞——这是防死锁的第 2 道保险。"""
+        但绝不无限阻塞——这是防死锁的第 2 道保险。
+
+        阻塞点埋点三态(进入前 INFO → 返回后 INFO → 超时 WARNING 含已等待时长):
+        有效超时是隐式推导出来的,所以进入前必须把「超时值 + 推导依据」写进日志,
+        否则卡住时无法从最后几行判断上限是多少。"""
+        explicit = timeout is not None
         if timeout is None:
             timeout = self._task_timeout * 2
+        basis = (
+            f"caller(timeout={timeout:.1f}s)"
+            if explicit
+            else f"task_timeout*2(task_timeout={self._task_timeout}s)"
+        )
+        logger.log_info(
+            f"[异步-等待] event=wait_all.enter, effective_timeout={timeout:.1f}s, "
+            f"basis={basis}, pending_count={self.pending_count()}"
+        )
+        started = time.monotonic()
         got = self._all_done.wait(timeout=timeout)
+        elapsed = time.monotonic() - started
         if got:
-            logger.log_info("(异步系统)收到后台完成信号,全部任务已到终态")
+            logger.log_info(
+                f"[异步-等待] event=wait_all.exit, got=True, elapsed={elapsed:.2f}s, "
+                f"pending_count={self.pending_count()}"
+            )
         else:
             logger.log_warning(
-                f"(异步系统)等待完成信号超时({timeout:.1f}s),仍有 {self.pending_count()} 条未验证"
+                f"[异步-等待] event=wait_all.timeout, waited_s={elapsed:.2f}s, "
+                f"effective_timeout={timeout:.1f}s, basis={basis}, "
+                f"pending_count={self.pending_count()}, "
+                f"inflight={self._inflight_summary()}"
             )
         return got
+
+    def _inflight_summary(self):
+        """在途任务(task_id/player/state)摘要,供超时告警定位是哪几条卡住。"""
+        with self._tasks_lock:
+            items = [
+                f"{t.task_id}:{t.player}:{t.state}"
+                for t in self._tasks.values()
+                if t.state in (PENDING, SENT)
+            ]
+        return items[:10] if items else []
 
     # ------------------------------------------------------------------
     # 后台:发送线程(只发不验)
@@ -456,11 +504,16 @@ class AsyncVerifySystem:
         if send_fn is None:
             # 未注入发送函数(如单测):只记账标记,不真发
             task.mark_sent()
+            logger.log_debug(
+                f"[异步-状态] send.state PENDING->SENT: task_id={task.task_id}, "
+                f"player={task.player}, attempts={task.attempts_count}(未注入 send_fn)"
+            )
             return
         logger.log_trace(
             f"TRACE_VERIFY send | task_id={task.task_id} "
             f"player={task.player!r} cmd={task.command[:60]!r}"
         )
+        started = time.monotonic()
         try:
             emitted = send_fn(task.command, task.player, task.meta)
         except Exception as e:  # 发送异常 → 记失败,由主线程决定重试
@@ -471,6 +524,16 @@ class AsyncVerifySystem:
             # wait_all 的「仍有 N 条未验证」告警永久虚高(独立审查指出)。
             self._dec_pending()
             return
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        logger.log_info(
+            f"[异步-发送] send.return: task_id={task.task_id}, player={task.player}, "
+            f"emitted={emitted!r}, elapsed_ms={elapsed_ms:.0f}"
+        )
+        if elapsed_ms > 2000.0:
+            logger.log_warning(
+                f"[异步-发送] send.slow: task_id={task.task_id}, player={task.player}, "
+                f"elapsed_ms={elapsed_ms:.0f}(>2000, send_fn 可能阻塞在暂停门)"
+            )
         if emitted is False:
             logger.log_warning(
                 f"(异步系统)发送已取消,任务不进入验证 player={task.player} cmd={task.command[:60]!r}"
@@ -479,6 +542,10 @@ class AsyncVerifySystem:
             self._dec_pending()
             return
         task.mark_sent()
+        logger.log_debug(
+            f"[异步-状态] send.state PENDING->SENT: task_id={task.task_id}, "
+            f"player={task.player}, attempts={task.attempts_count}"
+        )
 
     def attach_sender(self, send_fn):
         """注入实际发送函数 send_fn(cmd, player, meta)。"""
@@ -494,49 +561,108 @@ class AsyncVerifySystem:
           * 单次 verify 由注入方控制超时(内部轮询日志),本循环不额外阻塞
           * 没有 SENT 任务时 sleep(poll) 让出 CPU,不空转
           * 全部任务到终态 → 置完成信号并退出循环(线程自然结束)
+
+        整个 while 外面必须有兜底 try:否则异常发生在 per-task try 之外
+        (_all_tasks_terminal / state / logger / _all_done.set)时线程会静默死亡,
+        后续 SENT 永远无人验证,主线程只看到一条笼统的 wait_all 超时。
         """
-        while not self._stop_event.is_set():
-            with self._tasks_lock:
-                candidates = [t for t in self._tasks.values() if t.state == SENT]
-            if not candidates:
-                if self._all_tasks_terminal():
-                    # 本轮全部到终态 → 置完成信号让主线程 wait_all() 返回。
-                    # **不能 return**:规格的 E→D→B 重试循环会在同一系统上再次
-                    # submit_many(新一轮),线程必须能继续工作。
-                    self._all_done.set()
+        reason = "stop"
+        failed_count = 0
+        try:
+            while not self._stop_event.is_set():
+                with self._tasks_lock:
+                    candidates = [t for t in self._tasks.values() if t.state == SENT]
+                if not candidates:
+                    if self._all_tasks_terminal():
+                        # 本轮全部到终态 → 置完成信号让主线程 wait_all() 返回。
+                        # **不能 return**:规格的 E→D→B 重试循环会在同一系统上再次
+                        # submit_many(新一轮),线程必须能继续工作。
+                        self._all_done.set()
+                        time.sleep(self._poll)
+                        continue
                     time.sleep(self._poll)
                     continue
-                time.sleep(self._poll)
-                continue
-            for task in candidates:
-                if self._stop_event.is_set():
-                    break
-                if task.state != SENT:  # 已被其他路径改状态(如发送失败)则跳过
-                    continue
-                logger.log_trace(
-                    f"TRACE_VERIFY begin | task_id={task.task_id} "
-                    f"player={task.player!r} attempt={task.attempts_count}"
-                )
-                try:
-                    if self._verify_fn is None:
-                        # 无验证函数(降级/Debug/单测):立即置 OK
-                        task.mark_verified(True, data=None)
-                    else:
-                        ok, error, data = self._verify_fn(task.command, task.player, task.meta)
-                        task.mark_verified(ok, error, data)
-                except Exception as e:
-                    task.mark_verified(False, error=f"verify exception: {e!r}")
-                    logger.log_error(f"(异步系统)验证异常 player={task.player}: {e!r}")
-                # 无论成功/失败/异常,任务都已离开 SENT 状态 —— 递减待验证计数
-                self._dec_pending()
-                if task.state == OK:
+                for task in candidates:
+                    if self._stop_event.is_set():
+                        break
+                    if task.state != SENT:  # 已被其他路径改状态(如发送失败)则跳过
+                        continue
                     logger.log_trace(
-                        f"TRACE_VERIFY ok | task_id={task.task_id} player={task.player!r}"
+                        f"TRACE_VERIFY begin | task_id={task.task_id} "
+                        f"player={task.player!r} attempt={task.attempts_count}"
                     )
-                else:
-                    logger.log_warning(f"(异步系统)验证失败 player={task.player}: {task.error}")
-        # stop 时兜底置完成信号,避免主线程 wait_all 挂起
-        self._all_done.set()
+                    started = time.monotonic()
+                    logger.log_debug(
+                        f"[异步-验证中] verify.start: task_id={task.task_id}, "
+                        f"player={task.player}, attempt={task.attempts_count}, "
+                        f"started_at={time.strftime('%H:%M:%S')}"
+                    )
+                    try:
+                        if self._verify_fn is None:
+                            # 无验证函数(降级/Debug/单测):立即置 OK
+                            task.mark_verified(True, data=None)
+                        else:
+                            ok, error, data = self._verify_fn(task.command, task.player, task.meta)
+                            waited = time.monotonic() - started
+                            if waited > self._task_timeout:
+                                logger.log_warning(
+                                    f"[异步-验证中] verify.slow: task_id={task.task_id}, "
+                                    f"player={task.player}, waited_s={waited:.2f}, "
+                                    f"timeout_s={self._task_timeout:.1f}"
+                                )
+                                if not ok:
+                                    # 单任务已过 deadline 且 verify_fn 判失败 →
+                                    # 用 mark_timeout 记录超时原因(仍是 FAILED,
+                                    # 不改变"失败待重试"的既有业务语义)
+                                    logger.log_warning(
+                                        f"[异步-超时] task.timeout: task_id={task.task_id}, "
+                                        f"player={task.player}, attempts={task.attempts_count}, "
+                                        f"waited_s={waited:.2f}, "
+                                        f"timeout_s={self._task_timeout:.1f}"
+                                        f"(来源=构造参数 task_timeout), reason={error!r}"
+                                    )
+                                    task.mark_timeout(
+                                        f"verify 超时({waited:.2f}s > "
+                                        f"{self._task_timeout:.1f}s): {error}"
+                                    )
+                                else:
+                                    # 已成功:不能翻转为 FAILED(会导致重发破坏性命令)
+                                    task.mark_verified(ok, error, data)
+                            else:
+                                task.mark_verified(ok, error, data)
+                    except Exception as e:
+                        task.mark_verified(False, error=f"verify exception: {e!r}")
+                        logger.log_error(f"(异步系统)验证异常 player={task.player}: {e!r}")
+                    logger.log_debug(
+                        f"[异步-验证中] verify.end: task_id={task.task_id}, "
+                        f"player={task.player}, elapsed_ms="
+                        f"{(time.monotonic() - started) * 1000.0:.0f}"
+                    )
+                    # 无论成功/失败/异常,任务都已离开 SENT 状态 —— 递减待验证计数
+                    self._dec_pending()
+                    if task.state == OK:
+                        logger.log_trace(
+                            f"TRACE_VERIFY ok | task_id={task.task_id} player={task.player!r}"
+                        )
+                    else:
+                        failed_count += 1
+                        logger.log_warning(f"(异步系统)验证失败 player={task.player}: {task.error}")
+        except Exception as e:
+            reason = f"exception: {e!r}"
+            logger.log_exception(
+                f"[异步-线程] event=verifier_loop.crash, "
+                f"thread={threading.current_thread().name}, "
+                f"inflight_sent={sum(1 for t in self.get_stranded() if t['state'] == SENT)}, "
+                f"pending={self.pending_count()}, failed={failed_count}, exc={e!r}",
+                exc=e,
+            )
+        finally:
+            # stop 时兜底置完成信号,避免主线程 wait_all 挂起
+            self._all_done.set()
+            logger.log_info(
+                f"[异步-线程] event=verifier_loop.exit, reason={reason}, "
+                f"pending={self.pending_count()}, failed={failed_count}"
+            )
 
     def _all_tasks_terminal(self):
         """本轮是否已全部"验证完毕"。

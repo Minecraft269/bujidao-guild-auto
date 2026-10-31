@@ -29,6 +29,27 @@ import {
 const $ = (id) => document.getElementById(id);
 const api = window.__TAURI__;
 
+// ── 前端日志（§6.4）────────────────────────────────────────────────────
+// console 便于开发期直接看；同时经 gui_log 命令落到 logs/gui.log，排障时
+// 用户只贴一份文件即可。gui_log 本身失败只回 console，避免递归。
+function glog(level, ...parts) {
+  let msg;
+  try {
+    msg = parts.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ");
+  } catch (e) {
+    console.warn("[frontend] 日志参数序列化失败", String(e));
+    msg = parts.map((x) => String(x)).join(" ");
+  }
+  const text = `[frontend] ${msg}`;
+  if (level === "error" || level === "critical") console.error(text);
+  else if (level === "warning") console.warn(text);
+  else console.info(text);
+  if (!api?.core?.invoke) return;
+  Promise.resolve(api.core.invoke("gui_log", { level, msg })).catch((e) =>
+    console.warn("[frontend] gui_log 转发失败", String(e)),
+  );
+}
+
 const DECISION_LABEL = { promote: "提升", demote: "降级", kick: "踢出", none: "无操作" };
 const EXEC_LABEL = {
   pending: "待执行",
@@ -63,7 +84,10 @@ const S = {
   log: { ring: new Ring(), minLevel: 4, selected: null, paused: false, filter: "" },
   theme: "dark",
   topmost: false,
+  maximized: false,
   compact: false,
+  // 启动形态只应用一次：之后用户手动切小窗/大窗不该被配置刷新拽回去
+  startModeApplied: false,
   // 首次运行门禁（§3.5）：配置刚生成时必须先保存才放行其它页签
   firstRun: false,
 };
@@ -79,12 +103,43 @@ const esc = (s) =>
 
 // ── IPC ────────────────────────────────────────────────────────────────
 async function rpc(method, params = {}) {
-  if (!api?.core?.invoke) return { ok: false, error: "Tauri API 不可用（静态预览）" };
+  if (!api?.core?.invoke) {
+    glog("warning", `RPC ${method} 不可用：Tauri API 不可用（静态预览）`);
+    return { ok: false, error: "Tauri API 不可用（静态预览）" };
+  }
+  const started = performance.now();
+  const keys = Object.keys(params || {}).join(",") || "-";
+  glog("debug", `RPC ${method} 开始 params_keys=${keys}`);
   try {
-    return await api.core.invoke("core_call", { method, params });
+    const res = await api.core.invoke("core_call", { method, params });
+    const ms = Math.round(performance.now() - started);
+    if (res && res.ok === false) {
+      glog("warning", `RPC ${method} 失败 耗时=${ms}ms error=${res.error ?? "未知"}`);
+    } else {
+      glog("debug", `RPC ${method} 完成 耗时=${ms}ms ok=true`);
+    }
+    return res;
   } catch (e) {
+    const ms = Math.round(performance.now() - started);
+    glog("error", `RPC ${method} 异常 耗时=${ms}ms`, String(e));
     return { ok: false, error: String(e) };
   }
+}
+
+/**
+ * 拉取配置并**立即应用**。
+ * rpc() 的返回值不会经过 applyEnvelope（那是核心事件推送的路径），
+ * 以前这里直接 `await rpc("config", {})` 把结果丢掉 —— 于是启动时
+ * S.cfg.fields 一直是空的，ui.start_mode / ui.custom_titlebar 这些
+ * 「按配置决定界面形态」的项在启动阶段全部读不到，
+ * 表现就是：小窗模式下重开，窗口是小窗尺寸、内容却是大窗那一套，
+ * 关闭确认也走大窗分支。
+ */
+async function loadConfig() {
+  const res = await rpc("config", {});
+  const payload = res?.result ?? res;
+  if (payload && Array.isArray(payload.fields)) applyConfig(payload);
+  return res;
 }
 
 function applyEnvelope(payload) {
@@ -154,7 +209,7 @@ function applyConfig(p) {
 }
 
 function applyConfigErrors(p) {
-  S.cfg.errors = (p && p.fields) || {};
+  S.cfg.errors = p?.fields ?? {};
   renderConfig();
 }
 
@@ -168,6 +223,18 @@ function applyUiPrefs() {
   }
   const theme = get("ui.theme");
   if (theme) setTheme(theme);
+  // 启动形态（§3.2）：**必须真的调用 applyMode**，否则窗口几何按小窗恢复、
+  // 布局却仍是正常模式的一套 chrome —— 表现就是「内容是大窗、尺寸是小窗」，
+  // 关闭确认也走大窗版。此前只有 applyMode 定义，没有任何启动期调用点。
+  const startMode = get("ui.start_mode");
+  glog(
+    "debug",
+    `applyUiPrefs 字段数=${S.cfg.fields.length} start_mode=${startMode} 已应用=${S.startModeApplied}`,
+  );
+  if (!S.startModeApplied && startMode !== undefined) {
+    S.startModeApplied = true;
+    void applyMode(startMode === "compact");
+  }
   // 关闭策略交给 Rust 决定（运行中不得直接退出，§5）
   const trayEnabled = get("ui.tray.enabled");
   const action = get("ui.tray.close_action");
@@ -479,7 +546,7 @@ async function saveConfig() {
     pendingEdits.clear();
     S.cfg.dirty.clear();
     $("cfg-save").textContent = "保存";
-    const restart = (r.result && r.result.restart_required) || [];
+    const restart = r.result?.restart_required ?? [];
     // §3.5：有需重启项就给出明确提示与「立即重启」入口，不假装已生效
     $("sb-restart").hidden = restart.length === 0;
     $("sb-dirty").textContent = restart.length ? `有 ${restart.length} 项需重启生效` : "";
@@ -492,7 +559,7 @@ async function saveConfig() {
         actions: [{ label: "知道了", value: true, primary: true }],
       });
     }
-    await rpc("config", {});
+    await loadConfig();
   } else {
     $("cfg-save").textContent = "保存失败";
     $("cfg-save").title = r.error || "";
@@ -748,7 +815,7 @@ function removeRule(id) {
 function touchRules() {
   S.rules.dirty = true;
   renderRules();
-  $("sb-dirty").textContent = `未保存（规则）`;
+  $("sb-dirty").textContent = "未保存（规则）";
   if (S.rules.jsonMode) syncJsonFromView();
 }
 
@@ -831,13 +898,33 @@ async function winCmd(name, args = {}) {
   }
 }
 
-async function toggleCompact() {
-  S.compact = !S.compact;
+/** 让「最大化/还原」按钮的图标与窗口真实状态一致（§3.1）。 */
+async function syncMaxIcon() {
+  if (!api?.core?.invoke) return;
+  try {
+    const max = await api.core.invoke("win_is_maximized");
+    S.maximized = !!max;
+    $("btn-max").innerHTML = S.maximized ? ICONS.restore : ICONS.maximize;
+    $("btn-max").title = S.maximized ? "还原" : "最大化";
+  } catch {
+    // 静态预览或非 tauri 环境：保持默认图标即可
+  }
+}
+
+/** 应用窗口模式（§3.2）。启动时也走这里 —— 重开 bug 的根因是"只改了窗口尺寸、
+ *  没有按 ui.start_mode 重建布局"，导致小窗尺寸里塞着正常模式的整套 chrome。 */
+async function applyMode(compact) {
+  glog("info", `applyMode 执行 compact=${!!compact} 来源=调用方`);
+  S.compact = !!compact;
   document.body.dataset.mode = S.compact ? "compact" : "normal";
-  // 图标随模式切换方向（§3.2）：小窗时显示「还原成大窗」的图标
-  $("btn-compact").innerHTML = S.compact ? ICONS.expand : ICONS.compact;
-  $("btn-compact2").innerHTML = `${S.compact ? ICONS.expand : ICONS.compact}小窗`;
+  const icon = S.compact ? "tb-icon tb-icon--expand" : "tb-icon tb-icon--compact";
+  $("btn-compact").innerHTML = `<span class="${icon}"></span>`;
+  $("btn-compact2").innerHTML = `<span class="${icon}"></span>小窗`;
   await winCmd("win_set_compact", { on: S.compact });
+}
+
+async function toggleCompact() {
+  await applyMode(!S.compact);
   await rpc("window", { mode: S.compact ? "compact" : "normal", on_top: S.topmost });
 }
 
@@ -967,25 +1054,40 @@ function confirmStop() {
 }
 
 async function askClosePolicy() {
+  // §5：应用内模态（窗口内渲染），不新建窗口、不改窗口尺寸。
+  // 小窗 360×150 用紧凑版：单行标题 + 两按钮各半 + 复选框折成 12px 小字。
   const layer = $("modal-layer");
   const modal = $("modal");
+  const compact = S.compact;
   modal.replaceChildren();
+  modal.dataset.variant = compact ? "compact" : "full";
+
   const h = document.createElement("h3");
-  h.textContent = "关闭时希望怎么做？";
+  h.textContent = compact ? "要最小化到托盘吗？" : "关闭时希望怎么做？";
+
   const b = document.createElement("div");
   b.className = "modal-body";
   const remember = document.createElement("input");
   remember.type = "checkbox";
   const label = document.createElement("label");
+  label.className = "remember";
   label.append(
     remember,
-    document.createTextNode(" 不再询问（可在配置页 ui.tray.ask_on_close 改回）"),
+    document.createTextNode(compact ? " 不再询问" : " 不再询问（可随时在「关于」页改回）"),
   );
   b.append(label);
-  const row = document.createElement("div");
-  row.className = "modal-actions";
-  const go = async (action) => {
+
+  let closed = false;
+  function closeModal() {
+    if (closed) return;
+    closed = true;
     layer.dataset.open = "false";
+    document.removeEventListener("keydown", onKey, true);
+  }
+
+  const go = async (action) => {
+    if (closed) return;
+    closeModal();
     await winCmd("win_close_decision", { action, remember: remember.checked });
     if (remember.checked) {
       // 「不再询问」必须落盘到配置，否则重启后还会再问（§5）
@@ -997,6 +1099,7 @@ async function askClosePolicy() {
       });
     }
   };
+
   const min = document.createElement("button");
   min.className = "ctl primary";
   min.textContent = "最小化到托盘";
@@ -1005,26 +1108,71 @@ async function askClosePolicy() {
   exit.className = "ctl danger";
   exit.textContent = "直接退出";
   exit.onclick = () => go("exit");
+
+  const row = document.createElement("div");
+  row.className = "modal-actions";
   row.append(min, exit);
+
+  // Esc 取消（关模态、不动作）/ Enter 确认（默认最小化到托盘）/ 焦点锁在模态内
+  function onKey(e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      closeModal();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      void go("minimize");
+      return;
+    }
+    if (e.key === "Tab") {
+      const order = [min, exit, remember];
+      const i = order.indexOf(document.activeElement);
+      e.preventDefault();
+      order[(i + 1) % order.length].focus();
+    }
+  }
+  document.addEventListener("keydown", onKey, true);
+
   modal.append(h, b, row);
   layer.dataset.open = "true";
+  min.focus();
 }
 
 // ── 引导 ───────────────────────────────────────────────────────────────
 function setHandshake(payload) {
+  const wasConnected = !!S.hello;
   let msg;
   try {
     msg = typeof payload === "string" ? JSON.parse(payload) : payload;
-  } catch {
+  } catch (e) {
+    glog("error", "握手应答不是合法 JSON", String(e));
     $("sb-conn").textContent = "握手应答不是合法 JSON";
     return;
   }
   if (!msg || msg.ok === false) {
+    glog("warning", `握手失败：${msg?.error || "未知原因"}`);
     $("sb-conn").textContent = `握手失败：${msg?.error || "未知原因"}`;
     return;
   }
   const r = msg.result || msg;
   S.hello = r;
+  // 启动形态随握手一起到达：hello 是唯一稳定可用的通道
+  // （前端发起的 config RPC 会挂住，见 US-R2-14），
+  // 窗口形态必须在这里定，否则小窗重开会退回大窗内容。
+  if (!S.startModeApplied && r.start_mode !== undefined) {
+    S.startModeApplied = true;
+    void applyMode(r.start_mode === "compact");
+  }
+  if (!wasConnected) {
+    glog(
+      "info",
+      "连接状态：未连接 → 已连接核心",
+      `variant=${r.variant ?? "?"} version=${r.plugin_version ?? "?"} first_run=${!!r.first_run} capabilities=${(r.capabilities || []).join(",") || "-"}`,
+    );
+  }
   $("variant-label").textContent = r.variant ? `· ${r.variant}` : "";
   $("about-version").textContent = r.plugin_version || "—";
   $("about-variant").textContent = r.variant || "—";
@@ -1047,6 +1195,7 @@ function handleTray(p) {
 async function boot() {
   if (!api?.core?.invoke) {
     // 静态预览（无 Tauri）：照常渲染成可截图的状态，但不假装已连接
+    glog("info", "启动：无 Tauri API，进入静态预览分支（不连接核心）");
     $("sb-conn").textContent = "静态预览（无 Tauri API）";
     renderState();
     renderPlayers();
@@ -1059,29 +1208,70 @@ async function boot() {
     return;
   }
 
+  glog(
+    "info",
+    "启动：注册 IPC 事件监听（core-event/ipc-hello/ipc-error/ipc-closed/gui-close-request/tray-command）",
+  );
   await api.event.listen("core-event", (e) => applyEnvelope(e.payload));
   await api.event.listen("ipc-hello", (e) => setHandshake(e.payload));
   await api.event.listen("ipc-error", (e) => {
+    glog("error", `IPC 连接异常：${e.payload}`);
     $("sb-conn").textContent = `连接异常：${e.payload}`;
   });
   await api.event.listen("ipc-closed", () => {
-    $("sb-conn").textContent = "核心已断开";
+    // 不是死路：告诉用户该从哪里重新拉起（方案 B 落地后由核自动拉起界面）
+    glog("warning", "IPC 已关闭：核心已退出");
+    $("sb-conn").textContent = "核心已退出";
     $("st-dot").className = "dot danger";
+    $("ctl-hint").textContent = "核心已退出。请重新启动主程序（核会自动拉起界面）。";
   });
   await api.event.listen("gui-close-request", () => void askClosePolicy());
   await api.event.listen("tray-command", (e) => handleTray(e.payload));
 
-  // 前端可能先于核就绪：订阅后轮询握手快照，直到拿到应答
-  for (let i = 0; i < 60; i++) {
-    const snap = await api.core.invoke("hello_snapshot").catch(() => null);
+  // 前端可能先于核就绪：订阅后轮询握手快照，直到拿到应答（期间给出等待态，不白屏）
+  const POLL_COUNT = 60;
+  const POLL_INTERVAL_MS = 150;
+  glog(
+    "info",
+    `连接状态：等待核心握手 轮询上限=${POLL_COUNT} 次 间隔=${POLL_INTERVAL_MS}ms（约 ${(POLL_COUNT * POLL_INTERVAL_MS) / 1000}s）`,
+  );
+  $("sb-conn").textContent = "等待核心…（自动重连中）";
+  let polls = 0;
+  let firstPollErr = null;
+  for (let i = 0; i < POLL_COUNT; i++) {
+    polls = i + 1;
+    let snap = null;
+    try {
+      snap = await api.core.invoke("hello_snapshot");
+    } catch (e) {
+      // 每 150ms 一次，全量记录会刷屏：只记首次异常，超时时再汇总次数
+      if (firstPollErr === null) {
+        firstPollErr = String(e);
+        glog("warning", "hello_snapshot 轮询异常（首次，后续同类异常只计数）", firstPollErr);
+      }
+    }
     if (snap) {
       setHandshake(snap);
+      if (S.hello) {
+        glog("debug", `握手快照轮询命中 次数=${polls}`);
+      } else {
+        glog("warning", `收到握手快照但未能建立连接 次数=${polls}`);
+      }
       break;
     }
-    await sleep(150);
+    await sleep(POLL_INTERVAL_MS);
+  }
+  if (!S.hello) {
+    glog(
+      "warning",
+      `连接状态：未连接核心 已轮询=${polls} 次 已等待≈${polls * POLL_INTERVAL_MS}ms${firstPollErr ? ` 轮询异常示例=${firstPollErr}` : ""}`,
+    );
+    $("sb-conn").textContent = "未连接核心";
+    $("ctl-hint").textContent =
+      "未连接核心。请通过主程序启动（核会自动拉起界面并连上管道），或在主程序里点「开始」。";
   }
 
-  await rpc("config", {});
+  await loadConfig();
   await rpc("rules", {});
   await rpc("state", {});
   renderState();
@@ -1089,10 +1279,18 @@ async function boot() {
 
 // ── 页签与首次运行硬门禁（§3.5） ─────────────────────────────────────
 function switchTab(name) {
-  for (const t of document.querySelectorAll(".tab")) {
-    if (t.disabled && t.dataset.tab !== name) return; // 门禁期间不许切走
-    t.setAttribute("aria-selected", String(t.dataset.tab === name));
+  const tabs = [...document.querySelectorAll(".tab")];
+  const target = tabs.find((t) => t.dataset.tab === name);
+  if (!target) return;
+  // 门禁只看**目标页**是否被禁用。以前写成「任何其它 tab 被禁用就 return」，
+  // 结果 lockTabsToConfig() 里的 switchTab("config") 自己也被挡掉，
+  // 首启永远停在运行页（实机观察到的就是这个）。
+  if (target.disabled) {
+    glog("info", `切页被拦：${name}（首次运行需先保存配置）`);
+    $("sb-dirty").textContent = "首次运行：请先核对并保存配置";
+    return;
   }
+  for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
   for (const p of document.querySelectorAll(".page"))
     p.dataset.active = String(p.dataset.page === name);
   document.body.dataset.page = name;
@@ -1120,11 +1318,12 @@ function unlockTabs() {
 // ── 事件绑定 ───────────────────────────────────────────────────────────
 function bind() {
   // 图标全部来自 icons.js 的内联 SVG（§4.4：禁 emoji 与字符字形）
-  $("btn-compact").innerHTML = ICONS.compact;
+  $("btn-compact").innerHTML = '<span class="tb-icon tb-icon--compact"></span>';
   $("btn-top").innerHTML = ICONS.pinOff;
   $("btn-min").innerHTML = ICONS.minimize;
+  $("btn-max").innerHTML = ICONS.maximize;
   $("btn-close").innerHTML = ICONS.close;
-  $("btn-compact2").innerHTML = `${ICONS.compact}小窗`;
+  $("btn-compact2").innerHTML = '<span class="tb-icon tb-icon--compact"></span>小窗';
   $("btn-top2").innerHTML = `${ICONS.pinOff}置顶`;
   for (const tab of document.querySelectorAll(".tab")) {
     tab.onclick = () => switchTab(tab.dataset.tab);
@@ -1132,8 +1331,17 @@ function bind() {
   $("sb-restart").onclick = () => rpc("restart_app", {});
 
   $("btn-min").onclick = () => winCmd("win_minimize");
+  // 最大化/还原：图标随窗口真实状态切换（§3.1），窗口尺寸变化时再同步一次
+  $("btn-max").onclick = async () => {
+    await winCmd("win_toggle_max");
+    await syncMaxIcon();
+  };
+  window.addEventListener("resize", () => void syncMaxIcon());
   $("btn-close").onclick = () => winCmd("win_close");
-  $("drag-region").ondblclick = () => winCmd("win_toggle_max");
+  $("drag-region").ondblclick = async () => {
+    await winCmd("win_toggle_max");
+    await syncMaxIcon();
+  };
   $("drag-region").onmousedown = (e) => {
     if (e.button === 0) void winCmd("win_start_drag");
   };

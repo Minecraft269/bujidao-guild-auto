@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import http.server
+import os
 import shutil
 import socketserver
 import subprocess
@@ -21,6 +22,26 @@ import threading
 from pathlib import Path
 
 from PIL import Image, ImageChops
+
+
+def _ensure_utf8_stdout() -> None:
+    """CI 的 Windows 控制台默认是 cp1252/cp437，打印中文会 UnicodeEncodeError。
+
+    这里把标准输出/错误重挂成 UTF-8（不能重挂就退回 ascii + replace），
+    让脚本在任何代码页下都能跑完 —— 只是显示字符可能降级，不影响比对结果。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            try:
+                reconfigure(encoding="ascii", errors="replace")
+            except (ValueError, OSError):
+                pass
+
 
 ROOT = Path(__file__).resolve().parents[1]
 GUI = ROOT / "gui"
@@ -41,15 +62,43 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
         return str(SRC / rel)
 
 
+def find_browser() -> str:
+    """定位浏览器：EDGE_PATH 优先，其次由**系统环境变量**拼标准安装位置。
+
+    这里刻意不写任何盘符或用户名：只从 ProgramFiles(x86)/ProgramFiles/LOCALAPPDATA
+    这类系统变量推导相对路径，换机器不会失效，也不会把本机路径写进仓库。
+    """
+    explicit = os.environ.get("EDGE_PATH")
+    if explicit:
+        return explicit
+    candidates = []
+    for base_var, rel in (
+        ("ProgramFiles(x86)", ("Microsoft", "Edge", "Application", "msedge.exe")),
+        ("ProgramFiles", ("Microsoft", "Edge", "Application", "msedge.exe")),
+        ("LOCALAPPDATA", ("Microsoft", "Edge", "Application", "msedge.exe")),
+        ("ProgramFiles(x86)", ("Google", "Chrome", "Application", "chrome.exe")),
+    ):
+        base = os.environ.get(base_var)
+        if base:
+            candidates.append(Path(base, *rel))
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    raise SystemExit("找不到浏览器：请设置 EDGE_PATH（Edge/Chrome 可执行文件路径）后重试")
+
+
 def capture(out_dir: Path) -> None:
     handler = functools.partial(_Quiet, directory=str(SRC))
     httpd = socketserver.TCPServer(("127.0.0.1", 0), handler)
     port = httpd.server_address[1]
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    env = dict(os.environ)
+    env["EDGE_PATH"] = find_browser()
     try:
         proc = subprocess.run(
             ["node", str(NODE_SCRIPT), f"http://127.0.0.1:{port}/index.html", str(out_dir)],
             cwd=str(GUI),
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -75,6 +124,7 @@ def diff_pct(a: Path, b: Path) -> float:
 
 
 def main() -> int:
+    _ensure_utf8_stdout()
     update = "--update" in sys.argv
     shutil.rmtree(TMP, ignore_errors=True)
     try:
@@ -95,7 +145,9 @@ def main() -> int:
                 continue
             pct = diff_pct(cur, base)
             ok = pct <= THRESHOLD_PCT
-            print(f"[snapshot] {name}: 差异 {pct:.3f}%（阈值 {THRESHOLD_PCT}%）→ {'OK' if ok else 'FAIL'}")
+            print(
+                f"[snapshot] {name}: 差异 {pct:.3f}%（阈值 {THRESHOLD_PCT}%）→ {'OK' if ok else 'FAIL'}"
+            )
             if not ok:
                 failed.append(f"{name}: 差异 {pct:.3f}%")
         if failed:

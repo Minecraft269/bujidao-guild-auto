@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from guild_auto.infrastructure import logger
 from guild_auto.vision.models import Rect, UIElement
 from guild_auto.vision.tooltip import KIND_UNKNOWN, classify_element
 
@@ -130,32 +131,75 @@ class Sweeper:
 
     def _read(self, rect: Rect) -> UIElement:
         """一个停留点:悬停 → 等渲染 → 截图 → OCR → 语义分类。"""
+        started = time.monotonic()
         self.hover(rect.center)
         self.sleep(self.stay_ms / 1000.0)
+
+        # 截图/OCR 是长阻塞调用:进入前后各记一条,卡住时能定位到第几个点、哪一步
+        logger.log_info(f"vision.sweep: 截图开始(停留点 {rect.center},截图适配器无超时参数)")
+        capture_started = time.monotonic()
         shot = self.capture()
+        logger.log_info(
+            f"vision.sweep: 截图返回(耗时 {(time.monotonic() - capture_started) * 1000:.1f}ms,"
+            f"停留点 {rect.center})"
+        )
+
+        logger.log_info(f"vision.sweep: OCR 开始(停留点 {rect.center},超时由 OCR 适配器负责)")
+        ocr_started = time.monotonic()
         text, confidence = self.ocr(shot)
-        return UIElement(
+        logger.log_info(
+            f"vision.sweep: OCR 返回(耗时 {(time.monotonic() - ocr_started) * 1000:.1f}ms,"
+            f"文本 {len(str(text or ''))} 字,置信度 {float(confidence):.3f})"
+        )
+
+        element = UIElement(
             kind=classify_element(text),
             rect=rect,
             text=str(text or ""),
             confidence=float(confidence),
         )
+        logger.log_debug(
+            f"vision.sweep: 停留点 {rect.center} kind={element.kind} "
+            f"confidence={element.confidence:.3f} "
+            f"elapsed={(time.monotonic() - started) * 1000:.1f}ms"
+        )
+        return element
 
     def _probe(self, rect: Rect) -> UIElement:
         """读取一格;低置信度再扫一次(两次取置信度更高者)。"""
         element = self._read(rect)
         if element.confidence < self.low_confidence:
+            original = element.confidence
+            logger.log_warning(
+                f"vision.sweep: 停留点 {rect.center} 置信度 {original:.3f} "
+                f"低于阈值 {self.low_confidence:.3f},触发二次扫掠"
+            )
             retry = self._read(rect)
             if retry.confidence > element.confidence:
                 element = retry
+            logger.log_warning(
+                f"vision.sweep: 停留点 {rect.center} 二次扫掠完成"
+                f"(原置信度 {original:.3f},重扫后 {retry.confidence:.3f},"
+                f"采用 {element.confidence:.3f})"
+            )
         return element
 
     def sweep(self) -> SweepResult:
+        started = time.monotonic()
+        logger.log_info(
+            f"vision.sweep: 扫掠开始(网格 {self.spec.columns}x{self.spec.rows},"
+            f"expected_cells={self.expected_cells}, stay_ms={self.stay_ms},"
+            f"低置信度阈值={self.low_confidence:.3f})"
+        )
         points = grid_points(self.spec)
         elements = tuple(self._probe(rect) for rect in points)
         recognized = sum(1 for element in elements if element.kind != KIND_UNKNOWN)
         complete, missing = check_completeness(
             self.expected_cells, recognized, max_missing_ratio=self.max_missing_ratio
+        )
+        logger.log_info(
+            f"vision.sweep: 扫掠结束(总耗时 {(time.monotonic() - started) * 1000:.1f}ms,"
+            f"识别语义 {recognized} 格,缺口 {missing} 格,complete={complete})"
         )
         return SweepResult(
             elements=elements,

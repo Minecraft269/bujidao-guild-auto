@@ -10,9 +10,9 @@ config/schema.py —— 配置结构契约(键名 / 枚举 / 校验规则)
 """
 
 import os
-import sys
+import time
 
-from guild_auto.config.defaults import DEFAULT_CONFIG
+from guild_auto.config.defaults import CHAT_SEND_KEYS, DEFAULT_CONFIG
 
 VALID_SCOPES = ("all", "high", "mid", "low", "entry")
 VALID_NOTIFY_MODES = ("summary", "per_player")
@@ -31,8 +31,24 @@ VISION_MIN_STAY_MS = 120
 SCHEMA_VERSION = 1
 
 
+def _log(level, msg):
+    """写日志文件(不打印控制台)。
+
+    延迟 import loader._log:loader 模块级 import 本模块,反向只读 type hint 不需要,
+    运行期调用时 loader 已加载完成,不会循环。"""
+    from guild_auto.config.loader import _log as _loader_log
+
+    _loader_log(level, msg)
+
+
 def validate_config(cfg):
     """校验配置,返回问题列表(每条为 (级别, 消息);级别: error/warning)。"""
+    t0 = time.monotonic()
+    key_count = len(cfg) if isinstance(cfg, dict) else 0
+    _log(
+        "info",
+        f"[S2] validate_config ENTER | 键数量={key_count} | config_schema_version={SCHEMA_VERSION}",
+    )
     issues = []
 
     def _is_num(v):
@@ -195,20 +211,22 @@ def validate_config(cfg):
                 issues.append(
                     ("error", f"配置项 ui.kick_confirm_text 必须是非空字符串,当前: {txt!r}")
                 )
+
             # ── tauri 版新增键(GUI设计规范 §3/§4/§5)─────────────────────
             def _enum(block, key, allowed, path):
                 if key in block and block[key] not in allowed:
                     issues.append(
                         (
                             "error",
-                            f"配置项 {path} 取值非法: {block[key]!r},"
-                            f"应为 {allowed} 之一",
+                            f"配置项 {path} 取值非法: {block[key]!r},应为 {allowed} 之一",
                         )
                     )
 
             def _bool(block, key, path):
                 if key in block and not isinstance(block[key], bool):
-                    issues.append(("error", f"配置项 {path} 必须是 true/false,当前: {block[key]!r}"))
+                    issues.append(
+                        ("error", f"配置项 {path} 必须是 true/false,当前: {block[key]!r}")
+                    )
 
             _enum(ui, "theme", ("auto", "dark", "light"), "ui.theme")
             _bool(ui, "custom_titlebar", "ui.custom_titlebar")
@@ -223,14 +241,21 @@ def validate_config(cfg):
                 if not isinstance(block, dict):
                     continue
                 for f in fields:
-                    if f in block and not isinstance(block[f], bool) and f != "width" and f != "height":
+                    if (
+                        f in block
+                        and not isinstance(block[f], bool)
+                        and f != "width"
+                        and f != "height"
+                    ):
                         issues.append(
                             ("error", f"配置项 ui.{sub}.{f} 必须是 true/false,当前: {block[f]!r}")
                         )
                 if sub == "window":
                     for f in ("width", "height"):
                         v = block.get(f)
-                        if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v <= 0):
+                        if v is not None and (
+                            not isinstance(v, int) or isinstance(v, bool) or v <= 0
+                        ):
                             issues.append(
                                 ("error", f"配置项 ui.window.{f} 必须是正整数,当前: {v!r}")
                             )
@@ -424,6 +449,19 @@ def validate_config(cfg):
     if cfg.get("chat_key") != "auto" and not isinstance(cfg.get("chat_key"), str):
         issues.append(("error", "chat_key 应为字符串('auto' 或键名)"))
 
+    # 显式把聊天键配成"发送键"→ 打不开聊天栏，启动就会死循环并反复发消息。
+    # 这里拦住直接写在 config.json 里的那种；chat_key=auto 时由 options.txt 解析出的值
+    # 在 runtime.build_runtime 的启动阶段阻断（见 application/runtime.py）。
+    _chat = cfg.get("chat_key")
+    if isinstance(_chat, str) and _chat.strip().lower() in CHAT_SEND_KEYS:
+        issues.append(
+            (
+                "error",
+                f"chat_key={_chat!r} 是发送键，不是打开聊天栏的键；"
+                f"请改成 't' 或 '/'（网易版 enter 只负责发送消息）",
+            )
+        )
+
     # debug skip_stages 合法性
     skip = section(cfg, "debug").get("skip_stages", [])
     valid_stages = {"list", "member", "decide", "notify", "execute"}
@@ -526,8 +564,25 @@ def validate_config(cfg):
                     )
         except (OSError, ValueError) as exc:
             # 路径解析失败不阻塞校验(后续打开日志时会自然报错)。
-            # 写 stderr 而不是调项目 logger:此处可能发生在 logger 初始化之前,
-            # 且 config 层不宜反向依赖 infrastructure。
-            sys.stderr.write(f"[schema] game_log 路径解析失败: {exc!r}\n")
+            # 延迟 import 同层 console:它既打印控制台也写日志文件,替代原先只写
+            # sys.stderr 的做法(后者不进日志文件,事后无从追溯)。
+            from guild_auto.config.loader import console
 
+            console(f"[schema] 配置/校验: game_log 路径解析失败: {exc!r}", level="warning")
+
+    error_count = sum(1 for level, _msg in issues if level == "error")
+    warning_count = len(issues) - error_count
+    elapsed = (time.monotonic() - t0) * 1000.0
+    if error_count:
+        _log(
+            "error",
+            f"[S2] validate_config EXIT | 校验失败: error={error_count}, warning={warning_count}"
+            f" | 耗时={elapsed:.2f}ms",
+        )
+    else:
+        _log(
+            "info",
+            f"[S2] validate_config EXIT | 配置校验通过 | warning={warning_count}"
+            f" | 耗时={elapsed:.2f}ms",
+        )
     return issues

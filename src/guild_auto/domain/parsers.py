@@ -49,6 +49,8 @@ UI 显示而非注入,由 is_masked_name 单独放行 —— 否则"中等活跃
 
 import re
 
+from guild_auto.infrastructure import logger
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -86,6 +88,19 @@ _MASKED_NAME_RE = re.compile(r"^\*+$")
 
 class ParseError(ValueError):
     """解析失败(缺关键字段、格式不符、面板被截断)。消息为中文。"""
+
+
+# 日志/异常文本里的原文片段上限:避免一条异常面板把日志撑爆
+_SNIP_MAX = 80
+
+
+def _snip(value, limit=_SNIP_MAX):
+    """值 → 单行短片段(超长截断);用于日志里带原文片段,不改变解析行为。"""
+    if value is None:
+        return "None"
+    s = value if isinstance(value, str) else repr(value)
+    s = s.replace("\r", " ").replace("\n", " ")
+    return s if len(s) <= limit else s[:limit] + f"...(+{len(s) - limit}字符)"
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +209,7 @@ def parse_weekly_exp(lines):
     daily = []
     in_section = False
     parsed_any = False
+    ignored = []  # 段内被忽略的行片段(无法识别为日期/今天/数值 公会经验)
     for raw in lines:
         s = _strip_all(raw)
         if not s:
@@ -215,6 +231,8 @@ def parse_weekly_exp(lines):
             else:
                 mf = _ANY_EXP_RE.search(s)  # 段内其它数值行:只进总数
                 if not mf:
+                    # 静默 continue 会让总数被低估,进而错误降职/踢出 —— 必须留痕
+                    ignored.append(_snip(s))
                     continue
                 label, number = None, mf.group(1)
         value = _to_int(number, s)
@@ -222,6 +240,17 @@ def parse_weekly_exp(lines):
         parsed_any = True
         if label is not None:
             daily.append((label, value))
+    if in_section:
+        logger.log_debug(
+            f"[周贡献] 段内行统计 | section={WEEKLY_HEADER} | parsed_total={total} "
+            f"| ignored_count={len(ignored)}"
+        )
+    if ignored:
+        logger.log_warning(
+            f"[周贡献] 段内存在无法识别的行,已忽略(总数可能被低估) | section={WEEKLY_HEADER} "
+            f"| ignored_count={len(ignored)} | parsed_total={total} "
+            f"| line_snippet={ignored[:5]}"
+        )
     if in_section and not parsed_any:
         raise ParseError(
             "周贡献段存在但一行有效数值都没解析到(可能被网易屏蔽词遮成 *** 或 ???): "
@@ -247,6 +276,8 @@ def _join_truncated_names(rows, is_structural):
     """
     out = []
     pending = ""
+    joined_rows = 0
+    last_joined_len = 0
     for row in rows:
         if row is None:  # 空行:打断续行,但不进 out
             if pending:
@@ -259,11 +290,25 @@ def _join_truncated_names(rows, is_structural):
                 pending = ""
             out.append(row)
             continue
-        pending = f"{pending} {row}" if pending else row
+        if pending:
+            pending = f"{pending} {row}"
+            joined_rows += 1
+            last_joined_len = len(pending)
+        else:
+            pending = row
         if pending.endswith(BULLET):  # 收齐了,含续行本身也带 ● 的情况
             out.append(pending)
             pending = ""
+    if joined_rows:
+        logger.log_debug(
+            f"[guild list] 名字续行拼接 | reason=joined_continuation "
+            f"| joined_rows={joined_rows} | last_length={last_joined_len}"
+        )
     if pending:  # 块尾的残缺名字(面板被截断)
+        logger.log_warning(
+            f"[guild list] 块尾名字未以●收尾,疑似面板截断 | reason=truncated_at_block_end "
+            f"| name_snippet={_snip(pending)} | length={len(pending)}"
+        )
         out.append(pending)
     return out
 
@@ -286,11 +331,18 @@ def parse_guild_list(block_lines, rank_names):
     # 合并解析会把被遮的那行当成额外成员 → 名册 201 > 声明 200,违反验收 25
     # 「名册条目数=成员总数、差值 0」。重复时以**最后一份**为准:同源面板取一份即可,
     # 且最后一份通常是未被遮的真名。
-    if sum(1 for r in rows if r is not None and _TOTAL_RE.search(r)) > 1:
+    panels = sum(1 for r in rows if r is not None and _TOTAL_RE.search(r))
+    if panels > 1:
         first_title = next((r for r in rows if r is not None and _GROUP_TITLE_RE.match(r)), None)
         starts = [i for i, r in enumerate(rows) if r is not None and r == first_title]
         if first_title is not None and starts:
-            rows = rows[starts[-1] :]
+            kept_start = starts[-1]
+            logger.log_debug(
+                f"[guild list] 检测到同源面板重复写入,取最后一份 | duplicate_panels={panels} "
+                f"| kept_start_index={kept_start} | discarded_rows={kept_start} "
+                f"| reason=同源面板取最后一份未被遮挡的"
+            )
+            rows = rows[kept_start:]
 
     title_to_key = {str(v).strip(): k for k, v in (rank_names or {}).items()}
 
@@ -305,12 +357,17 @@ def parse_guild_list(block_lines, rank_names):
     groups = {key: [] for key in (rank_names or {})}
     total = online = None
     current = None
+    current_title = None  # 最近一个分组标题原文(未登记时用于统计丢弃成员数)
+    unregistered = {}  # title -> 该段被丢弃的成员行数
     for row in _join_truncated_names(rows, is_structural):
         if row == guild_name:
             continue
         m = _GROUP_TITLE_RE.match(row)
         if m:
-            current = title_to_key.get(m.group(1).strip())  # 未登记的职位 → None
+            current_title = m.group(1).strip()
+            current = title_to_key.get(current_title)  # 未登记的职位 → None
+            if current is None:
+                unregistered.setdefault(current_title, 0)
             continue
         if current is None:
             # 未登记的职位标题:该段成员无法归类,但「成员总数/在线成员数」是面板级
@@ -323,6 +380,8 @@ def parse_guild_list(block_lines, rank_names):
             if m:
                 online = int(m.group(1))
                 continue
+            if current_title is not None:
+                unregistered[current_title] += 1
             continue
         m = _TOTAL_RE.search(row)
         if m:
@@ -337,6 +396,13 @@ def parse_guild_list(block_lines, rank_names):
             pid = part.strip()
             if pid:
                 groups[current].append(validate_player_name(pid))
+
+    for title, dropped_rows in unregistered.items():
+        logger.log_warning(
+            f"[guild list] 分组标题未登记在 rank_names,该段成员已丢弃 | title={title!r} "
+            f"| member_rows={dropped_rows} | rank_keys={sorted((rank_names or {}).keys())} "
+            f"| reason=未登记职位(title 不在 rank_names 的显示名中)"
+        )
 
     if not any(groups.values()):
         raise ParseError("guild list 输出中未解析到任何玩家(分组标题与 rank_names 不匹配?)")
@@ -393,7 +459,24 @@ def parse_guild_member(block_lines, expected_id=None):
     m = _LAST_ONLINE_RE.search("\n".join(rows))
     last_online = m.group(1).strip() if m and m.group(1).strip() else None
 
+    if joined_at is None:
+        hint = next((r for r in rows if "加入时间" in r), None)
+        logger.log_debug(
+            f"[guild member] 可选字段未解析到 | player={_snip(player)} missing_field=joined_at "
+            f"| block_lines={len(rows)} | line_snippet={_snip(hint) if hint else None}"
+        )
+    if last_online is None:
+        hint = next((r for r in rows if "上次在线" in r), None)
+        logger.log_debug(
+            f"[guild member] 可选字段未解析到 | player={_snip(player)} missing_field=last_online "
+            f"| block_lines={len(rows)} | line_snippet={_snip(hint) if hint else None}"
+        )
+
     weekly_total, daily = parse_weekly_exp(rows)
+    logger.log_debug(
+        f"[guild member] 解析完成 | player={_snip(player)} weekly_total={weekly_total} "
+        f"daily_rows={len(daily)} joined_at={_snip(joined_at)} last_online={_snip(last_online)}"
+    )
     return {
         "player": player,
         "guild_name": guild_name,

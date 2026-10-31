@@ -108,8 +108,13 @@ DEFAULT_CONFIG = {
     "rules_strategy": "first_match",
     "rules": [],
     "ui": {
-        "enabled": False,
+        # 默认开启：gui 变体双击即出界面（用户实测要求）；非 gui 构建找不到 Gui.exe 时
+        # 会「明确报错 + 回落控制台」，不会静默卡住。
+        "enabled": True,
         "start_mode": "normal",
+        # GUI 拉起后等用户点「开始」的上限（秒）。用户关掉界面会立即结束等待，
+        # 这里只是"既没点开始也没关界面"时的兜底；默认从 900 缩到 120。
+        "start_timeout": 120,
         "always_on_top": False,
         "kick_confirm_mode": "dialog",
         "kick_confirm_text": "kick-confirm",
@@ -345,8 +350,9 @@ CONFIG_COMMENTS = {
     "网易版客户端日志通常为 GB2312",
     # ── 窗口与按键 ──────────────────────────────────────────────────────────
     "window_keywords": "游戏窗口标题关键词(任一命中即视为游戏窗口;大小写不敏感;首个命中优先)",
-    "chat_key": "聊天栏打开按键:auto=读 options.txt 的 key_key.chat 自动映射(本机通常为回车);"
-    "也可直接写 pyautogui 键名(如 't'/'enter'/'space'),或中文别名(如 '回车'/'空格'/'esc')",
+    "chat_key": "聊天栏打开按键:auto=读 options.txt 的 key_key.chat 自动映射;"
+    "也可直接写 pyautogui 键名(如 't'/'/'/'space'/'esc'),或中文别名(如 '回车'/'空格'/'esc')。"
+    "注意:'enter'/'return'/'numpadenter' 是发送键不是开栏键,配了会启动即阻断",
     "pause_key": "暂停键:运行中随时暂停/继续(pynput 键名,如 'u'/'p';键盘全局监听)",
     "pause": "暂停与自动暂停(仅 operation_mode='ui' 生效):执行中检测到用户键鼠活动即自动暂停;"
     "阶段确认等待/空闲/指令模式不触发",
@@ -419,7 +425,7 @@ CONFIG_COMMENTS = {
     "ui.window.remember_geometry": "是否记住窗口位置与大小。作用=true 记住上次位置;上次落在屏幕外(换显示器)时自动回落居中。可填值=true(默认)/false",
     "ui.tray.enabled": "托盘常驻开关。作用=false 时点关闭直接退出,不询问也不驻留。可填值=true(默认)/false",
     "ui.tray.close_action": "关闭窗口的行为。作用=决定点关闭后做什么。可填值=ask(每次询问,默认)/minimize(最小化到托盘)/exit(直接退出)",
-    "ui.tray.ask_on_close": "首次关闭时是否询问。作用=true 弹一次对话框让用户选并勾选\"不再询问\";勾选后本键写 false,可在设置页改回。可填值=true(默认)/false",
+    "ui.tray.ask_on_close": '首次关闭时是否询问。作用=true 弹一次对话框让用户选并勾选"不再询问";勾选后本键写 false,可在设置页改回。可填值=true(默认)/false',
     "update.mode": "自动更新档位。作用=check 仅后台查一次并在关于页提示;notify 弹窗让用户决定(默认);auto 静默下载安装、退出后生效。可填值=check/notify/auto",
     "update.manifest_url": "更新清单 latest.json 的地址。作用=留空则不做更新检查;填写后按变体匹配下载。可填值=https URL 或空字符串(默认)",
     "ui": "UI 配置界面(阶段 3):是否允许图形入口、窗口初始形态、是否置顶、"
@@ -432,10 +438,12 @@ CONFIG_COMMENTS = {
     "conditions/actions。条件字段可用:weekly_total(数值比较) rank(== != in not_in) "
     "online(== !=) player(== != matches) joined_at/last_online(before after)。"
     "动作可用:promote(times) demote(times) kick(reason) notify ignore",
-    "ui.enabled": "是否允许 UI 入口:true=启动时可加 --ui 打开图形配置界面;false=只走控制台流程。"
+    "ui.enabled": "是否启用图形界面入口:true=启动即拉起界面(找不到 Gui.exe 会明确报错并回落控制台);false=只走控制台流程。默认 true。"
     "无 --ui 参数时默认走控制台,向后兼容",
     "ui.start_mode": "窗口初始形态:'normal'=窗口化 600x400(默认);'compact'=小窗 200x150"
     "(只显示状态与进度)。运行时可用工具栏按钮切换",
+    "ui.start_timeout": "GUI 拉起后等用户点「开始」的上限(秒),默认 120。"
+    "用户关闭界面会立即结束等待;只有既没点开始也没关界面时才会等到这个上限",
     "ui.always_on_top": "窗口是否始终置顶:true=用 win32gui 设为 HWND_TOPMOST;false=普通窗口。"
     "运行时可用图钉按钮切换",
     "ui.kick_confirm_mode": "踢出二次确认的方式:'dialog'=弹窗(默认,需输入确认词);"
@@ -560,3 +568,8 @@ KEY_ALIASES = {
     "制表键": "tab",
     "回车键": "enter",
 }
+
+# 发送键：按下后是"把消息发出去"，不是"打开聊天栏"。
+# 网易版 options.txt 的 key_key.chat 常常是 enter —— 直接当开栏键用会死循环并反复发消息，
+# 所以显式配置时在 config/schema.py 报错，auto 解析出这类键时在启动阶段阻断。
+CHAT_SEND_KEYS = ("enter", "return", "numpadenter")

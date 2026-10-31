@@ -14,6 +14,7 @@ config 层 —— 配置读取与校验(零业务逻辑)
 """
 
 from guild_auto.config.defaults import (
+    CHAT_SEND_KEYS,
     CONFIG_COMMENTS,
     DEFAULT_CONFIG,
     KEY_ALIASES,

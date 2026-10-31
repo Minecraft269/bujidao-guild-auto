@@ -4,8 +4,12 @@
 import { mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
 
-const EDGE =
-  process.env.EDGE_PATH || "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe";
+// 浏览器路径由 EDGE_PATH 提供（不写死任何本机/系统路径）
+const EDGE = process.env.EDGE_PATH;
+if (!EDGE) {
+  console.error("[snapshot] 缺少 EDGE_PATH（浏览器可执行文件路径）");
+  process.exit(2);
+}
 const base = process.argv[2];
 const outDir = process.argv[3] || "snapshots";
 

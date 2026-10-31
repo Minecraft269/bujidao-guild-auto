@@ -235,9 +235,16 @@ class TestBuildRuntime(unittest.TestCase):
         m_exec.return_value.set_reset_hook.assert_called_once()
         self.assertTrue(any("日志已连接" in m for m in msgs))
 
-    def test_chat_key_enter_warns_but_proceeds(self):
-        rt, msgs, _ = self._build(chat_key="enter")
-        self.assertTrue(any("警告" in m for m in msgs))
+    def test_chat_key_send_key_blocks_startup(self):
+        """聊天键被解析成发送键 → 启动即阻断（继续跑只会死循环并反复发消息）。"""
+        for key in ("enter", "return", "numpadenter"):
+            with self.assertRaises(SystemExit) as ctx:
+                self._build(chat_key=key)
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_chat_key_open_key_not_blocked(self):
+        """t 是开聊天栏的键，不能误伤。"""
+        rt, _msgs, _ = self._build(chat_key="t")
         self.assertIsInstance(rt, rt_mod.Runtime)
 
     def test_ocr_unavailable_degrades(self):

@@ -30,6 +30,7 @@ pending.py —— 待办持久化与断点续做
 
 import json
 import os
+import time
 
 from guild_auto.infrastructure import logger
 from guild_auto.config import console
@@ -54,8 +55,22 @@ def load_pending(path):
         raw = [
             it for it in items if isinstance(it, dict) and it.get("player") and it.get("actions")
         ]
-    except (OSError, json.JSONDecodeError):
+    except FileNotFoundError:
+        # 没有待办文件是正常情况(首次运行/上次全部完成),不告警。
+        logger.log_debug(f"待办文件不存在 path={path},按无待办处理")
         return []
+    except (OSError, json.JSONDecodeError) as e:
+        # 文件不可读/损坏 = "上次的未完成操作(可能是不可逆的踢人)静默消失",
+        # 必须留 WARNING,否则表现为"没有待办"而无人知晓。
+        logger.log_warning(
+            f"读取待办失败 path={path} 异常={type(e).__name__}: {e}，本次按无待办处理"
+        )
+        return []
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = None
+    logger.trace_file_read(path, size=size)
 
     safe, dropped = [], 0
     for it in raw:
@@ -90,6 +105,8 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
     items = load_pending(path)
     if not items:
         return True, []
+    started = time.monotonic()
+    logger.log_info(f"待办 ENTER 项数={len(items)} 询问=是否执行(等待=用户输入)")
     sw = cfg["switches"]
     console_fn(f"\n=== 发现上次未完成操作 {len(items)} 条(不进行新的统计查询)===")
     for it in items:
@@ -102,19 +119,24 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
         try:
             ans = input_fn("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(保留待下次): ")
             ans = (ans or "").strip().lower()
-        except EOFError:
+        except EOFError as e:
+            logger.log_warning(f"待办确认 EOF(终端关闭/无输入)，按跳过处理: {e!r}")
             ans = "n"
         do_exec = ans != "n"
     else:
         console_fn("(dry-run:不执行,保留待下次)")
+    logger.log_info(f"待办执行决定 执行={do_exec}")
 
     remaining = []
+    completed = 0
     if do_exec:
         # 延迟 import:暂停门住在 pause.py,而 pause.py 经 runtime 间接依赖,
         # 模块级 import 会成环
+        from guild_auto.application import runtime as _runtime
         from guild_auto.application.pause import reset_window_state_after_pause, wait_if_paused
 
         for it in items:
+            _runtime.set_pause_context(stage="待办续做", command="/".join(it["actions"]))
             wait_if_paused()
             # 暂停恢复后重置窗口状态(与主执行循环一致)
             reset_window_state_after_pause(executor.hwnd, executor.detector)
@@ -130,12 +152,23 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
                 )
                 console_fn(f"    - {it['player']}: {dropped}开关已关闭,跳过(保留待下次)")
                 it["error"] = f"{dropped}开关已关闭"
+                logger.log_debug(
+                    f"续做跳过 player={it['player']} actions={it['actions']} 原因=开关已关闭"
+                )
                 remaining.append(it)
                 continue
             console_fn(f"  执行 {it['player']}: {allowed}")
+            item_started = time.monotonic()
             results = executor.execute_actions(it["player"], allowed)
             done = sum(1 for _, ok, _ in results if ok)
+            first_err = next((e for _a, ok, e in results if not ok), None)
+            logger.log_debug(
+                f"续做 player={it['player']} actions={allowed} "
+                f"耗时={time.monotonic() - item_started:.2f}s "
+                f"ok={done}/{len(results)} err={first_err}"
+            )
             if done == len(results):
+                completed += 1
                 console_fn(f"    ✓ {it['player']} 全部完成,已从待办移除")
                 continue  # 完成 → 不写回待办
             it["actions"] = allowed[done:]  # 剩余动作保留,下次继续
@@ -155,8 +188,12 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
     try:
         ans = input_fn("直接退出(回车)还是继续新的统计操作(输入 c 回车)?: ")
         ans = (ans or "").strip().lower()
-    except EOFError:
+    except EOFError as e:
+        logger.log_warning(f"待办续做后询问 EOF(终端关闭/无输入)，按直接退出处理: {e!r}")
         ans = ""
+    logger.log_info(
+        f"待办 EXIT 耗时={time.monotonic() - started:.1f}s 完成={completed} 剩余={len(remaining)}"
+    )
     # 语义:cont = "是否继续新的统计操作"。
     # 提示语是「直接退出(回车)还是继续新的统计(输入 c)」—— 所以输入 c 才是继续。
     # 原实现写成 `ans != "c"` 把语义取反了:用户按 c 反而退出、直接回车反而继续,
