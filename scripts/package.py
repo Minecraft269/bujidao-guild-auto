@@ -34,6 +34,8 @@ from guild_auto.ui.binding import GUI_EXE_NAME, GUI_EXE_NAMES, find_gui_in  # no
 
 LAUNCH_CMD = """@echo off
 rem Portable entry: launches the core exe (Gui.exe gets no shortcut)
+rem chcp 936: 批处理是 GBK，父控制台若是 UTF-8 会把中文 exe 名读错
+chcp 936 >nul
 setlocal
 cd /d "%~dp0"
 start "" "{core_name}"
@@ -133,8 +135,11 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # .cmd 用 GBK：cmd.exe 在中文 Windows 上按 OEM 代码页读批处理
+    # 换行必须 CRLF：cmd.exe 不认单独的 LF，会把第一行拆错，
+    # 实机报「'ble' 不是内部或外部命令」（rem Portable… 被劈开）。
     cmd_path = out / "启动.cmd"
-    cmd_path.write_bytes(LAUNCH_CMD.format(core_name=core_name).encode("gbk", "replace"))
+    cmd_bytes = LAUNCH_CMD.format(core_name=core_name).encode("gbk", "replace")
+    cmd_path.write_bytes(cmd_bytes.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
 
     zip_path = out / f"{stem}.zip"
     if not args.skip_zip:

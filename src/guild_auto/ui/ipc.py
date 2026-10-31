@@ -267,6 +267,9 @@ class IpcServer:
         chunk = ctypes.create_string_buffer(BUFFER_SIZE)
         read = wintypes.DWORD(0)
         total = 0
+        logger.log_info(
+            f"[阶段] S6 ipc 读循环进入 stop={self._stop.is_set()} 管道={self.masked_path}"
+        )
         while not self._stop.is_set():
             ok = _kernel32.ReadFile(handle, chunk, BUFFER_SIZE, ctypes.byref(read), None)
             if not ok or read.value == 0:
@@ -293,6 +296,12 @@ class IpcServer:
         if not self.accept():
             return
         handle = self._handle
+        # 进入读循环前留痕：若 _stop 已置位，读循环会一条日志都不打就结束，
+        # 这类静默退出必须先被看见（否则「已连接但没有任何后续」无从解释）。
+        logger.log_info(
+            f"[阶段] S6 ipc serve 开始读取 connected={self._connected.is_set()} "
+            f"stop={self._stop.is_set()} 管道={self.masked_path}"
+        )
         try:
             for line in self._read_lines(handle):
                 reply = self.handle_line(line)
