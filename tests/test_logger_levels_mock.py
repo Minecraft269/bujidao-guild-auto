@@ -123,7 +123,11 @@ class LoggerTempCase(unittest.TestCase):
             return f.read()
 
     def lines_of(self, name="latest.log"):
-        return [ln for ln in self.read_log(name).splitlines() if ln.strip()]
+        # 去掉行首的 [core] 标记再比对：这些用例关心的是时间戳/级别/正文，
+        # 不是「哪一行来自核」的归属标记（归属由 test_core_tag_present 单独断言）。
+        return [
+            ln.removeprefix("[core] ") for ln in self.read_log(name).splitlines() if ln.strip()
+        ]
 
     def messages(self, name="latest.log"):
         """取出每行 [Level] 之后、(+X.XXXs) 之前的正文。"""
@@ -976,7 +980,7 @@ class TestTimeOffset(LoggerTempCase):
         self.assertEqual(rec.levelname, "Level 25")
         with mock.patch.object(logger._time, "monotonic", return_value=logger._START_TIME + 0.5):
             out = fmt.format(rec)
-        self.assertEqual(out, "Level 25 自定义级别 (+0.500s)")
+        self.assertEqual(out, "[core] Level 25 自定义级别 (+0.500s)")
         self.assertEqual(rec.levelname, "Level 25")
 
     def test_known_level_rewrites_name_in_place(self):
@@ -986,7 +990,7 @@ class TestTimeOffset(LoggerTempCase):
         self.assertEqual(rec.levelname, "Level 5")
         with mock.patch.object(logger._time, "monotonic", return_value=logger._START_TIME + 2.25):
             out = fmt.format(rec)
-        self.assertEqual(out, "Trace 追踪正文 (+2.250s)")
+        self.assertEqual(out, "[core] Trace 追踪正文 (+2.250s)")
         self.assertEqual(rec.levelname, "Trace")
 
 

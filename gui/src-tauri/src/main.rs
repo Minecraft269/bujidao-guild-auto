@@ -365,7 +365,9 @@ fn win_set_tray_state(
             // 绝不静默：托盘透明是用户直接可见的缺陷，必须在日志里说清
             None => logger::warn(
                 "tray",
-                &format!("托盘图标不可用 file={icon_file}（内置/资源/同级目录都失败），保留上一个图标"),
+                &format!(
+                    "托盘图标不可用 file={icon_file}（内置/资源/同级目录都失败），保留上一个图标"
+                ),
             ),
         }
         let _ = tray.set_tooltip(Some(tip));

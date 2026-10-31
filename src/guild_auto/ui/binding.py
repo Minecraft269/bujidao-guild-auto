@@ -233,6 +233,10 @@ class GuiBridge:
             except OSError as e:
                 # 停止失败不阻断退出，但必须留痕（禁止静默失败）
                 logger.log_warning(f"[阶段] S5 终止 GUI 进程失败 pid={self._proc.pid}: {e!r}")
+        # GUI 退出时把它那一侧的日志并进核的 latest.log（对外只留一份时间线）
+        merged = logger.merge_gui_log(self.log_dir)
+        if merged:
+            logger.log_info(f"[阶段] S5 GUI 退出，已聚合 {merged} 行 gui 日志")
 
     # ── 推送 ────────────────────────────────────────────────────────────
     def push_state(self, **changes: Any) -> None:

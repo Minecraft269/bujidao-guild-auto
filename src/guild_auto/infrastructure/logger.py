@@ -83,7 +83,8 @@ class _Formatter(logging.Formatter):
         record.levelname = LEVEL_EN.get(record.levelno, record.levelname)
         # 相对启动时间的秒偏移(进程内单调,不受系统时间调整影响)
         rel = _time.monotonic() - _START_TIME
-        return f"{super().format(record)} (+{rel:.3f}s)"
+        # [core] 标记：混合时间线里要能一眼分出哪行来自核、哪行来自 GUI
+        return f"[core] {super().format(record)} (+{rel:.3f}s)"
 
 
 def _snap(value):
@@ -129,6 +130,9 @@ def _archive_old_latest(log_dir):
 
     压缩包(GZ)内存放的是对应 .log 文件(GzipFile 内嵌 .log 文件名)。
     返回归档后的 .gz 文件名,无旧日志返回 None。"""
+    # 归档前先把上一轮残留的 gui.log 并进 latest.log，否则它会被一起归档走、
+    # 或者在下一轮里变成"孤儿文件"（用户要求：对外只留 latest.log）。
+    merge_gui_log(log_dir)
     latest_path = os.path.join(log_dir, "latest.log")
     if not os.path.exists(latest_path):
         return None
@@ -238,6 +242,54 @@ def _log(level, msg):
             sys.stderr.write(f"[logger] 写日志失败: {e!r}\n")
         except Exception:
             return  # stderr 也不可用:这是唯一允许的"无处可写"分支
+
+
+# ---------------------------------------------------------------------------
+# GUI 日志聚合（用户要求：对外只留 latest.log）
+# ---------------------------------------------------------------------------
+_GUI_MERGE_OFFSET = 0  # 已并入 latest.log 的 gui.log 字节数(只并新增部分)
+
+
+def merge_gui_log(log_dir=None):
+    """把 GUI 侧 `gui.log` 的新增行并入 `latest.log`，每行前缀 `[gui]`。
+
+    设计约束（为什么不是两边直写一个文件）：
+    * 两边同时直写同一文件，轮转改名时句柄会失效（Windows 上尤其明显）；
+    * GUI 是独立进程，它的日志生命周期与核不同步。
+    所以 GUI 仍只写自己的 gui.log 作中间文件，由核在**启动 / 轮转 / GUI 退出**时聚合。
+    返回本次并入的行数（无新增返回 0）。
+    """
+    global _GUI_MERGE_OFFSET
+    if not _enabled:
+        return 0
+    base = log_dir or _log_dir
+    gui_path = os.path.join(base, "gui.log")
+    if not os.path.exists(gui_path):
+        return 0
+    try:
+        with open(gui_path, "rb") as f:
+            f.seek(_GUI_MERGE_OFFSET)
+            data = f.read()
+            _GUI_MERGE_OFFSET += len(data)
+    except OSError as e:  # 读不到不能影响主流程，但必须留痕
+        log_warning(f"[日志] 读取 gui.log 失败，本次不聚合: {e!r}")
+        return 0
+    if not data:
+        return 0
+
+    lines = [ln for ln in data.decode("utf-8", "replace").splitlines() if ln.strip()]
+    if not lines:
+        return 0
+    latest = os.path.join(base, "latest.log")
+    try:
+        with open(latest, "a", encoding="utf-8") as f:
+            for line in lines:
+                f.write(f"[gui] {line}\n")
+    except OSError as e:
+        log_warning(f"[日志] 聚合 gui.log 到 latest.log 失败: {e!r}")
+        return 0
+    log_info(f"[日志] 已聚合 {len(lines)} 行 GUI 日志到 latest.log")
+    return len(lines)
 
 
 # ---------------------------------------------------------------------------
