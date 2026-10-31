@@ -130,6 +130,14 @@ pub fn log(level: u8, category: &str, msg: &str) {
 mod tests {
     use super::*;
 
+    /// set_level/min_level 是进程级全局，测试默认并行执行会互相覆盖 ——
+    /// 实测 CI 上 `log_above_threshold_returns_early` 就因此失败过。
+    static LEVEL_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_levels() -> std::sync::MutexGuard<'static, ()> {
+        LEVEL_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn level_names_cover_six_levels() {
         // 6 级语义是规范 §一 的约定，名字与顺序不能漂
@@ -140,6 +148,7 @@ mod tests {
 
     #[test]
     fn set_level_ignores_out_of_range_and_applies_valid() {
+        let _guard = lock_levels();
         // 越界值必须被忽略（否则会把日志全关或全开）
         set_level(0);
         set_level(9);
@@ -152,6 +161,7 @@ mod tests {
 
     #[test]
     fn log_above_threshold_returns_early() {
+        let _guard = lock_levels();
         // 级别高于阈值时直接返回，不触碰 sink（这条路径最容易写出"以为没过但写了"）
         set_level(1);
         trace("test", "不该被写出");
