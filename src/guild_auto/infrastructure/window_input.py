@@ -18,7 +18,7 @@ import pyautogui
 import pyperclip
 
 from guild_auto.infrastructure import logger
-from guild_auto.config import KEY_ALIASES
+from guild_auto.config import CHAT_SEND_KEYS, KEY_ALIASES  # noqa: F401  (CHAT_SEND_KEYS 供调用方复用)
 
 # ---------------------------------------------------------------------------
 # Windows 窗口 API(ctypes)

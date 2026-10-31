@@ -347,8 +347,9 @@ CONFIG_COMMENTS = {
     "网易版客户端日志通常为 GB2312",
     # ── 窗口与按键 ──────────────────────────────────────────────────────────
     "window_keywords": "游戏窗口标题关键词(任一命中即视为游戏窗口;大小写不敏感;首个命中优先)",
-    "chat_key": "聊天栏打开按键:auto=读 options.txt 的 key_key.chat 自动映射(本机通常为回车);"
-    "也可直接写 pyautogui 键名(如 't'/'enter'/'space'),或中文别名(如 '回车'/'空格'/'esc')",
+    "chat_key": "聊天栏打开按键:auto=读 options.txt 的 key_key.chat 自动映射;"
+    "也可直接写 pyautogui 键名(如 't'/'/'/'space'/'esc'),或中文别名(如 '回车'/'空格'/'esc')。"
+    "注意:'enter'/'return'/'numpadenter' 是发送键不是开栏键,配了会启动即阻断",
     "pause_key": "暂停键:运行中随时暂停/继续(pynput 键名,如 'u'/'p';键盘全局监听)",
     "pause": "暂停与自动暂停(仅 operation_mode='ui' 生效):执行中检测到用户键鼠活动即自动暂停;"
     "阶段确认等待/空闲/指令模式不触发",
@@ -562,3 +563,8 @@ KEY_ALIASES = {
     "制表键": "tab",
     "回车键": "enter",
 }
+
+# 发送键：按下后是"把消息发出去"，不是"打开聊天栏"。
+# 网易版 options.txt 的 key_key.chat 常常是 enter —— 直接当开栏键用会死循环并反复发消息，
+# 所以显式配置时在 config/schema.py 报错，auto 解析出这类键时在启动阶段阻断。
+CHAT_SEND_KEYS = ("enter", "return", "numpadenter")

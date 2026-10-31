@@ -20,7 +20,7 @@ from guild_auto.infrastructure.action_executor import ActionExecutor
 from guild_auto.config import console
 from guild_auto.infrastructure.game_state import GameStateDetector
 from guild_auto.infrastructure.log_watcher import LogWatcher
-from guild_auto.infrastructure.window_input import HumanInput, find_game_window
+from guild_auto.infrastructure.window_input import CHAT_SEND_KEYS, HumanInput, find_game_window
 
 from guild_auto.infrastructure import logger
 
@@ -589,12 +589,19 @@ def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
         f"聊天键: {human.chat_key}(来自 {'options.txt' if cfg['chat_key'] == 'auto' else '配置'})"
     )
 
-    # 聊天键是 enter 时警告但不拒绝:网易版 enter 是发送键不是开聊天栏键
-    if human.chat_key == "enter":
-        console_fn("⚠ 警告:聊天键设置为 'enter',网易版 enter 是发送键不是开聊天栏键,")
-        console_fn("  可能导致 _open_chat 按下后聊天栏未开,后续重试死循环")
-        console_fn("  建议:config.json chat_key 改为 't' 或 '/' 之类(读取开聊天栏的键)")
-        console_fn("  仍然继续运行——若发生死循环,可按 u 暂停/Ctrl+C 退出")
+    # 聊天键被解析成"发送键"时必须阻断启动（2026-10-31 用户要求）。
+    # 网易版 options.txt 的 key_key.chat 常是 enter —— 那是"发送消息",不是"打开聊天栏"。
+    # 继续运行只会:按 enter → 没打开聊天栏 → 判定失败 → 重试 → 每一轮都真的发一条空消息。
+    if human.chat_key in CHAT_SEND_KEYS:
+        logger.log_error(
+            f"[阶段] S7 启动阻断 聊天键={human.chat_key} 属于发送键 {list(CHAT_SEND_KEYS)}，"
+            f"无法打开聊天栏（来源={'options.txt' if cfg['chat_key'] == 'auto' else 'config.json'}）"
+        )
+        console_fn(f"✗ 无法启动:聊天键被解析成发送键 '{human.chat_key}'")
+        console_fn("  网易版 enter 是『发送消息』,不是『打开聊天栏』;继续运行会死循环并反复发消息")
+        console_fn("  处理办法:config.json 里把 chat_key 改成 't' 或 '/'")
+        console_fn("            (游戏里按 T 或 / 能打开聊天栏的那个键;auto 识别不准时手工指定)")
+        raise SystemExit(2)
     logger.log_info(
         f"[阶段][EXIT ] S7 build_runtime.human "
         f"耗时={time.monotonic() - step_started:.2f}s 聊天键={human.chat_key}"

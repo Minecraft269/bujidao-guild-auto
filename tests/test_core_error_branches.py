@@ -16,6 +16,19 @@ from guild_auto.config.schema import validate_config
 from guild_auto.domain import rules as rules_mod
 
 
+def test_chat_key_send_key_is_rejected():
+    """网易版 enter 是发送键；配成开栏键会在启动时死循环，必须在校验阶段就报错。"""
+    for key in ("enter", "Enter", "return", "numpadenter"):
+        msgs = [m for level, m in validate_config(_cfg(chat_key=key)) if level == "error"]
+        assert any("发送键" in m for m in msgs), key
+
+
+def test_chat_key_open_key_is_accepted():
+    """t / / 是真正打开聊天栏的键，不能误伤。"""
+    for key in ("t", "/", "auto"):
+        assert not [m for level, m in validate_config(_cfg(chat_key=key)) if level == "error"], key
+
+
 def _cfg(**over):
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg.update(over)

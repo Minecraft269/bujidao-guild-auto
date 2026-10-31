@@ -12,7 +12,7 @@ config/schema.py —— 配置结构契约(键名 / 枚举 / 校验规则)
 import os
 import time
 
-from guild_auto.config.defaults import DEFAULT_CONFIG
+from guild_auto.config.defaults import CHAT_SEND_KEYS, DEFAULT_CONFIG
 
 VALID_SCOPES = ("all", "high", "mid", "low", "entry")
 VALID_NOTIFY_MODES = ("summary", "per_player")
@@ -448,6 +448,19 @@ def validate_config(cfg):
 
     if cfg.get("chat_key") != "auto" and not isinstance(cfg.get("chat_key"), str):
         issues.append(("error", "chat_key 应为字符串('auto' 或键名)"))
+
+    # 显式把聊天键配成"发送键"→ 打不开聊天栏，启动就会死循环并反复发消息。
+    # 这里拦住直接写在 config.json 里的那种；chat_key=auto 时由 options.txt 解析出的值
+    # 在 runtime.build_runtime 的启动阶段阻断（见 application/runtime.py）。
+    _chat = cfg.get("chat_key")
+    if isinstance(_chat, str) and _chat.strip().lower() in CHAT_SEND_KEYS:
+        issues.append(
+            (
+                "error",
+                f"chat_key={_chat!r} 是发送键，不是打开聊天栏的键；"
+                f"请改成 't' 或 '/'（网易版 enter 只负责发送消息）",
+            )
+        )
 
     # debug skip_stages 合法性
     skip = section(cfg, "debug").get("skip_stages", [])
