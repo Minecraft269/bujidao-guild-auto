@@ -40,7 +40,7 @@ _MAX_GUILD_NAME_LEN = 60
 # 报告相关日志的截断/去重:坏时间字段只记一次,避免每行刷一条;
 # 原始值片段截断,防止脏数据把日志撑爆。
 _SNIP_MAX = 80
-_REPORT_WARNED = set()
+_REPORT_WARNED: set[str] = set()
 
 
 def _snip(value, limit=_SNIP_MAX):

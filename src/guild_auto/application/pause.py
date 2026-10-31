@@ -91,7 +91,7 @@ def _warn_callback_error(source, exc):
     logger.log_warning(f"键鼠监听回调异常 source={source} {type(exc).__name__}: {exc}")
 
 
-_CALLBACK_WARNED = set()  # (source, 异常类型)
+_CALLBACK_WARNED: set[tuple[object, str]] = set()  # (source, 异常类型)
 
 
 def _on_press(key):
