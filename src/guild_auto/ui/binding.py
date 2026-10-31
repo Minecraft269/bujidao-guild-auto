@@ -408,6 +408,9 @@ class GuiBridge:
             "config_schema_version": SCHEMA_VERSION,
             # 首次运行（配置是刚生成的）→ 前端锁在配置页并要求先保存（§3.5）
             "first_run": self.first_run,
+            # 启动形态随握手下发：hello 是唯一稳定可用的通道，
+            # 前端靠它决定小窗/大窗（否则重开时窗口是小窗、内容还是大窗那套）。
+            "start_mode": str(self.cfg.get("ui", {}).get("start_mode", "normal")),
         }
         if self._hello_at is None:
             self._hello_at = time.monotonic()

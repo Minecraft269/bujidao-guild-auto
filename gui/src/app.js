@@ -86,6 +86,8 @@ const S = {
   topmost: false,
   maximized: false,
   compact: false,
+  // 启动形态只应用一次：之后用户手动切小窗/大窗不该被配置刷新拽回去
+  startModeApplied: false,
   // 首次运行门禁（§3.5）：配置刚生成时必须先保存才放行其它页签
   firstRun: false,
 };
@@ -122,6 +124,22 @@ async function rpc(method, params = {}) {
     glog("error", `RPC ${method} 异常 耗时=${ms}ms`, String(e));
     return { ok: false, error: String(e) };
   }
+}
+
+/**
+ * 拉取配置并**立即应用**。
+ * rpc() 的返回值不会经过 applyEnvelope（那是核心事件推送的路径），
+ * 以前这里直接 `await rpc("config", {})` 把结果丢掉 —— 于是启动时
+ * S.cfg.fields 一直是空的，ui.start_mode / ui.custom_titlebar 这些
+ * 「按配置决定界面形态」的项在启动阶段全部读不到，
+ * 表现就是：小窗模式下重开，窗口是小窗尺寸、内容却是大窗那一套，
+ * 关闭确认也走大窗分支。
+ */
+async function loadConfig() {
+  const res = await rpc("config", {});
+  const payload = res?.result ?? res;
+  if (payload && Array.isArray(payload.fields)) applyConfig(payload);
+  return res;
 }
 
 function applyEnvelope(payload) {
@@ -205,6 +223,18 @@ function applyUiPrefs() {
   }
   const theme = get("ui.theme");
   if (theme) setTheme(theme);
+  // 启动形态（§3.2）：**必须真的调用 applyMode**，否则窗口几何按小窗恢复、
+  // 布局却仍是正常模式的一套 chrome —— 表现就是「内容是大窗、尺寸是小窗」，
+  // 关闭确认也走大窗版。此前只有 applyMode 定义，没有任何启动期调用点。
+  const startMode = get("ui.start_mode");
+  glog(
+    "debug",
+    `applyUiPrefs 字段数=${S.cfg.fields.length} start_mode=${startMode} 已应用=${S.startModeApplied}`,
+  );
+  if (!S.startModeApplied && startMode !== undefined) {
+    S.startModeApplied = true;
+    void applyMode(startMode === "compact");
+  }
   // 关闭策略交给 Rust 决定（运行中不得直接退出，§5）
   const trayEnabled = get("ui.tray.enabled");
   const action = get("ui.tray.close_action");
@@ -529,7 +559,7 @@ async function saveConfig() {
         actions: [{ label: "知道了", value: true, primary: true }],
       });
     }
-    await rpc("config", {});
+    await loadConfig();
   } else {
     $("cfg-save").textContent = "保存失败";
     $("cfg-save").title = r.error || "";
@@ -884,6 +914,7 @@ async function syncMaxIcon() {
 /** 应用窗口模式（§3.2）。启动时也走这里 —— 重开 bug 的根因是"只改了窗口尺寸、
  *  没有按 ui.start_mode 重建布局"，导致小窗尺寸里塞着正常模式的整套 chrome。 */
 async function applyMode(compact) {
+  glog("info", `applyMode 执行 compact=${!!compact} 来源=调用方`);
   S.compact = !!compact;
   document.body.dataset.mode = S.compact ? "compact" : "normal";
   const icon = S.compact ? "tb-icon tb-icon--expand" : "tb-icon tb-icon--compact";
@@ -1128,6 +1159,13 @@ function setHandshake(payload) {
   }
   const r = msg.result || msg;
   S.hello = r;
+  // 启动形态随握手一起到达：hello 是唯一稳定可用的通道
+  // （前端发起的 config RPC 会挂住，见 US-R2-14），
+  // 窗口形态必须在这里定，否则小窗重开会退回大窗内容。
+  if (!S.startModeApplied && r.start_mode !== undefined) {
+    S.startModeApplied = true;
+    void applyMode(r.start_mode === "compact");
+  }
   if (!wasConnected) {
     glog(
       "info",
@@ -1233,7 +1271,7 @@ async function boot() {
       "未连接核心。请通过主程序启动（核会自动拉起界面并连上管道），或在主程序里点「开始」。";
   }
 
-  await rpc("config", {});
+  await loadConfig();
   await rpc("rules", {});
   await rpc("state", {});
   renderState();

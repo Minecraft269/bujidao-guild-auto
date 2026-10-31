@@ -34,6 +34,19 @@ def test_hello_carries_variant_and_capabilities(bridge):
     assert result["config_schema_version"] >= 1
 
 
+def test_hello_carries_start_mode(bridge):
+    """窗口形态随握手下发。
+
+    小窗重开后「窗口是小窗、内容是大窗」的根因就是启动期拿不到 ui.start_mode；
+    hello 是启动阶段唯一稳定可用的通道，所以这个字段必须挂在它上面。
+    """
+    out = bridge.server.handle_line('{"id":1,"method":"hello","params":{}}')
+    assert out["result"]["start_mode"] in ("normal", "compact")
+    bridge.cfg["ui"]["start_mode"] = "compact"
+    again = bridge.server.handle_line('{"id":1,"method":"hello","params":{}}')
+    assert again["result"]["start_mode"] == "compact"
+
+
 def test_config_payload_covers_every_field_and_marks_build_variant_readonly(bridge):
     out = bridge.server.handle_line('{"id":2,"method":"config","params":{}}')
     fields = out["result"]["fields"]

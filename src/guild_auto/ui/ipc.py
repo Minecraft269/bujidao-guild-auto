@@ -305,6 +305,12 @@ class IpcServer:
         try:
             for line in self._read_lines(handle):
                 reply = self.handle_line(line)
+                # 每处理一行都留痕：只有「首包已读」无法回答
+                # 「第二个请求到底有没有到核、有没有被应答」。
+                logger.log_debug(
+                    f"[阶段] S6 ipc 已应答 行字节={len(line)} "
+                    f"ok={reply.get('ok') if isinstance(reply, dict) else None}"
+                )
                 if reply is None:
                     continue
                 with self._lock:
