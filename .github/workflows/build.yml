@@ -278,7 +278,7 @@ jobs:
 
       - name: Download shared Gui.exe + MSI
         if: contains(matrix.capabilities, 'gui')
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: gui-bundle
           path: gui-dist
