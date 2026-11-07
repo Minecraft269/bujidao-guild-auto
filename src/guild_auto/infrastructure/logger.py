@@ -403,6 +403,11 @@ def log_debug(msg):
 
 
 def log_trace(msg):
+    # 自身也要闸门：全仓有 150+ 处直接 logger.log_trace(...) 调用，
+    # 它们绕过 helper 的 _current_level 判断；生产上虽被 logging 阈值挡掉，
+    # 但把「是否该记」隐式交给阈值会让单测与实际行为脱节。
+    if _current_level < 6 or not _enabled:
+        return
     _log(TRACE_LEVEL, msg)
 
 
