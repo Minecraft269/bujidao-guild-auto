@@ -41,6 +41,23 @@ def _log(level, msg):
     _loader_log(level, msg)
 
 
+def _issue_keys(issues):
+    """从校验消息里提取规则/字段标识(不取具体值,避免配置值/路径进 TRACE)。"""
+    keys = []
+    for _level, msg in issues:
+        parts = str(msg).split()
+        key = None
+        for p in parts:
+            token = p.split("(", 1)[0].strip(":,")
+            if "." in token and not any(ch in token for ch in "\\/:\"'()[]{}，。<>="):
+                key = token
+                break
+        if key is None:
+            key = parts[1].strip(":,")[:40] if len(parts) > 1 else (parts[0][:40] if parts else "?")
+        keys.append(key)
+    return keys
+
+
 def validate_config(cfg):
     """校验配置,返回问题列表(每条为 (级别, 消息);级别: error/warning)。"""
     t0 = time.monotonic()
@@ -49,7 +66,14 @@ def validate_config(cfg):
         "info",
         f"[S2] validate_config ENTER | 键数量={key_count} | config_schema_version={SCHEMA_VERSION}",
     )
+    _log(
+        "trace",
+        f"[TRACE][config.schema.validate_config] phase=ENTER keys={key_count} "
+        f"schema_version={SCHEMA_VERSION}",
+    )
     issues = []
+    _threshold_flips = []
+    _delay_flips = []
 
     def _is_num(v):
         """bool 是 int 子类,true/false 不应通过数值校验。"""
@@ -134,6 +158,7 @@ def validate_config(cfg):
             issues.append(
                 ("error", f"thresholds.{_a}({_n(_a)}) 不能{_word} thresholds.{_b}({_n(_b)}):{_why}")
             )
+            _threshold_flips.append(f"{_a}({_n(_a)}){_word}{_b}({_n(_b)})")
 
     d = section(cfg, "delays")
     # 三组随机区间都要查 min<=max:只查 send_interval 会漏掉另外两组同样写反的情况
@@ -148,6 +173,7 @@ def validate_config(cfg):
         # 若此处无条件比较会 TypeError 崩掉整个校验(用户把延时写成字符串即触发)。
         if _is_num(d.get(_lo)) and _is_num(d.get(_hi)) and d[_lo] > d[_hi]:
             issues.append(("error", f"delays.{_lo} 不能大于 delays.{_hi}"))
+            _delay_flips.append(f"{_lo}({d[_lo]})>{_hi}({d[_hi]})")
 
     t = section(cfg, "timeouts")
     for k in ("response_wait", "max_retries"):
@@ -573,6 +599,23 @@ def validate_config(cfg):
     error_count = sum(1 for level, _msg in issues if level == "error")
     warning_count = len(issues) - error_count
     elapsed = (time.monotonic() - t0) * 1000.0
+    _rule_keys = _issue_keys(issues)
+    _rule_keys_text = ",".join(_rule_keys)
+    if len(_rule_keys_text) > 240:
+        _rule_keys_text = _rule_keys_text[:240] + f"+{len(_rule_keys)}keys"
+    _log(
+        "trace",
+        f"[TRACE][config.schema.validate_config] phase=EXIT errors={error_count} "
+        f"warnings={warning_count} rules={_rule_keys_text or '<none>'} "
+        f"elapsed_ms={elapsed:.2f}",
+    )
+    if _threshold_flips or _delay_flips:
+        _log(
+            "trace",
+            f"[TRACE][config.schema.validate_config] decision=range_inversion "
+            f"threshold={','.join(_threshold_flips) or '<none>'} "
+            f"delays={','.join(_delay_flips) or '<none>'}",
+        )
     if error_count:
         _log(
             "error",

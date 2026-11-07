@@ -150,7 +150,7 @@ class ActionExecutor:
         self._send_with_gate(f"{prefix} {text}")
 
     @staticmethod
-    def _guild_block_lines(lines):
+    def _guild_block_lines(lines, watcher=None):
         """只取**公会的会面板**内的 [CHAT] 正文。
 
         为什么必须过滤载体:真实回显由服务端以面板块下发 —— 两条分隔线
@@ -176,8 +176,21 @@ class ActionExecutor:
                 f"公会面板解析失败 | lines={len(lines) if lines is not None else 0}"
                 f" | {e!r} | 返回=空块"
             )
+            # 解析失败把整块 + 上下文行无条件写 ERROR(默认级别可见);
+            # 诊断日志自身失败不得影响业务结果。
+            try:
+                report = getattr(watcher, "report_parse_error", None)
+                if callable(report):
+                    report(e, lines)
+            except Exception:
+                pass
             return []
         out = list(block) if block else []
+        logger.log_trace(
+            f"[TRACE][action_executor._guild_block_lines] items={len(lines)}"
+            f" block_lines={len(out)}"
+            f" has_chat={any('[CHAT]' in ln for ln in lines)}"
+        )
         logger.log_debug(
             f"公会面板解析结果 | 块行数={len(out)}"
             f" | 含[CHAT]={any('[CHAT]' in ln for ln in lines)}"
@@ -191,15 +204,27 @@ class ActionExecutor:
         只认**公会的会面板**内的回显(见 _guild_block_lines)——
         公屏任意聊天行不能当成功证据,否则可被伪造成"已踢出/已降职"。
         """
-        text = "\n".join(self._guild_block_lines(lines))
+        text = "\n".join(self._guild_block_lines(lines, watcher=self.watcher))
+        logger.log_trace(
+            f"[TRACE][action_executor._find_success] action={action}"
+            f" lines={len(lines)} guild_block_len={len(text)} target=<snip>"
+        )
         if action == "promote" or action == "demote":
             # 匹配 "成功设置{player}的职位为{rank_name}!"
             # 由于 rank_name 未知，我们只检查是否包含 "成功设置" 和 player
             if f"成功设置{player}的职位为" in text:
+                logger.log_trace(
+                    "[TRACE][action_executor._find_success] rule=promote_demote_text"
+                    " hit=true reason=含成功设置+目标"
+                )
                 return True
         elif action == "kick":
             # 强证据:公会面板内 "{player}被{admin}踢出{guild_name}公会！"(含玩家名)
             if f"{player}被" in text and "踢出" in text and "公会！" in text:
+                logger.log_trace(
+                    "[TRACE][action_executor._find_success] rule=kick_named"
+                    " hit=true reason=含目标+踢出+公会"
+                )
                 return True
             # 兜底(规格 5.2 ③ 时间窗):真实回显常常只有「踢出成功」、**不含玩家名**,
             # 按名匹配会永远判失败。串行执行下同一时刻只有一条踢出在途,因此窗口内
@@ -218,6 +243,10 @@ class ActionExecutor:
                 logger.log_warning(
                     "踢出回显不含玩家名,按时间窗归因(串行单踢,窗口内唯一一条):" + str(player)
                 )
+                logger.log_trace(
+                    "[TRACE][action_executor._find_success] rule=kick_time_window"
+                    " hit=true reason=窗口内唯一一条踢出成功 echoes=1"
+                )
                 return True
             if len(echoes) > 1:
                 logger.log_warning(
@@ -227,7 +256,15 @@ class ActionExecutor:
                     + str(player)
                     + ",判失败待人工确认"
                 )
+                logger.log_trace(
+                    f"[TRACE][action_executor._find_success] rule=kick_time_window"
+                    f" hit=false reason=无法归因 echoes={len(echoes)}"
+                )
             return False
+        logger.log_trace(
+            f"[TRACE][action_executor._find_success] rule=none hit=false"
+            f" reason=无匹配 action={action}"
+        )
         return False
 
     def verify_action(self, action, player, timeout=None):
@@ -238,8 +275,20 @@ class ActionExecutor:
         (实测 promote×2 真升 4 级、踢出重复踢)。execute_action 是
         "发送+等待+判定"的串行语义,不能复用于"只判定"。
         """
+        logger.trace_call(
+            "action_executor.verify_action",
+            kwargs={
+                "action": action,
+                "timeout": self.error_check_window if timeout is None else timeout,
+            },
+        )
         lines = self.watcher.read_until(
             timeout=self.error_check_window if timeout is None else timeout
+        )
+        logger.log_trace(
+            f"[TRACE][action_executor.verify_action] step=read_log"
+            f" action={action} lines={len(lines)}"
+            f" window_s={self.error_check_window if timeout is None else timeout}"
         )
         logger.trace_code_location("verify_action.received", f"lines={len(lines)}")
         for line in lines:
@@ -247,17 +296,33 @@ class ActionExecutor:
                 content = strip_chat_prefix(line)
                 err = self._find_error(content)
                 if err:
+                    logger.trace_return(
+                        "action_executor.verify_action",
+                        {"ok": False, "error": logger.sanitize_text(err, 120)},
+                    )
                     return False, err
         if self._find_success(action, player, lines):
+            logger.trace_return("action_executor.verify_action", {"ok": True})
             return True, None
+        logger.trace_return(
+            "action_executor.verify_action", {"ok": False, "error": "未收到成功回显"}
+        )
         return False, "未收到成功回显"
 
     def execute_action(self, action, player, retries=None):
         """执行单条动作命令，支持重试。返回 (ok, error_text|None)。"""
+        logger.trace_call(
+            "action_executor.execute_action",
+            kwargs={"action": action, "retries": retries},
+        )
         logger.trace_code_location("execute_action.start", f"action={action} player={player}")
         if retries is None:
             retries = int(self.cfg.get("timeouts", {}).get("max_retries", 3))
         cmd = build_command(self.cfg, action, player)
+        logger.log_trace(
+            f"[TRACE][action_executor.execute_action] step=build_cmd"
+            f" action={action} cmd_len={len(cmd)} retries={retries} target=<snip>"
+        )
 
         attempt = 0
         while attempt < retries:
@@ -298,13 +363,23 @@ class ActionExecutor:
                     attempt += 1
                     continue
                 res = (False, error)
-                logger.trace_return("execute_action", res)
+                logger.trace_return(
+                    "action_executor.execute_action",
+                    {
+                        "ok": False,
+                        "error": logger.sanitize_text(error, 120),
+                        "attempts": attempt + 1,
+                    },
+                )
                 return res
 
             # 检查成功
             if self._find_success(action, player, lines):
                 res = (True, None)
-                logger.trace_return("execute_action", res)
+                logger.trace_return(
+                    "action_executor.execute_action",
+                    {"ok": True, "attempts": attempt + 1},
+                )
                 return res
 
             # 无错误无成功，重试
@@ -314,7 +389,10 @@ class ActionExecutor:
             attempt += 1
 
         res = (False, "重试耗尽")
-        logger.trace_return("execute_action", res)
+        logger.trace_return(
+            "action_executor.execute_action",
+            {"ok": False, "error": "重试耗尽", "attempts": attempt},
+        )
         return res
 
     def gc_broadcast_with_retry(self, text, retries=3, timeout=4.0):

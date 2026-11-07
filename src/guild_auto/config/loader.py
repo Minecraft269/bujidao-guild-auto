@@ -30,6 +30,17 @@ def _log(level, msg):
     getattr(_logger_mod, f"log_{level}", _logger_mod.log_info)(str(msg))
 
 
+def _redact_path(path):
+    """TRACE 脱敏:绝对路径只留 <path>/文件名,避免本机目录进入日志。"""
+    try:
+        text = os.fspath(path)
+    except TypeError:
+        return "<path>"
+    if os.path.isabs(text):
+        return "<path>/" + os.path.basename(text)
+    return text
+
+
 def _trace_file(kind, path, size):
     """写 TRACE_FILE_READ/WRITE 埋点(kind 取 'read'/'write')。"""
     try:
@@ -37,7 +48,7 @@ def _trace_file(kind, path, size):
     except Exception as e:  # pragma: no cover - 仅 logger 导入失败时
         sys.stderr.write(f"[config] 日志模块不可用: {e!r}\n")
         return
-    getattr(_logger_mod, f"trace_file_{kind}")(path, size=size)
+    getattr(_logger_mod, f"trace_file_{kind}")(_redact_path(path), size=size)
 
 
 def _elapsed_ms(t0):
@@ -161,10 +172,24 @@ def _load_jsonc_text(path):
 
     用 utf-8-sig 读取:顺带吃掉 BOM —— 用户在记事本里编辑存盘常带 BOM,
     而带 BOM 的文本交给 json.loads 会直接抛 JSONDecodeError。"""
+    t0 = time.monotonic()
+    abs_path = os.path.abspath(path)
+    _log(
+        "trace",
+        f"[TRACE][config.loader._load_jsonc_text] phase=ENTER path={_redact_path(abs_path)}",
+    )
     with open(path, "r", encoding="utf-8-sig") as f:
         text = f.read()
-    _trace_file("read", os.path.abspath(path), len(text.encode("utf-8")))
-    return json.loads(_strip_jsonc(text))
+    size = len(text.encode("utf-8"))
+    _trace_file("read", abs_path, size)
+    parsed = json.loads(_strip_jsonc(text))
+    _log(
+        "trace",
+        f"[TRACE][config.loader._load_jsonc_text] phase=EXIT bytes={size} "
+        f"top_keys={len(parsed) if isinstance(parsed, dict) else 0} "
+        f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.2f}",
+    )
+    return parsed
 
 
 def ensure_default_config(path):
@@ -175,8 +200,18 @@ def ensure_default_config(path):
     abs_path = os.path.abspath(path)
     exists = os.path.exists(path)
     _log("info", f"[S1] ensure_default_config ENTER | path={abs_path} | exists={exists}")
+    _log(
+        "trace",
+        f"[TRACE][config.loader.ensure_default_config] phase=ENTER "
+        f"path={_redact_path(abs_path)} exists={exists}",
+    )
     if exists:
         _log("info", "[S1] 首次运行=false(配置文件已存在,不覆盖)")
+        _log(
+            "trace",
+            f"[TRACE][config.loader.ensure_default_config] phase=EXIT wrote=0 "
+            f"elapsed_ms={_elapsed_ms(t0):.2f}",
+        )
         _log(
             "info",
             f"[S1] ensure_default_config EXIT | 耗时={_elapsed_ms(t0):.2f}ms",
@@ -203,9 +238,20 @@ def ensure_default_config(path):
             "info",
             f"[S1] ensure_default_config EXIT(失败) | 耗时={_elapsed_ms(t0):.2f}ms",
         )
+        _log(
+            "trace",
+            f"[TRACE][config.loader.ensure_default_config] phase=EXCEPTION "
+            f"error={type(e).__name__} errno={getattr(e, 'errno', None)} "
+            f"elapsed_ms={_elapsed_ms(t0):.2f}",
+        )
         raise
     size = len(content.encode("utf-8"))
     _trace_file("write", abs_path, size)
+    _log(
+        "trace",
+        f"[TRACE][config.loader.ensure_default_config] phase=EXIT wrote=1 bytes={size} "
+        f"elapsed_ms={_elapsed_ms(t0):.2f}",
+    )
     _log(
         "info",
         f"[S1] ensure_default_config EXIT | 已写入 {size} 字节 | 耗时={_elapsed_ms(t0):.2f}ms",
@@ -220,10 +266,20 @@ def load_config(path):
     abs_path = os.path.abspath(path)
     exists = os.path.exists(path)
     _log("info", f"[S2] load_config ENTER | path={abs_path} | exists={exists}")
+    _log(
+        "trace",
+        f"[TRACE][config.loader.load_config] phase=ENTER "
+        f"path={_redact_path(abs_path)} exists={exists}",
+    )
     if not exists:
         # 路径写错时"看起来加载成功"却全用默认值,必须留下可检索的降级痕迹
         console(f"配置/加载: 配置路径不存在，已回退默认配置: {abs_path}", level="warning")
         cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        _log(
+            "trace",
+            f"[TRACE][config.loader.load_config] phase=EXIT reason=missing_file "
+            f"fallback=default keys={len(cfg)} elapsed_ms={_elapsed_ms(t0):.2f}",
+        )
         _log(
             "info",
             f"[S2] load_config EXIT(默认配置) | 查询范围={cfg.get('query_scope')} "
@@ -247,6 +303,11 @@ def load_config(path):
             level="error",
         )
         _log("error", f"[S2] load_config 解析失败完整 traceback:\n{traceback.format_exc()}")
+        _log(
+            "trace",
+            f"[TRACE][config.loader.load_config] phase=EXCEPTION error=JSONDecodeError "
+            f"line={e.lineno} col={e.colno} elapsed_ms={_elapsed_ms(t0):.2f}",
+        )
         raise
     user_cfg = _strip_comment_keys(parsed)
     merged = _deep_merge(DEFAULT_CONFIG, user_cfg)
@@ -256,6 +317,12 @@ def load_config(path):
         "debug",
         f"[S2] load_config 合并默认值 | 补默认键({len(added)})={added} "
         f"| 丢弃键({len(discarded)})={discarded}",
+    )
+    _log(
+        "trace",
+        f"[TRACE][config.loader.load_config] phase=EXIT keys={len(merged)} "
+        f"user_keys={len(user_cfg)} added={len(added)} discarded={len(discarded)} "
+        f"elapsed_ms={_elapsed_ms(t0):.2f}",
     )
     _log(
         "info",
@@ -275,6 +342,11 @@ def save_config(path, cfg):
     t0 = time.monotonic()
     abs_path = os.path.abspath(path)
     _log("info", f"[S2] save_config ENTER | path={abs_path}")
+    _log(
+        "trace",
+        f"[TRACE][config.loader.save_config] phase=ENTER "
+        f"path={_redact_path(abs_path)} keys={len(cfg) if isinstance(cfg, dict) else 0}",
+    )
     content = "{" + "\n" + _dump_jsonc(cfg, 0) + "\n" + "}" + "\n"
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -286,9 +358,20 @@ def save_config(path, cfg):
             "error",
             f"[S2] save_config 失败，磁盘配置未更新: {abs_path} | {e!r}\n{traceback.format_exc()}",
         )
+        _log(
+            "trace",
+            f"[TRACE][config.loader.save_config] phase=EXCEPTION "
+            f"error={type(e).__name__} errno={getattr(e, 'errno', None)} "
+            f"elapsed_ms={_elapsed_ms(t0):.2f}",
+        )
         raise
     size = len(content.encode("utf-8"))
     _trace_file("write", abs_path, size)
+    _log(
+        "trace",
+        f"[TRACE][config.loader.save_config] phase=EXIT bytes={size} "
+        f"elapsed_ms={_elapsed_ms(t0):.2f}",
+    )
     _log(
         "info",
         f"[S2] save_config EXIT | path={abs_path} | bytes={size} | 耗时={_elapsed_ms(t0):.2f}ms",
@@ -298,6 +381,7 @@ def save_config(path, cfg):
 def apply_cli_overrides(cfg, args):
     """命令行参数覆盖配置(--admin/--log/--options/--config 已在 main 处理路径,这里覆盖其余)。"""
     overridden = []
+    _log("trace", "[TRACE][config.loader.apply_cli_overrides] phase=ENTER")
     if getattr(args, "admin", None):
         cfg["admin"] = args.admin
         overridden.append("admin")
@@ -315,6 +399,11 @@ def apply_cli_overrides(cfg, args):
         )
     else:
         _log("debug", "配置/命令行覆盖: 无命令行覆盖")
+    _log(
+        "trace",
+        f"[TRACE][config.loader.apply_cli_overrides] phase=EXIT overridden={len(overridden)} "
+        f"keys={','.join(overridden) if overridden else '<none>'}",
+    )
     return cfg
 
 

@@ -53,6 +53,11 @@ def stage_query_async(rt, targets, cfg):
     """
     from guild_auto.concurrency.async_system import AsyncVerifySystem, run_async_round
 
+    logger.trace_call(
+        "stages.stage_query_async",
+        args=(f"items={len(targets)}",),
+        kwargs={"mode": "async" if rt.async_enabled else "serial"},
+    )
     started = time.monotonic()
     cmds = cfg["commands"]
     timeout = float(cfg["timeouts"].get("response_wait", 12.0))
@@ -80,18 +85,40 @@ def stage_query_async(rt, targets, cfg):
         下的承担者。成功返回 (True, None, info_dict);失败返回 (False, reason, None)。
         """
         logger.log_debug(f"验证 ENTER player={player} 超时={timeout:.1f}s")
+        logger.trace_call(
+            "stages.stage_query_async.verify",
+            args=("player={logger.player_tag(player)}",),
+            kwargs={"timeout_s": timeout},
+        )
         verify_started = time.monotonic()
+        logger.trace_code_location(
+            "stages.stage_query_async.verify.wait",
+            "blocking read log",
+            timeout_s=timeout,
+        )
         block = watcher.wait_for_chat_block(timeout=timeout, stop_check=rt.is_paused)
         elapsed = time.monotonic() - verify_started
         block_text = "None" if block is None else f"{len(block)}行"
         logger.log_debug(f"验证 EXIT 耗时={elapsed:.1f}s block={block_text}")
+        logger.trace_code_location(
+            "stages.stage_query_async.verify.judge",
+            "block received" if block is not None else "timeout",
+            elapsed_s=round(elapsed, 3),
+            lines=0 if block is None else len(block),
+        )
         if block is None:
             logger.log_warning(f"等待响应超时 player={player} 已等待={elapsed:.1f}s")
+            logger.trace_return("stages.stage_query_async.verify", "ok=False reason=timeout")
             return False, "等待响应超时", None
         try:
             info = parse_guild_member(block, expected_id=player)
         except ParseError as e:
+            logger.trace_return(
+                "stages.stage_query_async.verify",
+                f"ok=False reason=parse_error type={type(e).__name__}",
+            )
             return False, f"解析失败:{e}", None
+        logger.trace_return("stages.stage_query_async.verify", "ok=True")
         return True, None, info
 
     system = AsyncVerifySystem(verify_fn=verify, task_timeout=timeout + 5.0)
@@ -120,11 +147,27 @@ def stage_query_async(rt, targets, cfg):
             f"无法查询贡献(报告中将单列)"
         )
 
+    logger.trace_code_location(
+        "stages.stage_query_async.blocked_policy",
+        "masked-name gate",
+        policy=blocked_policy,
+        masked=len(blocked_targets),
+        queryable=len(queryable),
+    )
+
     commands = [(cmds["guild_member"].format(player=pid), pid) for _rk, pid in queryable]
 
     logger.log_info(f"(异步)阶段2 查询: {len(commands)} 条指令,主线程只发不验")
+    logger.trace_queue("submit", name="async_verify", depth=len(commands), stage="query")
     ok_snaps, failed_snaps = run_async_round(
         system, commands, send_only, max_retries=int(cfg.get("timeouts", {}).get("max_retries", 3))
+    )
+    logger.trace_queue(
+        "join",
+        name="async_verify",
+        depth=system.pending_count(),
+        ok=len(ok_snaps),
+        failed=len(failed_snaps),
     )
     system.stop()
 
@@ -161,6 +204,11 @@ def stage_query_async(rt, targets, cfg):
         f"(异步)阶段2 完成: 成功 {len(records)} 失败 {len(failures)} "
         f"(其中屏蔽词 {len(blocked_targets)}) 耗时={time.monotonic() - started:.1f}s"
     )
+    logger.trace_return(
+        "stages.stage_query_async",
+        f"records={len(records)} failures={len(failures)} "
+        f"elapsed_s={time.monotonic() - started:.1f}",
+    )
     return records, failures
 
 
@@ -183,17 +231,30 @@ def stage_confirm_execution(rt, records, cfg):
     于是"用户拒绝时不得执行任何命令"这条能被测试锁死。
     """
     sw = cfg.get("switches", {})
+    logger.trace_call("stages.stage_confirm_execution", args=(f"records={len(records)}",))
     actionable = [r for r in records if r.get("actions")]
     execution_enabled = bool(sw.get("execution_enabled", True))
 
     # 没有可执行项时不做任何确认(不拿无意义的提示打扰用户)
     if not actionable:
+        logger.trace_return(
+            "stages.stage_confirm_execution",
+            f"execution={execution_enabled} skipped_kicks=False reason=no_actionable",
+        )
         return execution_enabled, False
 
     n_p = sum(1 for r in actionable if r["actions"][0] == "promote")
     n_d = sum(1 for r in actionable if r["actions"][0] == "demote")
     n_k = sum(1 for r in actionable if r["actions"][0] == "kick")
     console(f"待执行操作: 升职 {n_p} 人, 降职 {n_d} 人, 踢出 {n_k} 人")
+    logger.trace_code_location(
+        "stages.stage_confirm_execution.gate1",
+        "user confirm",
+        items=len(actionable),
+        promote=n_p,
+        demote=n_d,
+        kick=n_k,
+    )
 
     # ---- 门 1:总确认 ----
     # GUI 模态需要结构化信息（阶段名/目标人数/预计动作数），控制台模式忽略这份上下文
@@ -232,6 +293,12 @@ def stage_confirm_execution(rt, records, cfg):
             "confirm_text": expected,
         }
         ans = rt.ask_text(f"确认执行踢出?输入 {expected} 后回车执行,其他输入跳过踢出: ")
+        logger.trace_code_location(
+            "stages.stage_confirm_execution.gate2",
+            "kick confirm",
+            items=len(pending_kicks),
+            match=ans == expected,
+        )
         if ans != expected:
             console("已跳过全部踢出(其他操作照常执行)")
             for r in pending_kicks:
@@ -241,6 +308,10 @@ def stage_confirm_execution(rt, records, cfg):
                 r["new_rank"] = r["rank"]
             skipped_kicks = True
 
+    logger.trace_return(
+        "stages.stage_confirm_execution",
+        f"execution={execution_enabled} skipped_kicks={skipped_kicks}",
+    )
     return execution_enabled, skipped_kicks
 
 
@@ -266,6 +337,14 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
     timeout = float(cfg.get("timeouts", {}).get("error_check_window", 4.0))
     failures = []
     started = time.monotonic()
+    logger.trace_call(
+        "stages.stage_notify",
+        args=(f"records={len(records)}",),
+        kwargs={
+            "async_mode": rt.async_enabled,
+            "notify_enabled": bool(sw.get("notify_enabled", True)),
+        },
+    )
 
     if debug_notify_skipped:
         # Debug 模式:模拟数据不得发进真实公会频道
@@ -273,18 +352,21 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
         logger.log_info(
             f"[阶段][EXIT] stage_notify 耗时={time.monotonic() - started:.1f}s 跳过=debug"
         )
+        logger.trace_return("stages.stage_notify", "failures=0 skipped=debug")
         return failures
     if not sw.get("notify_enabled", True):
         console("[4/5] 通知已关闭,跳过 /gc")
         logger.log_info(
             f"[阶段][EXIT] stage_notify 耗时={time.monotonic() - started:.1f}s 跳过=通知已关闭"
         )
+        logger.trace_return("stages.stage_notify", "failures=0 skipped=notify_disabled")
         return failures
     if not records:
         console("  无玩家需要通知，跳过 /gc")
         logger.log_info(
             f"[阶段][EXIT] stage_notify 耗时={time.monotonic() - started:.1f}s 跳过=无记录"
         )
+        logger.trace_return("stages.stage_notify", "failures=0 skipped=no_records")
         return failures
 
     logger.log_info("阶段4 起点: 发送 /gc 通知")
@@ -292,6 +374,13 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
     console("[4/5] 发送 /gc 通知 ...")
 
     mode = sw.get("notify_mode", "summary")
+    logger.trace_code_location(
+        "stages.stage_notify.mode",
+        "dispatch",
+        mode=mode,
+        async_mode=rt.async_enabled,
+        items=len(records),
+    )
     if rt.async_enabled:
         # 异步通知:主线程只发,验证交给后台;但**必须在本阶段内收回结果** ——
         # 否则 notify_failures 恒为空,报告里的"通知 成功/失败"是假的,
@@ -336,6 +425,10 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
         f"阶段4 完成: /gc 通知完成 耗时={time.monotonic() - started:.1f}s "
         f"成功={max(0, total - len(failures))} 失败={len(failures)}"
     )
+    logger.trace_return(
+        "stages.stage_notify",
+        f"items={total} failures={len(failures)} elapsed_s={time.monotonic() - started:.1f}",
+    )
     return failures
 
 
@@ -364,6 +457,7 @@ def _collect_async_notifications(rt, pending, cfg):
     要求只差发送节奏);一次失败直接记失败会让报告低估重试后的成功率。
     """
     if not pending:
+        logger.trace_return("stages._collect_async_notifications", "failures=0 reason=no_pending")
         return []
     system = rt.async_system
     timeouts = cfg.get("timeouts", {})
@@ -373,6 +467,11 @@ def _collect_async_notifications(rt, pending, cfg):
     # 不要用 timeouts.get("retry_delay") —— 那个键在 DEFAULT_CONFIG 里根本不存在,
     # 等于硬编码兜底,违反"配置单一真源"。
     retry_delay = float((cfg.get("async") or {}).get("retry_delay", 1.0))
+    logger.trace_call(
+        "stages._collect_async_notifications",
+        args=(f"items={len(pending)}",),
+        kwargs={"timeout_s": timeout, "max_retries": max_retries},
+    )
 
     alive = list(pending)  # [(task_id, label, 业务 key, 原文)]
     last_error = {}  # label -> None(成功) / 错误文本
@@ -381,10 +480,24 @@ def _collect_async_notifications(rt, pending, cfg):
             f"wait_all ENTER timeout={timeout:.1f}s 任务数={len(alive)} "
             f"attempt={attempt}/{max_retries}"
         )
+        logger.trace_queue(
+            "wait_all",
+            name="async_verify",
+            depth=system.pending_count(),
+            attempt=attempt,
+            items=len(alive),
+        )
         wait_started = time.monotonic()
         got = system.wait_all(timeout=timeout)
         elapsed = time.monotonic() - wait_started
         logger.log_info(f"wait_all EXIT 耗时={elapsed:.1f}s got={got}")
+        logger.trace_queue(
+            "wait_all_done",
+            name="async_verify",
+            depth=system.pending_count(),
+            got=got,
+            elapsed_s=round(elapsed, 3),
+        )
         ids = [tid for tid, _label, _key, _msg in alive]
         done = {str(s.get("task_id")) for s in system.get_completed(ids)}
         failed = {str(s.get("task_id")): s for s in system.get_failed(ids)}
@@ -409,6 +522,15 @@ def _collect_async_notifications(rt, pending, cfg):
             logger.log_warning(
                 f"wait_all 超时 在途={len(inflight)} 已等待={elapsed:.1f}s items={inflight}"
             )
+        logger.trace_code_location(
+            "stages._collect_async_notifications.decide",
+            "wait_all outcome",
+            attempt=attempt,
+            done=len(done),
+            failed=len(failed),
+            retry=len(retry),
+            inflight=len(inflight),
+        )
         if not retry or attempt >= max_retries:
             break
         reasons = sorted({str(last_error.get(label)) for label, _k, _m in retry})
@@ -429,6 +551,10 @@ def _collect_async_notifications(rt, pending, cfg):
             continue
         _report_notify(label, False, err)
         out.append({"scope": label, "error": err})
+    logger.trace_return(
+        "stages._collect_async_notifications",
+        f"items={len(pending)} failures={len(out)}",
+    )
     return out
 
 
@@ -452,6 +578,7 @@ def stage_execute_async(rt, records, cfg):
     from guild_auto.concurrency.async_system import AsyncVerifySystem, run_async_round
 
     started = time.monotonic()
+    logger.trace_call("stages.stage_execute_async", args=(f"records={len(records)}",))
     failures = []
     actionable = [
         r for r in records if r.get("actions") and not r.get("executed")
@@ -461,6 +588,7 @@ def stage_execute_async(rt, records, cfg):
             f"[阶段][EXIT] stage_execute_async 耗时={time.monotonic() - started:.1f}s "
             f"跳过=无可执行项"
         )
+        logger.trace_return("stages.stage_execute_async", "failures=0 skipped=no_actionable")
         return failures
 
     sw = cfg.get("switches", {})
@@ -506,6 +634,13 @@ def stage_execute_async(rt, records, cfg):
         for idx, a in enumerate(r["actions"]):
             cmd = build_command(cfg, a, player)
             commands.append((cmd, player, {"action": a, "key": (player, "action", idx)}))
+    logger.trace_code_location(
+        "stages.stage_execute_async.commands",
+        "built",
+        items=len(commands),
+        actionable=len(actionable),
+        retries=retries,
+    )
 
     def verify(cmd, player, meta):
         action = (meta or {}).get("action")
@@ -521,8 +656,16 @@ def stage_execute_async(rt, records, cfg):
 
     console(f"[5/5] 执行操作(异步模式:主线程只发不验,{len(commands)} 条命令)...")
     logger.log_info(f"(异步)阶段5 执行: {len(commands)} 条命令(主线程只发不验)")
+    logger.trace_queue("submit", name="async_verify", depth=len(commands), stage="execute")
     ok_snaps, failed_snaps = run_async_round(system, commands, send_only, max_retries=retries)
     console("(异步)执行阶段验证完成,回填结果")
+    logger.trace_queue(
+        "join",
+        name="async_verify",
+        depth=system.pending_count(),
+        ok=len(ok_snaps),
+        failed=len(failed_snaps),
+    )
     system.stop()
 
     # ---- 回填:按 meta.key 精确知道"第几条动作成功",不靠命令文本匹配 ----
@@ -563,6 +706,11 @@ def stage_execute_async(rt, records, cfg):
         f"[阶段][EXIT] stage_execute_async 耗时={time.monotonic() - started:.1f}s "
         f"命令={len(commands)} 失败={len(failures)}"
     )
+    logger.trace_return(
+        "stages.stage_execute_async",
+        f"commands={len(commands)} failures={len(failures)} "
+        f"elapsed_s={time.monotonic() - started:.1f}",
+    )
     return failures
 
 
@@ -591,6 +739,8 @@ def apply_action_gates(records, cfg):
     """
     sw = cfg.get("switches", {})
     blocked = 0
+    blocked_names = set()
+    logger.trace_call("stages.apply_action_gates", args=(f"items={len(records)}",))
     for r in records:
         actions = r.get("actions") or []
         if not actions:
@@ -606,10 +756,19 @@ def apply_action_gates(records, cfg):
                 kept.append(a)
         if off:
             blocked += 1
+            blocked_names.update(off)
             r["blocked_by_switch"] = True
             r["executed"] = True  # 已处理完毕,不得再进入待办
             names = "".join({"promote": "升职", "demote": "降职", "kick": "踢出"}[a] for a in off)
             r["error"] = f"{names}开关已关闭"
             r["new_rank"] = r["rank"]
         r["actions"] = kept
+    logger.trace_code_location(
+        "stages.apply_action_gates.decide",
+        "switch gate",
+        items=len(records),
+        blocked=blocked,
+        rules=",".join(sorted(blocked_names)) or "none",
+    )
+    logger.trace_return("stages.apply_action_gates", f"blocked={blocked}")
     return blocked

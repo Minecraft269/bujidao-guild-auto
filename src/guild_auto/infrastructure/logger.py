@@ -102,6 +102,54 @@ def _kv(fields):
     return "".join(f" | {k}={_snap(v)}" for k, v in fields.items())
 
 
+# ---------------------------------------------------------------------------
+# 诊断日志脱敏(TRACE/ERROR 原始行专用)
+# 玩家名 → <snip>;绝对路径 → <path>;token/群号 → <redacted>。
+# 只用于新增的 TRACE/ERROR 诊断行,不改动既有日志文本。
+# ---------------------------------------------------------------------------
+_SECRET_RE = re.compile(
+    r"(?i)\b(access[_-]?token|token|uuid|secret|password|passwd)\b(\s*[=:]\s*)([^\s,;]+)"
+)
+_QQ_RE = re.compile(r"(?i)(群号|qq群|q群)\s*[:：=]?\s*(\d{5,12})")
+_ABS_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/][^\s'\"，。；|]*)|(?:\\\\[^\s'\"，。；|]+)")
+_CHAT_NAME_RE = re.compile(r"(\[CHAT\]\s*)([^\n\[\]:：]{1,32})([:：])")
+_KICK_NAME_RE = re.compile(r"([^\s，。！:：\[\]]{1,32})被([^\s，。！:：]{0,6}踢出)")
+_BULLET_NAME_RE = re.compile(r"●\s*([^\s●]{1,32})")
+
+
+def player_tag(name) -> str:
+    """玩家的稳定短标识（trace 关联用）。
+
+    为什么不直接用 sanitize_text：那会把**所有**玩家都变成常量 <snip>，
+    并发查询时无法把一条链归属到具体玩家（复核实测指出的缺口）。
+    这里用 6 位哈希：同一玩家跨运行稳定、可关联，但不暴露真实名。
+    """
+    import hashlib
+
+    s = "" if name is None else str(name)
+    if not s:
+        return "<none>"
+    return "p-" + hashlib.sha1(s.encode("utf-8")).hexdigest()[:6]
+
+
+def sanitize_text(text, max_len=None):
+    """诊断日志脱敏 + 可选截断。
+
+    玩家名 → <snip>;Windows 绝对路径 → <path>;token/群号 → <redacted>。
+    max_len: 截断上限(TRACE 行要求单行 400 字符内);None 表示不截断。
+    """
+    s = "" if text is None else str(text)
+    s = _SECRET_RE.sub(r"\1\2<redacted>", s)
+    s = _QQ_RE.sub(lambda m: f"{m.group(1)}<redacted>", s)
+    s = _ABS_PATH_RE.sub("<path>", s)
+    s = _CHAT_NAME_RE.sub(r"\1<snip>\3", s)
+    s = _KICK_NAME_RE.sub(lambda m: f"<snip>被{m.group(2)}", s)
+    s = _BULLET_NAME_RE.sub("●<snip>", s)
+    if max_len is not None and len(s) > max_len:
+        s = s[:max_len] + f"...(+{len(s) - max_len}字符)"
+    return s
+
+
 def _next_archive_name(log_dir, today):
     """计算当天下一份归档的文件基名(不含扩展名),序号递增防重复。
 

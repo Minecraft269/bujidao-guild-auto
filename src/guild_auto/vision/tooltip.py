@@ -163,9 +163,13 @@ def parse_guild_detail(text: str) -> int | None:
 
     None 表示"不可读",由上层退回逐页成员计数并在报告注明来源 —— 不得当 0。
     """
+    logger.trace_call("vision.tooltip.parse_guild_detail", args=(f"{len(str(text or ''))}chars",))
     match = _GUILD_COUNT_RE.search(str(text or ""))
     if not match:
+        logger.trace_return("vision.tooltip.parse_guild_detail", result="<no_count_line>")
         return None
+    total = _to_int(match.group(1))
+    logger.trace_return("vision.tooltip.parse_guild_detail", result=total)
     return _to_int(match.group(1))
 
 
@@ -176,12 +180,18 @@ def classify_title(title: str | None) -> str:
     "已知标题之外的非空文本"一律视为成员详情;空标题/其它 ...界面 视为未知。
     """
     text = str(title or "").strip()
+    # 标题在成员详情界面上就是玩家名,只记长度,不记原文
+    logger.trace_call("vision.tooltip.classify_title", args=(f"{len(text)}chars",))
     if not text:
+        logger.trace_return("vision.tooltip.classify_title", result=TITLE_UNKNOWN)
         return TITLE_UNKNOWN
     if text in _TITLE_MAP:
+        logger.trace_return("vision.tooltip.classify_title", result=_TITLE_MAP[text])
         return _TITLE_MAP[text]
     if text.endswith("界面"):
+        logger.trace_return("vision.tooltip.classify_title", result=TITLE_UNKNOWN)
         return TITLE_UNKNOWN
+    logger.trace_return("vision.tooltip.classify_title", result=TITLE_MEMBER_DETAIL)
     return TITLE_MEMBER_DETAIL
 
 

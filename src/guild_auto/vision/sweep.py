@@ -131,6 +131,10 @@ class Sweeper:
 
     def _read(self, rect: Rect) -> UIElement:
         """一个停留点:悬停 → 等渲染 → 截图 → OCR → 语义分类。"""
+        logger.trace_call(
+            "vision.sweep.Sweeper._read",
+            args=(rect.center, rect.width, rect.height),
+        )
         started = time.monotonic()
         self.hover(rect.center)
         self.sleep(self.stay_ms / 1000.0)
@@ -139,6 +143,7 @@ class Sweeper:
         logger.log_info(f"vision.sweep: 截图开始(停留点 {rect.center},截图适配器无超时参数)")
         capture_started = time.monotonic()
         shot = self.capture()
+        capture_ms = (time.monotonic() - capture_started) * 1000
         logger.log_info(
             f"vision.sweep: 截图返回(耗时 {(time.monotonic() - capture_started) * 1000:.1f}ms,"
             f"停留点 {rect.center})"
@@ -147,6 +152,7 @@ class Sweeper:
         logger.log_info(f"vision.sweep: OCR 开始(停留点 {rect.center},超时由 OCR 适配器负责)")
         ocr_started = time.monotonic()
         text, confidence = self.ocr(shot)
+        ocr_ms = (time.monotonic() - ocr_started) * 1000
         logger.log_info(
             f"vision.sweep: OCR 返回(耗时 {(time.monotonic() - ocr_started) * 1000:.1f}ms,"
             f"文本 {len(str(text or ''))} 字,置信度 {float(confidence):.3f})"
@@ -162,6 +168,15 @@ class Sweeper:
             f"vision.sweep: 停留点 {rect.center} kind={element.kind} "
             f"confidence={element.confidence:.3f} "
             f"elapsed={(time.monotonic() - started) * 1000:.1f}ms"
+        )
+        logger.trace_return(
+            "vision.sweep.Sweeper._read",
+            result=(
+                f"center={rect.center} rect={rect.width}x{rect.height} "
+                f"capture_ms={capture_ms:.1f} ocr_ms={ocr_ms:.1f} "
+                f"conf={element.confidence:.3f} chars={len(element.text)} "
+                f"kind={element.kind}"
+            ),
         )
         return element
 
@@ -186,6 +201,14 @@ class Sweeper:
 
     def sweep(self) -> SweepResult:
         started = time.monotonic()
+        logger.trace_call(
+            "vision.sweep.Sweeper.sweep",
+            args=(
+                f"{self.spec.columns}x{self.spec.rows}",
+                self.expected_cells,
+                self.stay_ms,
+            ),
+        )
         logger.log_info(
             f"vision.sweep: 扫掠开始(网格 {self.spec.columns}x{self.spec.rows},"
             f"expected_cells={self.expected_cells}, stay_ms={self.stay_ms},"
@@ -197,9 +220,27 @@ class Sweeper:
         complete, missing = check_completeness(
             self.expected_cells, recognized, max_missing_ratio=self.max_missing_ratio
         )
+        elapsed_ms = (time.monotonic() - started) * 1000
         logger.log_info(
             f"vision.sweep: 扫掠结束(总耗时 {(time.monotonic() - started) * 1000:.1f}ms,"
             f"识别语义 {recognized} 格,缺口 {missing} 格,complete={complete})"
+        )
+        # 聚合行:整个扫掠只打一条,不逐停留点刷屏
+        logger.trace_code_location(
+            "vision.sweep.Sweeper.sweep.aggregate",
+            points=len(points),
+            recognized=recognized,
+            missing=missing,
+            complete=complete,
+            elapsed_ms=round(elapsed_ms, 1),
+            low_confidence_threshold=self.low_confidence,
+        )
+        logger.trace_return(
+            "vision.sweep.Sweeper.sweep",
+            result=(
+                f"items={len(elements)} recognized={recognized} "
+                f"missing={missing} complete={complete} elapsed_ms={elapsed_ms:.1f}"
+            ),
         )
         return SweepResult(
             elements=elements,

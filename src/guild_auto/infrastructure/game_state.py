@@ -73,6 +73,7 @@ class GameStateDetector:
     def _ocr_text(self):
         """截取屏幕并识别文字(同步包装)。"""
         t0 = time.time()
+        logger.trace_call("game_state._ocr_text", kwargs={"timeout_s": _OCR_TIMEOUT_S})
         logger.log_info(f"OCR_START | op=screenshot | timeout_s={_OCR_TIMEOUT_S:.1f}")
         try:
             img = pyautogui.screenshot()
@@ -81,24 +82,42 @@ class GameStateDetector:
                 f"OCR 截图失败 | op=screenshot | elapsed_ms={int((time.time() - t0) * 1000)}"
                 f" | {e!r}"
             )
+            logger.trace_exception("game_state._ocr_text.screenshot", e)
             raise
+        _img_size = getattr(img, "size", None)
+        _size_str = f"{_img_size[0]}x{_img_size[1]}" if _img_size else "unknown"
+        logger.log_trace(
+            f"[TRACE][game_state._ocr_text] step=screenshot region=fullscreen"
+            f" size={_size_str}"
+            f" shot_ms={int((time.time() - t0) * 1000)}"
+        )
         logger.log_info(f"OCR_DONE | op=screenshot | elapsed_ms={int((time.time() - t0) * 1000)}")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         t1 = time.time()
+        logger.log_trace(
+            f"[TRACE][game_state._ocr_text] step=png_encode png_bytes={len(buf.getvalue())}"
+        )
         logger.log_info(f"OCR_START | op=ocr | timeout_s={_OCR_TIMEOUT_S:.1f}")
         try:
             # asyncio.run + wait_for:BitmapDecoder / recognize 卡住时按超时抛出,
             # 避免发送线程永久阻塞(日志能看到卡在 ocr 且等了多久)。
             text = asyncio.run(asyncio.wait_for(self._ocr_async(buf.getvalue()), _OCR_TIMEOUT_S))
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as e:
             waited_ms = int((time.time() - t1) * 1000)
             logger.log_warning(f"OCR 超时 | waited_ms={waited_ms} | engine={self._engine_lang}")
+            logger.trace_exception("game_state._ocr_text.ocr", e)
             raise
         logger.log_info(
             f"OCR_DONE | op=ocr | elapsed_ms={int((time.time() - t1) * 1000)}"
             f" | text_len={len(text)}"
         )
+        logger.log_trace(
+            f"[TRACE][game_state._ocr_text] step=ocr engine={self._engine_lang}"
+            f" ocr_ms={int((time.time() - t1) * 1000)} text_len={len(text)}"
+            f" confidence=n/a(winsdk 不返回置信度)"
+        )
+        logger.trace_return("game_state._ocr_text", {"text_len": len(text)})
         return text
 
     async def _ocr_async(self, png_bytes):
@@ -121,7 +140,12 @@ class GameStateDetector:
         force=True 忽略缓存重新截图(用于 Esc 关闭菜单后的二次确认)。
         OCR 不可用时返回 (False, False)。"""
         if not self.available:
+            logger.log_trace(
+                "[TRACE][game_state.detect] decision=unavailable result=(False,False)"
+                " reason=winsdk 不可用"
+            )
             return False, False
+        logger.trace_call("game_state.detect", kwargs={"force": force})
         now = time.time()
         try:
             cached = not (force or self._cache is None or now - self._cache[0] > self.cache_seconds)
@@ -134,8 +158,18 @@ class GameStateDetector:
             # 关键:winsdk OCR 中文输出为"逐字带空格"(如"回 到 游 戏"),
             # 匹配前必须去除所有空白,否则子串匹配永远失败
             compact = text.replace(" ", "").replace("　", "").replace("\n", "")
+            menu_hits = [k for k in self.menu_keywords if k and k in compact]
+            chat_hits = [k for k in self.chat_keywords if k and k in compact]
             in_menu = any(k and k in compact for k in self.menu_keywords)
             chat_open = any(k and k in compact for k in self.chat_keywords)
+            logger.log_trace(
+                f"[TRACE][game_state.detect] decision=ocr_match cached={cached}"
+                f" elapsed_ms={int((time.time() - t0) * 1000)}"
+                f" compact_len={len(compact)}"
+                f" menu_candidates={len(menu_hits)} chat_candidates={len(chat_hits)}"
+                f" in_menu={in_menu} chat_open={chat_open}"
+                f" reason={'cache_hit' if cached else 'fresh_ocr'}"
+            )
             # 识别结论在默认 4 级不可见(trace_return 仅 6 级)→ 单独留 DEBUG 便于排查菜单误判
             logger.log_debug(
                 f"OCR 识别结论 | in_menu={in_menu} | chat_open={chat_open}"
@@ -148,6 +182,8 @@ class GameStateDetector:
                     "in_menu": in_menu,
                     "chat_open": chat_open,
                     "cached": cached,
+                    "menu_candidates": len(menu_hits),
+                    "chat_candidates": len(chat_hits),
                 },
             )
             return in_menu, chat_open
@@ -163,7 +199,12 @@ def prepare_chat_state(detector, console_func=print):
     * OCR 检测到菜单界面 → 按 Esc 关闭(仍存在则按 Enter 回到游戏)
     返回 True 表示处理过菜单;detector 不可用时返回 False(走原流程)。"""
     if detector is None or not getattr(detector, "available", False):
+        logger.log_trace(
+            "[TRACE][game_state.prepare_chat_state] decision=skip"
+            " result=False reason=detector_unavailable"
+        )
         return False
+    logger.trace_call("game_state.prepare_chat_state")
     try:
         in_menu, _ = detector.detect()
         if in_menu:
@@ -173,6 +214,10 @@ def prepare_chat_state(detector, console_func=print):
             in_menu2, _ = detector.detect(force=True)
             if not in_menu2:
                 # 首次是抖动,不按 Esc
+                logger.log_trace(
+                    "[TRACE][game_state.prepare_chat_state] decision=debounce_miss"
+                    " action=none result=False reason=二次确认非菜单"
+                )
                 return False
             logger.log_debug("OCR 二次确认菜单界面,按 Esc 关闭 ...")
             console_func("检测到游戏处于菜单界面,按 Esc 关闭...")
@@ -183,8 +228,19 @@ def prepare_chat_state(detector, console_func=print):
                 console_func("菜单仍未关闭,按 Enter 尝试回到游戏...")
                 pyautogui.press("enter")
                 time.sleep(0.5)
+            logger.log_trace(
+                f"[TRACE][game_state.prepare_chat_state] decision=menu_handled"
+                f" action=esc_then_{'enter' if in_menu3 else 'none'}"
+                f" in_menu_after={in_menu3} result=True"
+            )
+            logger.trace_return("game_state.prepare_chat_state", {"handled": True})
             return True
+        logger.log_trace(
+            "[TRACE][game_state.prepare_chat_state] decision=not_in_menu action=none result=False"
+        )
+        logger.trace_return("game_state.prepare_chat_state", {"handled": False})
         return False
     except Exception as e:
         console_func(f"(界面状态检测异常,按原流程发送: {e})")
+        logger.trace_exception("game_state.prepare_chat_state", e)
         return False

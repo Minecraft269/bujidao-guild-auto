@@ -416,6 +416,12 @@ class Runtime:
         if self.is_paused():
             stage, command = pause_context()
             started = time.monotonic()
+            logger.trace_code_location(
+                "runtime.Runtime.pause_gate",
+                "blocking",
+                stage=stage,
+                wait="user(no timeout)",
+            )
             if not _pause_gate_reported:
                 _pause_gate_reported = True
                 console("执行暂停，等待恢复...")
@@ -426,6 +432,12 @@ class Runtime:
                 self.sleep(0.1)
             _pause_gate_reported = False
             logger.log_info(f"暂停门解除 已等待={time.monotonic() - started:.1f}s")
+            logger.trace_code_location(
+                "runtime.Runtime.pause_gate",
+                "resumed",
+                stage=stage,
+                elapsed_s=round(time.monotonic() - started, 3),
+            )
         self.reset_window_state_after_pause(self.hwnd, self.detector)
 
     def async_verify_submit(self, command, player, meta=None):
@@ -472,17 +484,42 @@ class Runtime:
         """后台验证:读日志 → 提取块 → 判定(按命令类型分流)。"""
         timeout = float(self.cfg.get("timeouts", {}).get("response_wait", 12.0))
         logger.log_debug(f"异步验证 ENTER command={command} 超时={timeout:.1f}s")
+        logger.trace_call(
+            "runtime._async_verify_fn",
+            args=("player={logger.player_tag(player)}",),
+            kwargs={
+                "timeout_s": timeout,
+                "kind": "broadcast" if str(meta.get("msg", "")).startswith("/gc ") else "query",
+            },
+        )
         started = time.monotonic()
+        logger.trace_code_location(
+            "runtime._async_verify_fn.wait",
+            "blocking read log",
+            timeout_s=timeout,
+        )
         block = self.watcher.wait_for_chat_block(timeout=timeout, stop_check=self.is_paused)
         elapsed = time.monotonic() - started
         block_text = "None" if block is None else f"{len(block)}行"
         logger.log_debug(f"异步验证 EXIT 耗时={elapsed:.1f}s block={block_text}")
+        logger.trace_code_location(
+            "runtime._async_verify_fn.judge",
+            "block received" if block is not None else "timeout",
+            elapsed_s=round(elapsed, 3),
+            lines=0 if block is None else len(block),
+        )
         if block is None:
             logger.log_warning(f"异步验证超时 command={command} timeout={timeout:.1f}s")
+            logger.trace_return("runtime._async_verify_fn", "ok=False reason=timeout")
             return False, "等待响应超时", None
         if str(meta.get("msg", "")).startswith("/gc "):
             text = "\n".join(block)
+            logger.trace_return(
+                "runtime._async_verify_fn",
+                f"ok={meta['msg'] in text} reason=broadcast_echo",
+            )
             return (meta["msg"] in text), None if meta["msg"] in text else "广播内容未回显", None
+        logger.trace_return("runtime._async_verify_fn", "ok=True reason=query_generic")
         return True, None, None
 
     def close(self):

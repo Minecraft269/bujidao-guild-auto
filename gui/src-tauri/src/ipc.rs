@@ -140,6 +140,14 @@ impl Ipc {
         F: Fn(Value) + Send + 'static,
     {
         let pipe_log = masked_pipe(pipe, token);
+        logger::trace(
+            "ipc",
+            &format!(
+                "[ipc.connect] ENTER pipe={pipe_log} max_attempts={CONNECT_ATTEMPTS} retry_ms={} call_timeout_ms={}",
+                CONNECT_RETRY_INTERVAL.as_millis(),
+                CALL_TIMEOUT.as_millis()
+            ),
+        );
         logger::info(
             "ipc",
             &format!(
@@ -197,6 +205,13 @@ impl Ipc {
             }
         }
         let Some(file) = opened else {
+            logger::trace(
+                "ipc",
+                &format!(
+                    "[ipc.connect] EXIT ok=false attempts={CONNECT_ATTEMPTS} elapsed_ms={} err={last_err}",
+                    started.elapsed().as_millis()
+                ),
+            );
             logger::warn(
                 "ipc",
                 &format!(
@@ -221,6 +236,12 @@ impl Ipc {
             .spawn(move || {
                 let mut lines_read: u64 = 0;
                 let mut events: u64 = 0;
+                let mut replies: u64 = 0;
+                let mut skips: u64 = 0;
+                logger::trace(
+                    "ipc",
+                    "[ipc.reader_loop] ENTER thread=ipc-reader poll_ms=5",
+                );
                 // 读句柄切轮询：见 set_pipe_nowait() 的说明（本轮 RPC 卡死的根因）
                 set_pipe_nowait(&file);
                 // NOWAIT 设置可能被系统拒绝（实测 os error 231），所以再用 Peek 兜底：
@@ -266,6 +287,7 @@ impl Ipc {
                     let text = line.trim_end_matches(['\r', '\n']).to_string();
                     match classify_line(&text) {
                         Classified::Reply { id, text } => {
+                            replies += 1;
                             logger::debug(
                                 "ipc",
                                 &format!("归类=reply id={id} 字节={}", text.len()),
@@ -298,6 +320,7 @@ impl Ipc {
                             on_event(value);
                         }
                         Classified::Skip => {
+                            skips += 1;
                             logger::debug(
                                 "ipc",
                                 &format!(
@@ -309,12 +332,26 @@ impl Ipc {
                     }
                     line.clear();
                 }
+                // 循环内不逐行打点（量控）：退出时只落一条聚合行
+                logger::trace(
+                    "ipc",
+                    &format!(
+                        "[ipc.reader_loop] EXIT thread=ipc-reader lines={lines_read} reply={replies} event={events} skip={skips}"
+                    ),
+                );
             });
         if let Err(e) = reader {
             logger::error("ipc", &format!("读线程创建失败: {e}"));
             return Err(format!("读线程创建失败: {e}"));
         }
 
+        logger::trace(
+            "ipc",
+            &format!(
+                "[ipc.connect] EXIT ok=true elapsed_ms={} reader_thread=ipc-reader",
+                started.elapsed().as_millis()
+            ),
+        );
         Ok(Self {
             out: Mutex::new(Some(writer)),
             pending,
@@ -345,6 +382,13 @@ impl Ipc {
             ),
         );
         let started = Instant::now();
+        logger::trace(
+            "ipc",
+            &format!(
+                "[ipc.call_with_timeout] ENTER method={method} id={id} timeout_ms={}",
+                timeout.as_millis()
+            ),
+        );
         let (tx, rx) = mpsc::channel();
         self.pending
             .lock()
@@ -370,12 +414,26 @@ impl Ipc {
                     "ipc",
                     &format!("RPC method={method} id={id} 失败: 管道未连接"),
                 );
+                logger::trace(
+                    "ipc",
+                    &format!(
+                        "[ipc.call_with_timeout] EXIT method={method} id={id} outcome=pipe_down elapsed_ms={}",
+                        started.elapsed().as_millis()
+                    ),
+                );
                 "管道未连接".to_string()
             })?;
             if let Err(e) = writeln!(writer, "{line}") {
                 logger::warn(
                     "ipc",
                     &format!("RPC method={method} id={id} 写管道失败: {e}"),
+                );
+                logger::trace(
+                    "ipc",
+                    &format!(
+                        "[ipc.call_with_timeout] EXIT method={method} id={id} outcome=write_error elapsed_ms={} err={e}",
+                        started.elapsed().as_millis()
+                    ),
                 );
                 if let Ok(mut m) = self.pending.lock() {
                     m.remove(&id);
@@ -405,6 +463,13 @@ impl Ipc {
                                 "[EXIT ] RPC method={method} id={id} 耗时={elapsed}ms 响应={outcome}"
                             ),
                         );
+                        logger::trace(
+                            "ipc",
+                            &format!(
+                                "[ipc.call_with_timeout] EXIT method={method} id={id} outcome={outcome} elapsed_ms={elapsed} bytes={}",
+                                text.len()
+                            ),
+                        );
                         Ok(strip_id(v))
                     }
                     Err(e) => {
@@ -412,6 +477,12 @@ impl Ipc {
                             "ipc",
                             &format!(
                                 "RPC method={method} id={id} 耗时={elapsed}ms 应答不是合法 JSON: {e}"
+                            ),
+                        );
+                        logger::trace(
+                            "ipc",
+                            &format!(
+                                "[ipc.call_with_timeout] EXIT method={method} id={id} outcome=bad_json elapsed_ms={elapsed} err={e}"
                             ),
                         );
                         Err(format!("应答不是合法 JSON: {e}"))
@@ -424,6 +495,13 @@ impl Ipc {
                     "ipc",
                     &format!(
                         "RPC 超时 method={method} id={id} 已等待={elapsed}ms 超时值={}ms 原因={e}",
+                        timeout.as_millis()
+                    ),
+                );
+                logger::trace(
+                    "ipc",
+                    &format!(
+                        "[ipc.call_with_timeout] EXIT method={method} id={id} outcome=timeout waited_ms={elapsed} timeout_ms={}",
                         timeout.as_millis()
                     ),
                 );

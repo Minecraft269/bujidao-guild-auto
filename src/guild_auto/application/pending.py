@@ -48,6 +48,7 @@ def load_pending(path):
     契约:返回的每一项 player 都已过 validate_player_name,
     调用方可以安全地用它拼命令和文件名。
     """
+    logger.trace_call("pending.load_pending", args=("<path>",))
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
@@ -58,6 +59,7 @@ def load_pending(path):
     except FileNotFoundError:
         # 没有待办文件是正常情况(首次运行/上次全部完成),不告警。
         logger.log_debug(f"待办文件不存在 path={path},按无待办处理")
+        logger.trace_return("pending.load_pending", "items=0 reason=missing")
         return []
     except (OSError, json.JSONDecodeError) as e:
         # 文件不可读/损坏 = "上次的未完成操作(可能是不可逆的踢人)静默消失",
@@ -65,12 +67,15 @@ def load_pending(path):
         logger.log_warning(
             f"读取待办失败 path={path} 异常={type(e).__name__}: {e}，本次按无待办处理"
         )
+        logger.trace_return(
+            "pending.load_pending", f"items=0 reason=read_error type={type(e).__name__}"
+        )
         return []
     try:
         size = os.path.getsize(path)
     except OSError:
         size = None
-    logger.trace_file_read(path, size=size)
+    logger.trace_file_read(f"<path>/{os.path.basename(path)}", size=size)
 
     safe, dropped = [], 0
     for it in raw:
@@ -82,14 +87,24 @@ def load_pending(path):
             logger.log_warning(f"待办文件含非法玩家名,已跳过该条: {e}")
     if dropped:
         console(f"⚠ 待办文件有 {dropped} 条玩家名不合法,已跳过(详见日志)")
+    logger.trace_return(
+        "pending.load_pending", f"items={len(safe)} dropped={dropped} raw={len(raw)}"
+    )
     return safe
 
 
 def save_pending(path, guild_name, items):
     """写入待办文件(已完成项已从 items 中移除,未完成的保留)。"""
+    logger.trace_call(
+        "pending.save_pending",
+        args=("<path>",),
+        kwargs={"items": len(items)},
+    )
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"guild_name": guild_name or "", "items": items}, f, ensure_ascii=False, indent=2)
+    logger.trace_file_write(f"<path>/{os.path.basename(path)}")
+    logger.trace_return("pending.save_pending", f"items={len(items)}")
 
 
 def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, input_fn=None):
@@ -102,8 +117,10 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
     """
     console_fn = console_fn or console
     input_fn = input_fn or input
+    logger.trace_call("pending.run_pending", args=("<path>",))
     items = load_pending(path)
     if not items:
+        logger.trace_return("pending.run_pending", "items=0 reason=no_pending")
         return True, []
     started = time.monotonic()
     logger.log_info(f"待办 ENTER 项数={len(items)} 询问=是否执行(等待=用户输入)")
@@ -116,6 +133,12 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
         )
     do_exec = False
     if sw["execution_enabled"]:
+        logger.trace_code_location(
+            "pending.run_pending.ask",
+            "blocking user input",
+            items=len(items),
+            wait="user(no timeout)",
+        )
         try:
             ans = input_fn("是否执行以上操作?输入 y 或直接回车=执行,输入 n=跳过(保留待下次): ")
             ans = (ans or "").strip().lower()
@@ -180,11 +203,25 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
     else:
         remaining = items  # 用户选择跳过:全部保留
 
+    logger.trace_code_location(
+        "pending.run_pending.result",
+        "resume cycle",
+        items=len(items),
+        do_exec=do_exec,
+        completed=completed,
+        remaining=len(remaining),
+    )
     save_pending(path, cfg.get("guild_name") or "", remaining)
     if remaining:
         console_fn(f"仍有 {len(remaining)} 条未完成,已保留在待办文件,下次启动可继续")
     else:
         console_fn("全部待办操作已完成")
+    logger.trace_code_location(
+        "pending.run_pending.ask",
+        "blocking user input",
+        items=len(remaining),
+        wait="user(no timeout)",
+    )
     try:
         ans = input_fn("直接退出(回车)还是继续新的统计操作(输入 c 回车)?: ")
         ans = (ans or "").strip().lower()
@@ -193,6 +230,10 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
         ans = ""
     logger.log_info(
         f"待办 EXIT 耗时={time.monotonic() - started:.1f}s 完成={completed} 剩余={len(remaining)}"
+    )
+    logger.trace_return(
+        "pending.run_pending",
+        f"continue={ans == 'c'} completed={completed} remaining={len(remaining)}",
     )
     # 语义:cont = "是否继续新的统计操作"。
     # 提示语是「直接退出(回车)还是继续新的统计(输入 c)」—— 所以输入 c 才是继续。
