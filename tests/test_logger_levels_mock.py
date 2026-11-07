@@ -657,12 +657,22 @@ class TestTraceVerifyStage(LoggerTempCase):
         super().setUp()
         self.init_logger(level=6)
 
+    def _verify_lines(self):
+        """只取本类关心的 TRACE_VERIFY 行。
+
+        为什么不能断言整个文件:前面的异步用例可能遗留后台验证线程(其存活时长由
+        task_timeout 决定),它会往**同一个**日志文件写 `[异步-验证中] ...` 时序行。
+        那是噪声,不是 trace_verify_stage 的输出;CI 慢机器上必现
+        (2026-11-07 main 的 Tests & Coverage 就因此红过一次)。
+        """
+        return [m for m in self.messages() if m.startswith("TRACE_VERIFY ")]
+
     def test_full_six_stage_flow(self):
         """提交→发送→读日志→判定→重试→完成 六阶段连续可读。"""
         for s in logger.VERIFY_STAGES:
             logger.trace_verify_stage(s, task_id="T1", player="P1")
         self.assertEqual(
-            self.messages(),
+            self._verify_lines(),
             [
                 f"TRACE_VERIFY {s} | task_id=T1 | player=P1"
                 for s in ("submit", "send", "read_log", "judge", "retry", "done")
@@ -671,25 +681,26 @@ class TestTraceVerifyStage(LoggerTempCase):
 
     def test_stage_only(self):
         logger.trace_verify_stage("submit")
-        self.assertEqual(self.messages(), ["TRACE_VERIFY submit"])
+        self.assertEqual(self._verify_lines(), ["TRACE_VERIFY submit"])
 
     def test_task_id_only(self):
         logger.trace_verify_stage("retry", task_id="T9")
-        self.assertEqual(self.messages(), ["TRACE_VERIFY retry | task_id=T9"])
+        self.assertEqual(self._verify_lines(), ["TRACE_VERIFY retry | task_id=T9"])
 
     def test_player_only(self):
         logger.trace_verify_stage("judge", player="P2")
-        self.assertEqual(self.messages(), ["TRACE_VERIFY judge | player=P2"])
+        self.assertEqual(self._verify_lines(), ["TRACE_VERIFY judge | player=P2"])
 
     def test_fields_carry_verdict_details(self):
         logger.trace_verify_stage("judge", task_id="T1", ok=True, reason="匹配成功")
         self.assertEqual(
-            self.messages(), ["TRACE_VERIFY judge | task_id=T1 | ok=True | reason=匹配成功"]
+            self._verify_lines(),
+            ["TRACE_VERIFY judge | task_id=T1 | ok=True | reason=匹配成功"],
         )
 
     def test_optional_ids_omitted_when_none(self):
         logger.trace_verify_stage("done", task_id=None, player=None)
-        self.assertEqual(self.messages(), ["TRACE_VERIFY done"])
+        self.assertEqual(self._verify_lines(), ["TRACE_VERIFY done"])
 
 
 # ---------------------------------------------------------------------------
