@@ -180,17 +180,27 @@ class TestLevelGate(LoggerTempCase):
         self.assertEqual(self.read_log(), "", "level 5 下 trace_* 必须零输出")
         self.assertProjectLogsUntouched()
 
-    @mock.patch.object(logger, "log_trace")
-    def test_log_trace_never_called_below_level6(self, fake_log_trace):
-        for lv in (1, 2, 3, 4, 5):
-            with self.subTest(level=lv):
-                fake_log_trace.reset_mock()
-                self.init_logger(level=lv)
-                for call in ALL_TRACE_CALLS:
-                    call()
-                self.assertEqual(
-                    fake_log_trace.call_count, 0, f"level={lv} 时 trace_* 不得下沉到 log_trace"
-                )
+    def test_log_trace_never_called_below_level6(self):
+        """level<6 时 trace_* helper 不得下沉到 log_trace。
+
+        只统计**本线程**的调用：其它用例可能遗留后台线程（看门狗/异步工作线程），
+        它们恰好在此刻调 log_trace 不属本断言范围 —— CI 上曾因此假红。
+        """
+        me = threading.current_thread().name
+        recorded: list[str] = []
+
+        def _rec(msg):
+            recorded.append(threading.current_thread().name)
+
+        with mock.patch.object(logger, "log_trace", side_effect=_rec):
+            for lv in (1, 2, 3, 4, 5):
+                with self.subTest(level=lv):
+                    recorded.clear()
+                    self.init_logger(level=lv)
+                    for call in ALL_TRACE_CALLS:
+                        call()
+                    mine = [n for n in recorded if n == me]
+                    self.assertEqual(mine, [], f"level={lv} 时 trace_* 不得下沉到 log_trace")
 
     def test_no_snapshot_below_level6(self):
         """闸门是真 return,不是「构造完再丢弃」。"""
