@@ -559,31 +559,17 @@ def parse_args():
 # ---------------------------------------------------------------------------
 # S0 启动快照与看门狗（§6.1 S0 / §6.3）
 # ---------------------------------------------------------------------------
-# logger 要等配置加载完才知道日志目录：S0 在它之前输出，所以先缓冲，
-# init_logger 就绪后由 prepare_config 调用 _flush_prelog() 补写（见任务 S0）。
-_PRELOG_BUFFER: list[str] = []
-
-
+# logger 要等配置加载完才知道日志目录：S0 在它之前输出。
+# 缓冲已下沉到 logger（未初始化时写 stderr + 内存缓冲，init 后按序回灌），
+# 这里不再自建第二套 —— 两套缓冲会让 S0 排到 S1/S2 之后（实机见过）。
 def _prelog(msg):
-    """logger 未就绪时的启动日志：先缓冲 + 控制台可见，就绪后补写。"""
-    _PRELOG_BUFFER.append(str(msg))
-    stream = sys.stdout
-    if stream is not None:
-        try:
-            print(msg, flush=True)
-        except (OSError, ValueError) as e:
-            # 控制台不可用（打包成无控制台）时仍保留缓冲，logger 就绪后落盘
-            _PRELOG_BUFFER.append(f"[S0] 控制台输出失败: {e!r}")
+    """启动日志：交给 logger 缓冲，init_logger 就绪后按顺序补写入盘。"""
+    logger.log_info(str(msg))
 
 
 def _flush_prelog():
-    """把 S0 缓冲写进已就绪的 logger（幂等：缓冲清空后无动作）。"""
-    if not _PRELOG_BUFFER:
-        return
-    pending = list(_PRELOG_BUFFER)
-    _PRELOG_BUFFER.clear()
-    for msg in pending:
-        logger.log_info(msg)
+    """兼容旧调用点：缓冲已下沉到 logger，这里不再有独立缓冲。"""
+    return
 
 
 def _log_startup_snapshot(args):

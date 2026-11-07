@@ -75,6 +75,15 @@ _initialized = False  # 防止重复 init 时误归档当前运行的日志
 _START_TIME = _time.monotonic()  # 进程启动时间戳(用于相对偏移)
 _INIT_LOCK = threading.Lock()  # 防止多线程同时 init 导致重复归档
 
+# ── 早启动缓冲（43 条复核缺口的根因修复）───────────────────────────────
+# 日志目录来自配置，而配置要等 S1/S2 才读出来 → init_logger 之前的所有日志
+# （S0 进程启动、S1 首次生成配置、S2 校验…）原本直接 return 丢掉，
+# 导致「启动阶段无法落盘」。现在：未初始化时先写 stderr（终端能看）
+# 并缓冲到内存，init_logger 完成后按原顺序回灌进 latest.log。
+_PRELOG: list[tuple[float, int, str]] = []
+_PRELOG_MAX = 500  # 上限：防止长时间未初始化把内存吃满
+_PRELOG_DROPPED = 0
+
 
 class _Formatter(logging.Formatter):
     """将日志行中的 levelname 显示为英文级别名 + 相对启动时间偏移。"""
@@ -273,11 +282,32 @@ def init_logger(log_dir="logs", level=4, enabled=True):
             )
         if archived:
             logger.log(logging.INFO, f"[归档] 上一运行日志已压缩: {archived}")
+        # 回灌早启动缓冲：S0/S1/S2 在 init 之前打的行不能凭空消失（43 条缺口根因）。
+        # 带上相对启动时间，回灌后时间线仍可按顺序读。
+        if _PRELOG:
+            if _PRELOG_DROPPED:
+                logger.log(
+                    logging.WARNING,
+                    f"[prelog] 缓冲区超上限({_PRELOG_MAX})，已丢弃最早 {_PRELOG_DROPPED} 条",
+                )
+            for rel, lvl, msg in _PRELOG:
+                logger.log(lvl, f"[prelog +{rel:.3f}s] {msg}")
+            _PRELOG.clear()
     return logger
 
 
 def _log(level, msg):
     if _logger is None:
+        # 早启动：缓冲 + stderr 兜底（见 _PRELOG 注释）。绝不静默丢弃。
+        global _PRELOG_DROPPED
+        if len(_PRELOG) >= _PRELOG_MAX:
+            _PRELOG_DROPPED += 1
+        else:
+            _PRELOG.append((_time.monotonic() - _START_TIME, level, str(msg)))
+        try:
+            sys.stderr.write(f"[prelog] {msg}\n")
+        except Exception:
+            pass  # stderr 不可用也不该崩：缓冲仍保留，init 时会回灌
         return
     try:
         _logger.log(level, msg)
