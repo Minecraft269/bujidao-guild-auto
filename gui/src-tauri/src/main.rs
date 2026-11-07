@@ -124,10 +124,24 @@ async fn core_call(
             params_summary(&params)
         ),
     );
+    logger::trace(
+        "rpc",
+        &format!(
+            "[main.core_call] ENTER method={method} thread=spawn_blocking {}",
+            params_summary(&params)
+        ),
+    );
     let started = Instant::now();
     let client = lock(&state.ipc).clone();
     let Some(client) = client else {
         logger::warn("rpc", &format!("IPC 未连接，请求被丢弃: {method}"));
+        logger::trace(
+            "rpc",
+            &format!(
+                "[main.core_call] EXIT method={method} outcome=no_ipc elapsed_ms={}",
+                started.elapsed().as_millis()
+            ),
+        );
         return Ok(json!({ "ok": false, "error": "未连接核心" }));
     };
     let method_for_call = method.clone();
@@ -150,6 +164,13 @@ async fn core_call(
                     started.elapsed().as_millis()
                 ),
             );
+            logger::trace(
+                "rpc",
+                &format!(
+                    "[main.core_call] EXIT method={method} outcome={outcome} elapsed_ms={}",
+                    started.elapsed().as_millis()
+                ),
+            );
             Ok(v)
         }
         Ok(Err(e)) => {
@@ -160,6 +181,13 @@ async fn core_call(
                     started.elapsed().as_millis()
                 ),
             );
+            logger::trace(
+                "rpc",
+                &format!(
+                    "[main.core_call] EXIT method={method} outcome=ipc_error elapsed_ms={} err={e}",
+                    started.elapsed().as_millis()
+                ),
+            );
             Ok(json!({ "ok": false, "error": e }))
         }
         Err(e) => {
@@ -167,6 +195,13 @@ async fn core_call(
                 "rpc",
                 &format!(
                     "[EXIT ] core_call method={method} 耗时={}ms 请求任务异常: {e}",
+                    started.elapsed().as_millis()
+                ),
+            );
+            logger::trace(
+                "rpc",
+                &format!(
+                    "[main.core_call] EXIT method={method} outcome=task_panic elapsed_ms={} err={e}",
                     started.elapsed().as_millis()
                 ),
             );
@@ -263,7 +298,15 @@ fn win_set_close_policy(
     action: String,
     ask: bool,
 ) {
-    *lock(&state.policy) = ClosePolicy {
+    let mut guard = lock(&state.policy);
+    logger::trace(
+        "close",
+        &format!(
+            "[main.win_set_close_policy] enabled={}->{enabled} action={}->{action} ask={}->{ask}",
+            guard.enabled, guard.action, guard.ask
+        ),
+    );
+    *guard = ClosePolicy {
         enabled,
         action,
         ask,
@@ -278,6 +321,13 @@ fn win_close(app: tauri::AppHandle, w: WebviewWindow, state: tauri::State<'_, Ap
         "close",
         &format!(
             "关闭请求 来源=按钮 policy enabled={} action={} ask={}",
+            p.enabled, p.action, p.ask
+        ),
+    );
+    logger::trace(
+        "close",
+        &format!(
+            "[main.win_close] ENTER source=button enabled={} action={} ask={}",
             p.enabled, p.action, p.ask
         ),
     );
@@ -299,16 +349,29 @@ fn win_close(app: tauri::AppHandle, w: WebviewWindow, state: tauri::State<'_, Ap
             "policy.action=exit"
         };
         logger::info("close", &format!("关闭动作=退出 原因={reason}"));
+        logger::trace(
+            "close",
+            &format!("[main.win_close] EXIT hit={reason} conclusion=exit"),
+        );
         save_geo(&app, &w);
         app.exit(0);
     } else if p.action == "minimize" {
         logger::info("close", "关闭动作=隐藏(minimize)");
+        logger::trace(
+            "close",
+            "[main.win_close] EXIT hit=policy.action=minimize conclusion=hide",
+        );
         let _ = w.hide();
     } else if p.ask {
         logger::info("close", "关闭动作=询问前端(gui-close-request)");
+        logger::trace(
+            "close",
+            "[main.win_close] EXIT hit=policy.ask=true conclusion=ask_frontend",
+        );
         let _ = app.emit("gui-close-request", ());
     } else {
         logger::info("close", "关闭动作=隐藏(默认分支)");
+        logger::trace("close", "[main.win_close] EXIT hit=default conclusion=hide");
         let _ = w.hide();
     }
 }
@@ -326,6 +389,10 @@ fn win_close_decision(
         "close",
         &format!("关闭询问结果 来源=用户选择 action={action} remember={remember}"),
     );
+    logger::trace(
+        "close",
+        &format!("[main.win_close_decision] ENTER action={action} remember={remember}"),
+    );
     if remember {
         let mut p = lock(&state.policy);
         p.action = action.clone();
@@ -333,9 +400,21 @@ fn win_close_decision(
     }
     if action == "minimize" {
         logger::info("close", "关闭动作=隐藏(用户选择 minimize)");
+        logger::trace(
+            "close",
+            &format!(
+                "[main.win_close_decision] EXIT action=minimize remember={remember} conclusion=hide"
+            ),
+        );
         let _ = w.hide();
     } else {
         logger::info("close", "关闭动作=退出(用户选择 exit)");
+        logger::trace(
+            "close",
+            &format!(
+                "[main.win_close_decision] EXIT action={action} remember={remember} conclusion=exit"
+            ),
+        );
         save_geo(&app, &w);
         app.exit(0);
     }
@@ -355,6 +434,14 @@ fn win_set_tray_state(
     } else {
         format!("tray-{state}.png")
     };
+    let tray_ready = lock(&app_state.tray).is_some();
+    logger::trace(
+        "tray",
+        &format!(
+            "[main.win_set_tray_state] state={state} fails={fails} icon={icon_file} tray_ready={tray_ready} tip_len={}",
+            tip.len()
+        ),
+    );
     if let Some(tray) = lock(&app_state.tray).as_ref() {
         match load_icon(&app, &icon_file) {
             Some(img) => {
@@ -399,10 +486,15 @@ fn builtin_icon(file: &str) -> Option<&'static [u8]> {
 }
 
 fn load_icon(app: &tauri::AppHandle, file: &str) -> Option<tauri::image::Image<'static>> {
+    logger::trace("tray", &format!("[main.load_icon] ENTER file={file}"));
     if let Some(bytes) = builtin_icon(file) {
         match tauri::image::Image::from_bytes(bytes) {
             Ok(img) => {
                 logger::debug("tray", &format!("图标加载成功 file={file} 来源=内置"));
+                logger::trace(
+                    "tray",
+                    &format!("[main.load_icon] EXIT file={file} found=true source=builtin"),
+                );
                 return Some(img);
             }
             Err(e) => logger::warn(
@@ -432,6 +524,13 @@ fn load_icon(app: &tauri::AppHandle, file: &str) -> Option<tauri::image::Image<'
                     "tray",
                     &format!("图标加载成功 file={file} path={}", p.display()),
                 );
+                logger::trace(
+                    "tray",
+                    &format!(
+                        "[main.load_icon] EXIT file={file} found=true source=external candidates={}",
+                        candidates.len()
+                    ),
+                );
                 return Some(img);
             }
             Err(e) => logger::debug(
@@ -443,6 +542,13 @@ fn load_icon(app: &tauri::AppHandle, file: &str) -> Option<tauri::image::Image<'
             ),
         }
     }
+    logger::trace(
+        "tray",
+        &format!(
+            "[main.load_icon] EXIT file={file} found=false candidates={}",
+            candidates.len()
+        ),
+    );
     logger::warn(
         "tray",
         &format!(
@@ -472,10 +578,16 @@ fn geo_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 }
 
 fn save_geo(app: &tauri::AppHandle, w: &WebviewWindow) {
+    let started = Instant::now();
+    logger::trace("geo", "[main.save_geo] ENTER");
     let pos = match w.outer_position() {
         Ok(p) => p,
         Err(e) => {
             logger::warn("geo", &format!("几何保存失败：读取窗口位置失败: {e}"));
+            logger::trace(
+                "geo",
+                &format!("[main.save_geo] EXIT ok=false stage=read_position err={e}"),
+            );
             return;
         }
     };
@@ -483,6 +595,10 @@ fn save_geo(app: &tauri::AppHandle, w: &WebviewWindow) {
         Ok(s) => s,
         Err(e) => {
             logger::warn("geo", &format!("几何保存失败：读取窗口尺寸失败: {e}"));
+            logger::trace(
+                "geo",
+                &format!("[main.save_geo] EXIT ok=false stage=read_size err={e}"),
+            );
             return;
         }
     };
@@ -493,7 +609,10 @@ fn save_geo(app: &tauri::AppHandle, w: &WebviewWindow) {
         h: size.height,
         maximized: w.is_maximized().unwrap_or(false),
     };
-    let Some(p) = geo_path(app) else { return };
+    let Some(p) = geo_path(app) else {
+        logger::trace("geo", "[main.save_geo] EXIT ok=false stage=config_dir");
+        return;
+    };
     if let Some(dir) = p.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
             logger::warn(
@@ -506,38 +625,67 @@ fn save_geo(app: &tauri::AppHandle, w: &WebviewWindow) {
         Ok(t) => t,
         Err(e) => {
             logger::warn("geo", &format!("几何保存失败：序列化出错: {e}"));
+            logger::trace(
+                "geo",
+                &format!("[main.save_geo] EXIT ok=false stage=serialize err={e}"),
+            );
             return;
         }
     };
+    let bytes = text.len();
     match std::fs::write(&p, text) {
-        Ok(_) => logger::debug(
-            "geo",
-            &format!(
-                "几何保存成功 path={} x={} y={} w={} h={} maximized={}",
-                p.display(),
-                g.x,
-                g.y,
-                g.w,
-                g.h,
-                g.maximized
-            ),
-        ),
-        Err(e) => logger::warn(
-            "geo",
-            &format!("几何保存失败 path={} 错误: {e}", p.display()),
-        ),
+        Ok(_) => {
+            logger::debug(
+                "geo",
+                &format!(
+                    "几何保存成功 path=<path> x={} y={} w={} h={} maximized={}",
+                    g.x, g.y, g.w, g.h, g.maximized
+                ),
+            );
+            logger::trace(
+                "geo",
+                &format!(
+                    "[main.save_geo] EXIT ok=true path=<path> bytes={bytes} elapsed_ms={} x={} y={} w={} h={} maximized={}",
+                    started.elapsed().as_millis(),
+                    g.x,
+                    g.y,
+                    g.w,
+                    g.h,
+                    g.maximized
+                ),
+            );
+        }
+        Err(e) => {
+            logger::warn("geo", &format!("几何保存失败 path=<path> 错误: {e}"));
+            logger::trace(
+                "geo",
+                &format!(
+                    "[main.save_geo] EXIT ok=false stage=write path=<path> bytes={bytes} elapsed_ms={} err={e}",
+                    started.elapsed().as_millis()
+                ),
+            );
+        }
     }
 }
 
 fn restore_geo(w: &WebviewWindow) {
+    let started = Instant::now();
+    logger::trace("geo", "[main.restore_geo] ENTER");
     let app = w.app_handle().clone();
-    let Some(p) = geo_path(&app) else { return };
+    let Some(p) = geo_path(&app) else {
+        logger::trace("geo", "[main.restore_geo] EXIT ok=false stage=config_dir");
+        return;
+    };
     let text = match std::fs::read_to_string(&p) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             logger::debug(
                 "geo",
                 &format!("几何文件不存在，使用默认位置 path={}", p.display()),
+            );
+            logger::trace(
+                "geo",
+                "[main.restore_geo] EXIT ok=false stage=read reason=not_found",
             );
             return;
         }
@@ -546,9 +694,21 @@ fn restore_geo(w: &WebviewWindow) {
                 "geo",
                 &format!("几何恢复失败：读取文件失败 path={} 错误: {e}", p.display()),
             );
+            logger::trace(
+                "geo",
+                &format!("[main.restore_geo] EXIT ok=false stage=read err={e}"),
+            );
             return;
         }
     };
+    logger::trace(
+        "geo",
+        &format!(
+            "[main.restore_geo] READ path=<path> bytes={} elapsed_ms={}",
+            text.len(),
+            started.elapsed().as_millis()
+        ),
+    );
     let g = match serde_json::from_str::<Geo>(&text) {
         Ok(g) => g,
         Err(e) => {
@@ -558,6 +718,10 @@ fn restore_geo(w: &WebviewWindow) {
                     "几何恢复失败：解析 JSON 失败 path={} 错误: {e}",
                     p.display()
                 ),
+            );
+            logger::trace(
+                "geo",
+                &format!("[main.restore_geo] EXIT ok=false stage=parse err={e}"),
             );
             return;
         }
@@ -578,6 +742,17 @@ fn restore_geo(w: &WebviewWindow) {
         let (mw, mh) = (m.size().width as i32, m.size().height as i32);
         g.x + g.w as i32 > mx && g.x < mx + mw && g.y + g.h as i32 > my && g.y < my + mh
     });
+    logger::trace(
+        "geo",
+        &format!(
+            "[main.restore_geo] decision monitors={} on_screen={on_screen} x={} y={} w={} h={}",
+            monitors.len(),
+            g.x,
+            g.y,
+            g.w,
+            g.h
+        ),
+    );
     if on_screen {
         match w.set_position(tauri::PhysicalPosition::new(g.x, g.y)) {
             Ok(_) => logger::info(
@@ -592,7 +767,13 @@ fn restore_geo(w: &WebviewWindow) {
                     g.maximized
                 ),
             ),
-            Err(e) => logger::warn("geo", &format!("几何恢复：设置窗口位置失败: {e}")),
+            Err(e) => {
+                logger::warn("geo", &format!("几何恢复：设置窗口位置失败: {e}"));
+                logger::trace(
+                    "geo",
+                    &format!("[main.restore_geo] WARNING stage=set_position err={e}"),
+                );
+            }
         }
     } else {
         match w.center() {
@@ -603,14 +784,32 @@ fn restore_geo(w: &WebviewWindow) {
                     p.display()
                 ),
             ),
-            Err(e) => logger::warn("geo", &format!("几何恢复：居中失败: {e}")),
+            Err(e) => {
+                logger::warn("geo", &format!("几何恢复：居中失败: {e}"));
+                logger::trace(
+                    "geo",
+                    &format!("[main.restore_geo] WARNING stage=center err={e}"),
+                );
+            }
         }
     }
     if g.maximized {
         if let Err(e) = w.maximize() {
             logger::warn("geo", &format!("几何恢复：最大化失败: {e}"));
+            logger::trace(
+                "geo",
+                &format!("[main.restore_geo] WARNING stage=maximize err={e}"),
+            );
         }
     }
+    logger::trace(
+        "geo",
+        &format!(
+            "[main.restore_geo] EXIT ok=true maximized={} elapsed_ms={}",
+            g.maximized,
+            started.elapsed().as_millis()
+        ),
+    );
 }
 
 fn arg_value(name: &str) -> Option<String> {
@@ -731,6 +930,13 @@ fn main() {
                             p.enabled, p.action, p.ask
                         ),
                     );
+                    logger::trace(
+                        "close",
+                        &format!(
+                            "[main.on_window_event] ENTER event=CloseRequested enabled={} action={} ask={}",
+                            p.enabled, p.action, p.ask
+                        ),
+                    );
                     if p.enabled && !matches!(p.action.as_str(), "ask" | "minimize" | "exit") {
                         logger::warn(
                             "close",
@@ -747,27 +953,53 @@ fn main() {
                             "policy.action=exit"
                         };
                         logger::info("close", &format!("关闭动作=退出 原因={reason}"));
+                        logger::trace(
+                            "close",
+                            &format!(
+                                "[main.on_window_event] EXIT event=CloseRequested hit={reason} conclusion=exit"
+                            ),
+                        );
                         if let Some(w) = app.get_webview_window("main") {
                             save_geo(&app, &w);
                         }
                         app.exit(0);
                     } else if p.action == "minimize" {
                         logger::info("close", "关闭动作=隐藏(minimize)");
+                        logger::trace(
+                            "close",
+                            "[main.on_window_event] EXIT event=CloseRequested hit=policy.action=minimize conclusion=hide",
+                        );
                         let _ = window.hide();
                     } else if p.ask {
                         logger::info("close", "关闭动作=询问前端(gui-close-request)");
+                        logger::trace(
+                            "close",
+                            "[main.on_window_event] EXIT event=CloseRequested hit=policy.ask=true conclusion=ask_frontend",
+                        );
                         let _ = app.emit("gui-close-request", ());
                     } else {
                         logger::info("close", "关闭动作=隐藏(默认分支)");
+                        logger::trace(
+                            "close",
+                            "[main.on_window_event] EXIT event=CloseRequested hit=default conclusion=hide",
+                        );
                         let _ = window.hide();
                     }
                 }
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                     // 节流：连续拖动时最多每 800ms 落盘一次
                     let mut last = lock(&state.last_save);
-                    if last.elapsed() > Duration::from_millis(800) {
+                    let since_last = last.elapsed();
+                    if since_last > Duration::from_millis(800) {
                         *last = Instant::now();
                         drop(last);
+                        logger::trace(
+                            "geo",
+                            &format!(
+                                "[main.on_window_event] event=move_or_resize throttled_save=yes since_last_ms={}",
+                                since_last.as_millis()
+                            ),
+                        );
                         if let Some(w) = app.get_webview_window("main") {
                             save_geo(&app, &w);
                         }

@@ -74,15 +74,24 @@ def find_gui_in(root: Path) -> Path | None:
 
 def gui_executable() -> Path | None:
     """定位 Gui.exe：环境变量优先，其次 exe 同级（发布布局），最后仓库构建产物（开发）。"""
+    logger.log_trace(f"[TRACE][binding.gui_executable] phase=ENTER names={len(GUI_EXE_NAMES)}")
     override = os.environ.get("BUJIDAO_GUI")
     if override:
         logger.log_info(f"[阶段] S4 Gui.exe 候选(环境变量 BUJIDAO_GUI): {override}")
+        logger.log_trace(
+            f"[TRACE][binding.gui_executable] phase=EXIT result=override source=env "
+            f"name={Path(override).name or '<path>'}"
+        )
         return Path(override)
     repo = Path(__file__).resolve().parents[3]
     roots = [
         Path(sys.executable).resolve().parent,
         repo / "gui" / "src-tauri" / "target" / "release",
     ]
+    logger.log_trace(
+        f"[TRACE][binding.gui_executable] phase=DECIDE step=search roots={len(roots)} "
+        f"names={len(GUI_EXE_NAMES)}"
+    )
     # 记录搜索过哪些目录：未命中时能回答「为什么没弹出界面」（§6.1 S4）
     logger.log_info(
         f"[阶段] S4 查找 Gui.exe: 候选目录={[str(r) for r in roots]} 文件名={list(GUI_EXE_NAMES)}"
@@ -93,8 +102,16 @@ def gui_executable() -> Path | None:
         hit = find_gui_in(root)
         if hit is not None:
             logger.log_info(f"[阶段] S4 Gui.exe 命中: {hit}")
+            logger.log_trace(
+                f"[TRACE][binding.gui_executable] phase=EXIT result=hit name={hit.name} "
+                f"searched_roots={len(roots)}"
+            )
             return hit
     logger.log_warning("[阶段] S4 未找到 Gui.exe: 以上候选目录均无命中")
+    logger.log_trace(
+        f"[TRACE][binding.gui_executable] phase=EXIT result=miss roots={len(roots)} "
+        f"names={len(GUI_EXE_NAMES)}"
+    )
     return None
 
 
@@ -155,11 +172,16 @@ class GuiBridge:
         # 超时优先用调用方参数，其次 config 的 ui.start_timeout（默认 120s，可配）
         if timeout is None:
             timeout = float(self.cfg.get("ui", {}).get("start_timeout", START_TIMEOUT))
+        logger.log_trace(
+            f"[TRACE][binding.launch] phase=ENTER timeout={float(timeout):.1f}s "
+            f"first_run={self.first_run} pipe={self._launch_pipe_label}"
+        )
         exe = gui_executable()
         if exe is None:
             logger.log_error(
                 "[阶段] S5 GuiBridge.launch 失败: 找不到 Gui.exe（候选目录见上一条 S4 日志）"
             )
+            logger.log_trace("[TRACE][binding.launch] phase=EXIT ok=False reason=no_exe")
             raise FileNotFoundError(
                 "找不到 Gui.exe。请先构建：cargo build --release（见 docs/GUI设计规范.md §10）"
             )
@@ -199,6 +221,10 @@ class GuiBridge:
             # 分片等待：这样进程崩溃时能立即发现，而不是睡满整个超时
             self._started.wait(min(remaining, 1.0))
         elapsed = time.monotonic() - started
+        logger.log_trace(
+            f"[TRACE][binding.launch] phase=DECIDE started={self._started.is_set()} "
+            f"outcome={outcome} waited={time.monotonic() - wait_started:.2f}s"
+        )
         if not self._started.is_set():
             waited = time.monotonic() - wait_started
             logger.log_warning(
@@ -210,6 +236,10 @@ class GuiBridge:
             console_safe(
                 f"[阶段][EXIT ] S5 GuiBridge.launch 耗时={elapsed:.2f}s 结果=未开始({outcome})"
             )
+            logger.log_trace(
+                f"[TRACE][binding.launch] phase=EXIT ok=False outcome={outcome} "
+                f"elapsed={elapsed:.2f}s"
+            )
             return False
         self._t0 = time.time()
         self._state.update({"state": "running", "stage": "准备中"})
@@ -217,6 +247,9 @@ class GuiBridge:
         console_safe(
             f"[阶段][EXIT ] S5 GuiBridge.launch 耗时={elapsed:.2f}s 结果=用户已点开始 "
             f"pid={self._proc.pid if self._proc else '?'}"
+        )
+        logger.log_trace(
+            f"[TRACE][binding.launch] phase=EXIT ok=True outcome=started elapsed={elapsed:.2f}s"
         )
         return True
 
@@ -414,6 +447,8 @@ class GuiBridge:
 
         started = time.monotonic()
         meta = capabilities_mod.variant_meta()
+        first_hello = self._hello_at is None
+        logger.log_trace(f"[TRACE][binding.hello] phase=ENTER first={first_hello}")
         payload = {
             "variant": meta["build_variant"],
             "capabilities": list(meta["capabilities"]),
@@ -434,6 +469,12 @@ class GuiBridge:
                 f"[阶段] S6 首帧 hello 处理完成 耗时={time.monotonic() - started:.3f}s "
                 f"距管道创建={since_create:.3f}s variant={payload['variant']}"
             )
+        logger.log_trace(
+            f"[TRACE][binding.hello] phase=EXIT first={first_hello} variant={payload['variant']} "
+            f"caps={len(payload['capabilities'])} first_run={self.first_run} "
+            f"start_mode={payload['start_mode']} log_level={payload['log_level']} "
+            f"elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
+        )
         return payload
 
     def _config_payload(self) -> dict[str, Any]:
@@ -474,20 +515,41 @@ class GuiBridge:
 
     def _save_config(self, params: dict[str, Any]) -> dict[str, Any]:
         values = params.get("values") or {}
+        started = time.monotonic()
+        logger.log_trace(
+            f"[TRACE][binding.save_config] phase=ENTER "
+            f"values={len(values) if isinstance(values, dict) else '?'}"
+        )
         if not isinstance(values, dict):
+            logger.log_trace(
+                "[TRACE][binding.save_config] phase=EXIT ok=False reason=values_not_dict"
+            )
             raise ValueError("values 必须是对象")
         new_cfg, errors = ui_binding.apply_edits(self.cfg, values)
         if errors:
+            logger.log_trace(
+                f"[TRACE][binding.save_config] phase=EXIT ok=False stage=apply_edits "
+                f"errors={len(errors)}"
+            )
             raise ValueError("；".join(f"{e['path']}: {e['message']}" for e in errors))
         problems = validate_config(new_cfg)
         if problems:
+            logger.log_trace(
+                f"[TRACE][binding.save_config] phase=EXIT ok=False stage=validate "
+                f"problems={len(problems)}"
+            )
             raise ValueError("；".join(f"{level}: {msg}" for level, msg in problems))
         save_config(self.config_path, new_cfg)
+        logger.trace_file_write(self.config_path.name)
         self.cfg = load_config(self.config_path)
         # 告诉界面哪些改动要重启才生效（§3.5），由界面提示「有 N 项需重启生效」
         restart = sorted(p for p in values if p in RESTART_REQUIRED_PATHS)
         payload = self._config_payload()
         payload["restart_required"] = restart
+        logger.log_trace(
+            f"[TRACE][binding.save_config] phase=EXIT ok=True values={len(values)} "
+            f"restart_required={len(restart)} elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
+        )
         return payload
 
     def _restart_app(self, _params: dict[str, Any]) -> dict[str, Any]:
@@ -554,12 +616,26 @@ class GuiBridge:
 
     def _on_confirm_reply(self, params: dict[str, Any]) -> dict[str, Any]:
         token = str(params.get("id") or "")
+        started = time.monotonic()
         entry = self._confirm.get(token)
+        logger.log_trace(
+            f"[TRACE][binding.on_confirm_reply] phase=ENTER known={entry is not None} "
+            f"pending={len(self._confirm)}"
+        )
         if entry is None:
+            logger.log_trace(
+                f"[TRACE][binding.on_confirm_reply] phase=EXIT ok=False reason=stale_token "
+                f"pending={len(self._confirm)}"
+            )
             raise ValueError("确认已失效")
         done, box = entry
         box["choice"] = str(params.get("choice") or "")
         done.set()
+        logger.log_trace(
+            f"[TRACE][binding.on_confirm_reply] phase=EXIT ok=True "
+            f"choice={str(box.get('choice') or '')[:20]} pending={len(self._confirm) - 1} "
+            f"elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
+        )
         return {}
 
     def _open_dir(self, path: Path | None) -> dict[str, Any]:

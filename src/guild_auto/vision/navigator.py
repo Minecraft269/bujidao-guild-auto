@@ -75,8 +75,10 @@ class Navigator:
 
     def current_screen(self) -> str:
         """重新全扫当前界面标题并分类 —— 禁止凭记忆断言界面。"""
+        logger.trace_call("vision.navigator.Navigator.current_screen")
         screen = classify_title(self._scan_title())
         logger.log_debug(f"vision.navigator: 标题分类结果 screen={screen}")
+        logger.trace_return("vision.navigator.Navigator.current_screen", result=screen)
         return screen
 
     def _recover(self, screen_before: str, misses: int) -> None:
@@ -103,13 +105,28 @@ class Navigator:
         它自身负责先悬停读 tooltip 再点击)。本方法只做导航与确认。
         """
         keys = self.candidate_keys
+        logger.trace_call(
+            "vision.navigator.Navigator.enter_guild_ui",
+            args=(len(keys), self.cached_key),
+        )
         logger.log_info(
             f"vision.navigator: 导航开始(候选键顺序={keys},"
             f"max_misclick={self._max_misclick},render_ms={self._render_ms},"
             f"cached_key={self.cached_key!r})"
         )
+        # 聚合行:候选键只打一次前若干项,避免与下方逐键试探重复刷屏
+        logger.trace_code_location(
+            "vision.navigator.Navigator.enter_guild_ui.candidates",
+            candidates=len(keys),
+            head=keys[:5],
+            max_misclick=self._max_misclick,
+            render_ms=self._render_ms,
+        )
         if not keys:
             logger.log_warning("vision.navigator: 未解析到 hotbar 绑定且未配置候选键,导航无法开始")
+            logger.trace_code_location(
+                "vision.navigator.Navigator.enter_guild_ui.fail", reason="no_candidate_key"
+            )
             raise NavigationError(
                 "未解析到 hotbar 绑定且未配置候选键:不提供任何默认键值,请检查 "
                 "game_options 指向游戏实际写入的 options.txt,或在配置中补充候选键"
@@ -139,6 +156,10 @@ class Navigator:
             if screen == TITLE_GUILD:
                 self.cached_key = key
                 logger.log_info(f"vision.navigator: 导航成功(key={key!r},命中缓存={used_cache})")
+                logger.trace_return(
+                    "vision.navigator.Navigator.enter_guild_ui",
+                    result={"ok": True, "key": key, "cached": used_cache, "via": "direct"},
+                )
                 return key
 
             # 已到设置界面:点击公会物品后再全扫确认
@@ -146,6 +167,11 @@ class Navigator:
                 logger.log_warning(
                     f"vision.navigator: 已进入设置界面但未提供公会入口动作"
                     f"(key={key!r},screen={screen})"
+                )
+                logger.trace_code_location(
+                    "vision.navigator.Navigator.enter_guild_ui.fail",
+                    reason="no_open_guild",
+                    screen=screen,
                 )
                 raise NavigationError("已进入装扮与个人设定,但未提供公会入口动作,无法继续(不盲点)")
             logger.log_debug("vision.navigator: 已到设置界面,执行公会入口动作")
@@ -155,6 +181,11 @@ class Navigator:
                 logger.log_warning(
                     f"vision.navigator: 点击公会物品后界面不是公会系统(实际 {screen}),停止导航"
                 )
+                logger.trace_code_location(
+                    "vision.navigator.Navigator.enter_guild_ui.fail",
+                    reason="not_guild_after_open",
+                    screen=screen,
+                )
                 raise NavigationError(
                     f"点击公会物品后界面不是公会系统(实际: {screen}),停止导航(不盲点)"
                 )
@@ -162,9 +193,19 @@ class Navigator:
             logger.log_info(
                 f"vision.navigator: 导航成功(经设置界面,key={key!r},命中缓存={used_cache})"
             )
+            logger.trace_return(
+                "vision.navigator.Navigator.enter_guild_ui",
+                result={"ok": True, "key": key, "cached": used_cache, "via": "settings"},
+            )
             return key
 
         logger.log_warning(
             f"vision.navigator: 全部候选键失败(候选键={keys},最后 screen={screen!r})"
+        )
+        logger.trace_code_location(
+            "vision.navigator.Navigator.enter_guild_ui.fail",
+            reason="all_candidates_failed",
+            candidates=len(keys),
+            last_screen=screen,
         )
         raise NavigationError(f"按键试探失败:候选键 {keys} 均未进入装扮与个人设定界面")

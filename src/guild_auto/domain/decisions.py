@@ -273,6 +273,8 @@ def build_command(cfg, action, player):
     """
     cmds = cfg.get("commands", {})
 
+    logger.log_trace(f"[TRACE][decisions.build_command] event=ENTER action={action} player=<snip>")
+
     def _cmd(key):
         try:
             return cmds[key]
@@ -280,11 +282,26 @@ def build_command(cfg, action, player):
             raise KeyError(f"配置缺少 commands.{key} —— 命令格式必须由配置提供") from None
 
     if action == "promote":
+        logger.log_trace(
+            f"[TRACE][decisions.build_command] event=EXIT action=promote "
+            f"template=commands.guild_promote player=<snip>"
+        )
         return _cmd("guild_promote").format(player=player)
     if action == "demote":
+        logger.log_trace(
+            f"[TRACE][decisions.build_command] event=EXIT action=demote "
+            f"template=commands.guild_demote player=<snip>"
+        )
         return _cmd("guild_demote").format(player=player)
     if action == "kick":
+        logger.log_trace(
+            f"[TRACE][decisions.build_command] event=EXIT action=kick "
+            f"template=commands.guild_kick player=<snip>"
+        )
         return _cmd("guild_kick").format(player=player, reason=_cmd("kick_reason"))
+    logger.log_trace(
+        f"[TRACE][decisions.build_command] event=EXIT action={action} result=ValueError"
+    )
     raise ValueError(f"未知动作: {action}")
 
 
@@ -398,11 +415,21 @@ def decide_for_player(
       * 命中保护名单 → 只保留升职动作(降职/踢出被剥夺)
       * 其余 → 交给 decide_actions 走原阈值矩阵(业务规则零改动)
     """
+    logger.log_trace(
+        f"[TRACE][decisions.decide_for_player] event=ENTER player=<snip> rank={rank} "
+        f"weekly={weekly} rules_enabled={bool(cfg.get('rules_enabled'))} "
+        f"has_joined_at={member_joined_at is not None} "
+        f"has_last_online={member_last_online is not None}"
+    )
     blocked = name_list_block_reason(player, cfg)
     if blocked is not None:
         logger.log_debug(
             f"[决策] 名单短路 | player={_snip(player)} rank={rank} weekly={weekly} "
             f"blocked_reason={blocked} trigger={blocked} actions_in=[] actions_out=[]"
+        )
+        logger.log_trace(
+            f"[TRACE][decisions.decide_for_player] event=EXIT path=name_list "
+            f"player=<snip> block_reason={blocked} actions=0 trigger={blocked}"
         )
         return [], blocked
 
@@ -441,17 +468,30 @@ def decide_for_player(
                     f"weekly={weekly} rule_id={hits} actions_in={actions} "
                     f"actions_out={kept} trigger={trigger} conditions={_snip(cond_trace)}"
                 )
+                logger.log_trace(
+                    f"[TRACE][decisions.decide_for_player] event=EXIT path=rules_engine "
+                    f"player=<snip> protected=keep actions={len(kept)} trigger={_snip(trigger)}"
+                )
                 return kept, trigger
             logger.log_warning(
                 f"[决策] 保护名单剥夺全部动作(含踢出) | player={_snip(player)} rank={rank} "
                 f"weekly={weekly} rule_id={hits} actions_in={actions} actions_out=[] "
                 f"trigger={trigger} kept_actions=[] conditions={_snip(cond_trace)}"
             )
+            logger.log_trace(
+                f"[TRACE][decisions.decide_for_player] event=EXIT path=rules_engine "
+                f"player=<snip> protected=drop_all actions=0 trigger=whitelist_protected"
+            )
             return [], "whitelist_protected"
         logger.log_debug(
             f"[决策] 规则引擎结论 | player={_snip(player)} rank={rank} weekly={weekly} "
             f"rule_id={hits} actions_in={actions} actions_out={actions} "
             f"trigger={trigger} conditions={_snip(cond_trace)}"
+        )
+        logger.log_trace(
+            f"[TRACE][decisions.decide_for_player] event=EXIT path=rules_engine "
+            f"player=<snip> protected=none actions={len(actions)} "
+            f"hits_total={len(hits)} trigger={_snip(trigger)}"
         )
         return actions, trigger
 
@@ -465,15 +505,27 @@ def decide_for_player(
                 f"[决策] 保护名单保留升降职 | player={_snip(player)} trigger={trigger} "
                 f"actions_in={actions} actions_out={kept}"
             )
+            logger.log_trace(
+                f"[TRACE][decisions.decide_for_player] event=EXIT path=threshold "
+                f"player=<snip> protected=keep actions={len(kept)} trigger={_snip(trigger)}"
+            )
             return kept, trigger
         logger.log_warning(
             f"[决策] 保护名单剥夺全部动作(含踢出) | player={_snip(player)} rank={rank} "
             f"weekly={weekly} trigger={trigger} actions_in={actions} actions_out=[] "
             f"kept_actions=[]"
         )
+        logger.log_trace(
+            f"[TRACE][decisions.decide_for_player] event=EXIT path=threshold "
+            f"player=<snip> protected=drop_all actions=0 trigger=whitelist_protected"
+        )
         return [], "whitelist_protected"
     logger.log_debug(
         f"[决策] 阈值结论 | player={_snip(player)} rank={rank} weekly={weekly} "
         f"trigger={trigger} actions_in={actions} actions_out={actions}"
+    )
+    logger.log_trace(
+        f"[TRACE][decisions.decide_for_player] event=EXIT path=threshold "
+        f"player=<snip> protected=none actions={len(actions)} trigger={_snip(trigger)}"
     )
     return actions, trigger

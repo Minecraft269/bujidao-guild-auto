@@ -9,6 +9,7 @@ log_watcher.py —— 日志钩子模块
 """
 
 from guild_auto.infrastructure import logger
+import collections
 import os
 import re
 import time
@@ -42,6 +43,12 @@ _ENCODING_CANDIDATES = ("utf-8", "gbk", "gb2312")
 # 末行缓冲上界(1 MiB):游戏日志单行实测最长 ~2KB,正常永远到不了这个量级;
 # 到不了说明对端一直不写换行,此时丢弃前半段比把内存吃满更安全。
 _MAX_TAIL_BYTES = 1 << 20
+# TRACE 原始行回放:每秒最多 5 条完整原文(按秒限流),单条 400 字符内(铁律)
+_TRACE_LINES_PER_SEC = 5
+_TRACE_LINE_MAX = 400
+# ParseError 诊断:回放响应块(上限 40 行)+ 最近上下文行数
+_PARSE_CTX_LINES = 5
+_PARSE_BLOCK_MAX = 40
 
 
 def detect_encoding(path, preferred="auto"):
@@ -95,6 +102,13 @@ class LogWatcher:
         # 被切在两次读取之间,前半截已经 decode 成替换符,丢字无法挽回。
         self._tail = b""
         self._skip_until_ts = 0  # first_command 等新回显时设 = time.time() + 1.0,读到的旧行跳
+        # ---- TRACE 诊断状态(只写日志,不参与任何判定) ----
+        # 最近读到的原始行(ParseError 时回放上下文);按秒限流的桶与丢弃计数。
+        self._recent_lines = collections.deque(maxlen=200)
+        self._trace_sec = 0
+        self._trace_sec_count = 0
+        self._trace_dropped = 0
+        self._last_block = None  # 最近一次返回的响应块(供 report_parse_error 回放)
 
     # ---- 打开 ----
     def open(self, wait_seconds=60):
@@ -107,6 +121,10 @@ class LogWatcher:
         while not os.path.exists(self.path):
             if time.time() > deadline:
                 waited_s = time.time() - t0
+                logger.log_trace(
+                    f"[TRACE][log_watcher.open] timeout=true waited_s={waited_s:.1f}"
+                    f" path={logger.sanitize_text(self.path)}"
+                )
                 logger.log_warning(
                     f"S8 等待游戏日志超时 | waited_s={waited_s:.1f} | path={self.path}"
                     f" | rotation_reopen=False"
@@ -118,9 +136,17 @@ class LogWatcher:
         self.encoding = detect_encoding(self.path, self.encoding)
         self._fh = open(self.path, "rb")
         self._tail = b""
+        self._recent_lines.clear()
+        self._last_block = None
         # 跳到末尾:只关心本次运行之后的新日志
         self._fh.seek(0, os.SEEK_END)
         self._size = self._fh.tell()
+        logger.trace_file_read(logger.sanitize_text(self.path), size=self._size)
+        logger.log_trace(
+            f"[TRACE][log_watcher.open] wait_s={wait_seconds:.1f}"
+            f" encoding={self.encoding} file_size={self._size}"
+            f" elapsed_ms={int((time.time() - t0) * 1000)} mode=append_tail"
+        )
         logger.log_info(
             f"S8 日志打开完成 | elapsed_s={time.time() - t0:.2f}"
             f" | encoding={self.encoding} | file_size={self._size}"
@@ -254,6 +280,32 @@ class LogWatcher:
                 text = data.decode(self.encoding, errors="replace")
                 new_lines = text.splitlines()
                 out.extend(new_lines)
+                self._recent_lines.extend(new_lines)
+                # TRACE:每行完整原文(脱敏,单条 400 字符内),按秒限流;
+                # 无论是否触发限流,每次调用补一条含 items=N 的聚合行。
+                if new_lines:
+                    emitted = 0
+                    if logger.current_level() >= 6:
+                        now_sec = int(time.time())
+                        if now_sec != self._trace_sec:
+                            self._trace_sec = now_sec
+                            self._trace_sec_count = 0
+                        for idx, ln in enumerate(new_lines, 1):
+                            if self._trace_sec_count >= _TRACE_LINES_PER_SEC:
+                                self._trace_dropped += 1
+                                continue
+                            self._trace_sec_count += 1
+                            emitted += 1
+                            logger.log_trace(
+                                f"[TRACE][log_watcher.read_new_lines] idx={idx}/{len(new_lines)}"
+                                f" len={len(ln)}"
+                                f" raw={logger.sanitize_text(ln, _TRACE_LINE_MAX)!r}"
+                            )
+                    logger.log_trace(
+                        f"[TRACE][log_watcher.read_new_lines] items={len(new_lines)}"
+                        f" emitted={emitted} dropped={self._trace_dropped}"
+                        f" encoding={self.encoding}"
+                    )
                 # 详细日志:打印读到的每条新行(前 120 字符,GBK 乱码用 ? 替代,纯看增量)
                 # ——让用户从 latest.log 直接看到游戏实时输出,便于诊断"脚本读到什么"
                 for idx, ln in enumerate(new_lines, 1):
@@ -282,6 +334,15 @@ class LogWatcher:
         start_ts = time.time()
         deadline = start_ts + timeout
         first_eligible_ts = start_ts + min_wait_after_start
+        logger.trace_call(
+            "log_watcher.wait_for_chat_block",
+            kwargs={"timeout": timeout, "poll_ms": int(self.poll * 1000)},
+        )
+        logger.log_trace(
+            f"[TRACE][log_watcher.wait_for_chat_block] blocking=true"
+            f" timeout_s={timeout:.1f} poll_ms={int(self.poll * 1000)}"
+            f" min_wait_s={min_wait_after_start:.2f} stop_check={stop_check is not None}"
+        )
         logger.log_debug(
             f"等待响应块(最长 {timeout:.1f}s,轮询 {self.poll * 1000:.0f}ms,首块最早 {min_wait_after_start:.2f}s 后可返回)..."
         )
@@ -296,6 +357,10 @@ class LogWatcher:
                 while stable_ms < int(self.poll * 1000):
                     if stop_check and stop_check():
                         logger.log_debug(f"等待被持续暂停中断,返回 None")
+                        logger.trace_return(
+                            "log_watcher.wait_for_chat_block",
+                            {"reason": "pause", "block_lines": 0},
+                        )
                         return None
                     time.sleep(0.05)
                     stable_ms += 50
@@ -334,6 +399,11 @@ class LogWatcher:
                             f"[log_watcher] BLOCK 首行: {block_head!r}\n"
                             f"[log_watcher] BLOCK 末行: {block_tail!r}"
                         )
+                        self._last_block = list(block)
+                        logger.trace_return(
+                            "log_watcher.wait_for_chat_block",
+                            {"reason": "block", "block_lines": len(block)},
+                        )
                         return block
                 # 最后一条若完整,尝试提取(可能本身就是完整消息)
                 block = extract_chat_block(messages[-1])
@@ -347,6 +417,11 @@ class LogWatcher:
                     logger.log_debug(
                         f"[log_watcher] BLOCK 首行: {block_head!r}\n"
                         f"[log_watcher] BLOCK 末行: {block_tail!r}"
+                    )
+                    self._last_block = list(block)
+                    logger.trace_return(
+                        "log_watcher.wait_for_chat_block",
+                        {"reason": "block", "block_lines": len(block)},
                     )
                     return block
                 # 若最后一条是"以块起始线开头但尚未闭合"的面板消息(日志写入中),
@@ -368,11 +443,19 @@ class LogWatcher:
             while stable_ms < int(self.poll * 1000):
                 if _force_stop():
                     logger.log_debug("wait_for_chat_block 检测到 _force_stop(Ctrl+C),返回 None")
+                    logger.trace_return(
+                        "log_watcher.wait_for_chat_block",
+                        {"reason": "force_stop", "block_lines": 0},
+                    )
                     return None
                 time.sleep(0.05)
                 stable_ms += 50
         logger.log_debug("wait_for_chat_block 循环退出(超时/停止)")
         logger.log_warning(f"等待响应块超时({timeout:.1f}s 无完整面板),返回 None")
+        logger.trace_return(
+            "log_watcher.wait_for_chat_block",
+            {"reason": "timeout", "block_lines": 0, "timeout_s": timeout},
+        )
         return None
 
     def read_until(self, timeout=2.0):
@@ -380,6 +463,7 @@ class LogWatcher:
         out = []
         deadline = time.time() + timeout
         collected = 0
+        logger.trace_call("log_watcher.read_until", kwargs={"timeout": timeout})
         while time.time() < deadline:
             if _force_stop():
                 logger.log_debug("read_until 检测到 _force_stop,返回已收集")
@@ -393,7 +477,40 @@ class LogWatcher:
                 time.sleep(0.05)
                 stable_ms += 50
         logger.log_debug(f"回显收集完成: {collected} 行(窗口 {timeout:.1f}s)")
+        logger.trace_return(
+            "log_watcher.read_until",
+            {"lines": collected, "window_s": timeout, "bytes_hint": sum(len(x) for x in out)},
+        )
         return out
+
+    def report_parse_error(self, exc, block=None, context=None):
+        """解析失败(ParseError)诊断:把响应块 + 最近上下文行**无条件写 ERROR**。
+
+        设计目的:ParseError 由上层 application/domain 抛出,默认级别(4)下原本
+        只剩一句中文原因,看不到"到底是哪段日志解析失败"。调用方只需在
+        `except ParseError` 分支里多调一次本方法,不改变任何返回值/控制流。
+
+        block: 本次解析的响应块(缺省用最近一次 wait_for_chat_block 返回的块);
+        context: 回放最近多少条原始日志行(缺省 _PARSE_CTX_LINES)。
+        """
+        ctx_n = _PARSE_CTX_LINES if context is None else max(0, int(context))
+        block_lines = list(block) if block is not None else list(self._last_block or [])
+        recent = list(self._recent_lines)[-ctx_n:] if ctx_n else []
+        logger.log_error(
+            f"[TRACE][log_watcher.report_parse_error] parse_error={type(exc).__name__}"
+            f" reason={logger.sanitize_text(exc, 200)}"
+            f" block_lines={len(block_lines)} context_lines={len(recent)}"
+        )
+        for i, ln in enumerate(block_lines[:_PARSE_BLOCK_MAX], 1):
+            logger.log_error(
+                f"[TRACE][log_watcher.report_parse_error] block[{i}/{len(block_lines)}]"
+                f" {logger.sanitize_text(ln, _TRACE_LINE_MAX)}"
+            )
+        for i, ln in enumerate(recent, 1):
+            logger.log_error(
+                f"[TRACE][log_watcher.report_parse_error] ctx[{i}/{len(recent)}]"
+                f" {logger.sanitize_text(ln, _TRACE_LINE_MAX)}"
+            )
 
 
 # ---------------------------------------------------------------------------

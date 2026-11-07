@@ -205,6 +205,10 @@ def parse_weekly_exp(lines):
     注:这不改 §4 的计算口径,只补"解析不出时不得伪装成 0"这一层保护 ——
     继承清单规定的是怎么加总,没规定加不出东西时该假装有结果。
     """
+    logger.log_trace(
+        f"[TRACE][parsers.parse_weekly_exp] event=ENTER "
+        f"lines={len(lines) if lines is not None else 0}"
+    )
     total = 0
     daily = []
     in_section = False
@@ -252,10 +256,19 @@ def parse_weekly_exp(lines):
             f"| line_snippet={ignored[:5]}"
         )
     if in_section and not parsed_any:
+        logger.log_trace(
+            f"[TRACE][parsers.parse_weekly_exp] event=EXIT result=ParseError "
+            f"in_section=True parsed_any=False ignored={len(ignored)}"
+        )
         raise ParseError(
             "周贡献段存在但一行有效数值都没解析到(可能被网易屏蔽词遮成 *** 或 ???): "
             "无法区分「真实零贡献」与「数据缺失」,不做任何升/降/踢判定,需人工确认"
         )
+    logger.log_trace(
+        f"[TRACE][parsers.parse_weekly_exp] event=EXIT total={total} "
+        f"daily_rows={len(daily)} parsed_any={parsed_any} in_section={in_section} "
+        f"ignored={len(ignored)}"
+    )
     return total, daily
 
 
@@ -319,6 +332,11 @@ def parse_guild_list(block_lines, rank_names):
     返回 dict: {"guild_name", "groups", "total", "online"},见模块 docstring。
     无公会名 / 未登记的分组标题 / 一个玩家都没解析到 → ParseError。
     """
+    logger.log_trace(
+        f"[TRACE][parsers.parse_guild_list] event=ENTER "
+        f"block_lines={len(block_lines) if block_lines is not None else 0} "
+        f"rank_keys={len(rank_names) if rank_names else 0}"
+    )
     # 空行保留为 None 哨兵(见 _join_truncated_names):它是折行名字的终止符,
     # 删掉会让被网易抹平的星号串吞并后续真实玩家名。
     rows = [r if r else None for r in (_strip_all(l) for l in block_lines)]
@@ -406,6 +424,11 @@ def parse_guild_list(block_lines, rank_names):
 
     if not any(groups.values()):
         raise ParseError("guild list 输出中未解析到任何玩家(分组标题与 rank_names 不匹配?)")
+    _member_count = sum(len(ids) for ids in groups.values())
+    logger.log_trace(
+        f"[TRACE][parsers.parse_guild_list] event=EXIT groups={len(groups)} "
+        f"members={_member_count} total={total} online={online}"
+    )
     return {
         "guild_name": guild_name,
         # 保序去重(面板异常时可能重复出现同一名字)
@@ -431,6 +454,11 @@ def parse_guild_member(block_lines, expected_id=None):
     "谁"在这个面板上根本不可读,拿它的周贡献去升/降/踢就是猜 —— 宁可漏一人,
     不可错踢一人。上层据此把该玩家标为需人工确认,而不是当成有效记录走判定。
     """
+    logger.log_trace(
+        f"[TRACE][parsers.parse_guild_member] event=ENTER "
+        f"block_lines={len(block_lines) if block_lines is not None else 0} "
+        f"expected_id={'<snip>' if expected_id else 'none'}"
+    )
     rows = [_strip_all(l) for l in block_lines]
     rows = [r for r in rows if r]
 
@@ -476,6 +504,12 @@ def parse_guild_member(block_lines, expected_id=None):
     logger.log_debug(
         f"[guild member] 解析完成 | player={_snip(player)} weekly_total={weekly_total} "
         f"daily_rows={len(daily)} joined_at={_snip(joined_at)} last_online={_snip(last_online)}"
+    )
+    logger.log_trace(
+        f"[TRACE][parsers.parse_guild_member] event=EXIT player=<snip> "
+        f"weekly_total={weekly_total} daily_rows={len(daily)} "
+        f"has_joined_at={joined_at is not None} has_last_online={last_online is not None} "
+        f"block_lines={len(rows)}"
     )
     return {
         "player": player,

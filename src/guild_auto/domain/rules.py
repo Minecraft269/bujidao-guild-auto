@@ -116,6 +116,10 @@ def _not_evaluable(detail, cond, member, rule_id, warned, raw):
             f"| field={field} | op={op} | value={_snip(value)} | raw_value={_snip(raw)} "
             f"| detail={detail}"
         )
+    logger.log_trace(
+        f"[TRACE][rules.check_condition] event=EXIT rule_id={rule_id} ok=False "
+        f"field={field} op={op} raw={_snip(raw)} detail={detail}"
+    )
     return False, detail
 
 
@@ -202,6 +206,10 @@ def rule_matches(rule, member):
     缺失/空列表一律判否并写明原因 —— 否则"漏写 conditions"会命中所有人，
     在 kick 规则上等于全员被踢（不可逆）。内置规则走 _eval_builtin，不经此函数。
     """
+    logger.log_trace(
+        f"[TRACE][rules.rule_matches] event=ENTER rule_id={rule.get('id')} player=<snip> "
+        f"conditions={len(rule.get('conditions')) if isinstance(rule.get('conditions'), list) else 0}"
+    )
     rid = rule.get("id")
     conds = rule.get("conditions")
     if not isinstance(conds, list) or not conds:
@@ -209,6 +217,10 @@ def rule_matches(rule, member):
         logger.log_warning(
             f"规则条件缺失,判否 | rule_id={rid} | player={_snip(member.get('player'))} "
             f"| detail={detail}"
+        )
+        logger.log_trace(
+            f"[TRACE][rules.rule_matches] event=EXIT rule_id={rid} matched=False "
+            f"evaluated=0 reason=conditions_missing_or_empty"
         )
         return False, [{"index": -1, "ok": False, "detail": detail}]
     trace = []
@@ -222,7 +234,16 @@ def rule_matches(rule, member):
             f"ok={ok} detail={detail}"
         )
         if not ok:
+            logger.log_trace(
+                f"[TRACE][rules.rule_matches] event=EXIT rule_id={rid} matched=False "
+                f"evaluated={len(trace)} failed_index={i} detail={_snip(detail)}"
+            )
             return False, trace
+    logger.log_trace(
+        f"[TRACE][rules.rule_matches] event=EXIT rule_id={rid} matched=True "
+        f"evaluated={len(trace)} conditions={len(conds)} "
+        f"details={_snip([c.get('detail') for c in trace])}"
+    )
     return True, trace
 
 
@@ -294,6 +315,12 @@ def evaluate_rules(rules, member, strategy="first_match"):
       hit_rule_ids   命中的规则 id 列表（报告可追溯）
       traces         [{rule_id, matched, trigger, conditions:[...]}]
     """
+    logger.log_trace(
+        f"[TRACE][rules.evaluate_rules] event=ENTER player=<snip> "
+        f"rank={member.get('rank') if isinstance(member, dict) else None} "
+        f"weekly_total={member.get('weekly_total') if isinstance(member, dict) else None} "
+        f"rules_total={len(rules) if rules is not None else 0} strategy={strategy}"
+    )
     enabled = [r for r in rules if r.get("enabled", True)]
     traces = []
     hits = []
@@ -319,6 +346,11 @@ def evaluate_rules(rules, member, strategy="first_match"):
             actions.extend(_record(rule, acts, trigger, trace))
             if matched and rule.get("stop"):
                 break
+        logger.log_trace(
+            f"[TRACE][rules.evaluate_rules] event=EXIT strategy=all "
+            f"rules_enabled={len(enabled)} actions={len(actions)} hits_total={len(hits)} "
+            f"hits={_snip(hits[:5])} matched_rules={sum(1 for t in traces if t.get('matched'))}"
+        )
         return actions, hits, traces
 
     if strategy == "highest_priority":
@@ -333,7 +365,17 @@ def evaluate_rules(rules, member, strategy="first_match"):
             if best is None or pri > best[0]:
                 best = (pri, rule, acts)
         if best is None:
+            logger.log_trace(
+                f"[TRACE][rules.evaluate_rules] event=EXIT strategy=highest_priority "
+                f"rules_enabled={len(enabled)} actions=0 hits_total=0 hits=[]"
+            )
             return [], [], traces
+        logger.log_trace(
+            f"[TRACE][rules.evaluate_rules] event=EXIT strategy=highest_priority "
+            f"rules_enabled={len(enabled)} actions={len(best[2])} "
+            f"hit={_snip(best[1].get('id'))} "
+            f"priority={best[0]}"
+        )
         return best[2], [best[1].get("id")], traces
 
     # first_match（默认）
@@ -342,8 +384,18 @@ def evaluate_rules(rules, member, strategy="first_match"):
         matched = bool(acts) or bool(trigger)
         _record(rule, acts, trigger, trace)
         if matched:
+            logger.log_trace(
+                f"[TRACE][rules.evaluate_rules] event=EXIT strategy=first_match "
+                f"rules_enabled={len(enabled)} rules_evaluated={len(traces)} "
+                f"actions={len(acts)} hit={_snip(rule.get('id'))}"
+            )
             return acts, [rule.get("id")], traces
         # 未命中不触发 stop —— stop 的语义是"命中后不再匹配后续规则"
+    logger.log_trace(
+        f"[TRACE][rules.evaluate_rules] event=EXIT strategy=first_match "
+        f"rules_enabled={len(enabled)} rules_evaluated={len(traces)} "
+        f"actions=0 hits_total=0 hits=[]"
+    )
     return [], [], traces
 
 

@@ -81,16 +81,29 @@ class VisionRunner:
         任何一步失败都返回 None(而不是拿扫到的记录条数充当总数)——
         那会让报告的对账变成自证循环,跨页漏扫也发现不了。
         """
+        logger.trace_call(
+            "vision.runner.VisionRunner._read_member_total",
+            args=(f"elements={len(sweep.elements)}",),
+        )
         if self._guild_detail_reader is None:
             logger.log_info(
                 "vision.runner: 未注入 guild_detail_reader,"
                 "member_total 来源=逐页累计(ui_paging_accumulated)"
+            )
+            logger.trace_return(
+                "vision.runner.VisionRunner._read_member_total", result="<no_reader>"
             )
             return None
         element = next((e for e in sweep.elements if e.kind == KIND_GUILD_DETAIL), None)
         if element is None:
             logger.log_warning(
                 "vision.runner: 扫掠未找到公会详情物品,成员总数改为逐页累计(报告将注明来源)"
+            )
+            logger.trace_code_location(
+                "vision.runner.VisionRunner._read_member_total.miss", reason="element_not_found"
+            )
+            logger.trace_return(
+                "vision.runner.VisionRunner._read_member_total", result="<element_not_found>"
             )
             return None
         try:
@@ -100,24 +113,41 @@ class VisionRunner:
             # 必须穿过这里冒到重扫循环 —— 否则暂停恢复后的重扫信号会被吞掉,
             # 用旧画面继续采集。
             logger.log_warning(f"vision.runner: 读取公会详情失败,总数改为逐页累计: {e!r}")
+            logger.trace_code_location(
+                "vision.runner.VisionRunner._read_member_total.read_fail",
+                error=type(e).__name__,
+            )
+            logger.trace_return(
+                "vision.runner.VisionRunner._read_member_total", result="<read_error>"
+            )
             return None
         if not text:
             logger.log_warning("vision.runner: 公会详情 tooltip 为空,成员总数改为逐页累计")
+            logger.trace_return(
+                "vision.runner.VisionRunner._read_member_total", result="<empty_tooltip>"
+            )
             return None
         total = parse_guild_detail(text)
         if total is None:
             logger.log_warning(
                 "vision.runner: 公会详情 tooltip 无「人数: [N/M]」行,总数改为逐页累计"
             )
+        logger.trace_return("vision.runner.VisionRunner._read_member_total", result=total)
         return total
 
     def collect(self) -> CollectionResult:
         started = time.monotonic()
+        logger.trace_call("vision.runner.VisionRunner.collect")
         logger.log_info("vision.runner: UI 采集开始(导航 → 扫掠 → 解析)")
         try:
             key = self._navigator.enter_guild_ui(self._open_guild)
         except NavigationError as e:
             logger.log_warning(f"vision.runner: 进入公会界面失败,停止采集(不盲点): {e}")
+            logger.trace_exception("vision.runner.VisionRunner.collect", e)
+            logger.trace_return(
+                "vision.runner.VisionRunner.collect",
+                result={"ok": False, "stage": "navigate"},
+            )
             return CollectionResult(ok=False, reason=f"进入公会界面失败:{e}")
 
         # 导航后重新全扫,确认真的在公会系统界面再继续
@@ -125,6 +155,15 @@ class VisionRunner:
         if screen != TITLE_GUILD:
             logger.log_warning(
                 f"vision.runner: 导航后界面不是公会系统(实际 {screen}),停止采集(不盲点)"
+            )
+            logger.trace_code_location(
+                "vision.runner.VisionRunner.collect.fail",
+                reason="not_guild_screen",
+                screen=screen,
+            )
+            logger.trace_return(
+                "vision.runner.VisionRunner.collect",
+                result={"ok": False, "stage": "verify_screen", "screen": screen},
             )
             return CollectionResult(
                 ok=False,
@@ -136,6 +175,11 @@ class VisionRunner:
             sweep = self._sweeper.sweep()
         except (ValueError, RuntimeError) as e:
             logger.log_warning(f"vision.runner: 扫掠失败,停止采集(不盲点): {e}")
+            logger.trace_exception("vision.runner.VisionRunner.collect", e)
+            logger.trace_return(
+                "vision.runner.VisionRunner.collect",
+                result={"ok": False, "stage": "sweep", "key": key},
+            )
             return CollectionResult(ok=False, reason=f"扫掠失败:{e}", key_used=key)
 
         if not sweep.complete:
@@ -144,6 +188,22 @@ class VisionRunner:
                 f"{sweep.recognized_cells} 格(缺口 {sweep.missing_cells})"
             )
             logger.log_warning(f"vision.runner: {reason},需重扫后再采集")
+            logger.trace_code_location(
+                "vision.runner.VisionRunner.collect.fail",
+                reason="sweep_incomplete",
+                expected=sweep.expected_cells,
+                recognized=sweep.recognized_cells,
+                missing=sweep.missing_cells,
+            )
+            logger.trace_return(
+                "vision.runner.VisionRunner.collect",
+                result={
+                    "ok": False,
+                    "stage": "sweep_complete",
+                    "items": sweep.recognized_cells,
+                    "missing": sweep.missing_cells,
+                },
+            )
             return CollectionResult(ok=False, reason=reason, key_used=key, sweep=sweep)
 
         if self._online_sampler is None and not self._warned_no_sampler:
@@ -168,6 +228,14 @@ class VisionRunner:
             )
             records.append(record)
 
+        logger.trace_code_location(
+            "vision.runner.VisionRunner.collect.parse_aggregate",
+            members=len(records),
+            sweep_points=len(sweep.points),
+            recognized=sweep.recognized_cells,
+            online_sampling="on" if self._online_sampler else "off",
+        )
+
         member_total = self._read_member_total(sweep)
 
         total_ms = (time.monotonic() - started) * 1000
@@ -176,6 +244,14 @@ class VisionRunner:
             f"key_used={key!r},停留点 {len(sweep.points)},"
             f"识别语义 {sweep.recognized_cells} 格,"
             f"成员总数来源={'公会详情 tooltip' if member_total is not None else '逐页累计'})"
+        )
+        logger.trace_return(
+            "vision.runner.VisionRunner.collect",
+            result=(
+                f"ok=True items={len(records)} sweep_points={len(sweep.points)} "
+                f"member_total={'read' if member_total is not None else 'accumulated'} "
+                f"elapsed_ms={total_ms:.1f}"
+            ),
         )
         return CollectionResult(
             ok=True,

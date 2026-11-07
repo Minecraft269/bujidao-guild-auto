@@ -202,6 +202,11 @@ def send_and_capture(
         console(f"  → {cmd}")
 
     try_times = max(1, int(try_times))
+    logger.log_trace(
+        f"[TRACE][main.send_and_capture] phase=ENTER cmd_len={len(str(cmd))} "
+        f"timeout={float(timeout):.1f}s try_wait={float(try_wait):.1f}s try_times={try_times} "
+        f"first_command={bool(first_command)}"
+    )
 
     # ---- 如果暂停恢复后需要重置界面，则执行一次 Esc 并处理菜单 ----
     # ⚠ 走 runtime.consume_reset_flag() 而不是裸读 _reset_needed:
@@ -240,6 +245,10 @@ def send_and_capture(
                 timeout=min(timeout, try_wait), stop_check=stop_check, min_wait_after_start=0.5
             )
             if block is not None:
+                logger.log_trace(
+                    f"[TRACE][main.send_and_capture] phase=EXIT ok=True "
+                    f"path=first_command_trial lines={len(block)}"
+                )
                 return block, False
         if verbose:
             console("  (试探未响应,改走标准开栏路径)")
@@ -252,8 +261,16 @@ def send_and_capture(
         # 修复"Ctrl+C 不暂停":signal handler 设 _force_stop=True 后立即返回。
         # 走 runtime.is_force_stop() 读唯一所有者,不复用已失效的模块级副本。
         if runtime_mod.is_force_stop():
+            logger.log_trace(
+                f"[TRACE][main.send_and_capture] phase=EXIT ok=False reason=force_stop "
+                f"attempt={attempt}/{try_times}"
+            )
             return None, True
         if stop_check and stop_check():
+            logger.log_trace(
+                f"[TRACE][main.send_and_capture] phase=EXIT ok=False reason=stop_check "
+                f"attempt={attempt}/{try_times}"
+            )
             return None, True
 
         # 仅 attempt==1 调 prepare_chat_state(OCR 可能误判菜单按 Esc,反复按 Esc 死循环);
@@ -272,16 +289,28 @@ def send_and_capture(
             timeout=wait, stop_check=stop_check, min_wait_after_start=min_wait
         )
         if block is not None:
+            logger.log_trace(
+                f"[TRACE][main.send_and_capture] phase=EXIT ok=True path=open_chat "
+                f"attempt={attempt}/{try_times} lines={len(block)}"
+            )
             return block, False
 
         if verbose:
             console(f"  (第{attempt}次无响应,等待暂停恢复...)")
         # retry 失败后等暂停恢复(替换固定 sleep(1.0),用户按 u 时不继续跑)
         if stop_check and stop_check():
+            logger.log_trace(
+                f"[TRACE][main.send_and_capture] phase=EXIT ok=False reason=stop_check_after_retry "
+                f"attempt={attempt}/{try_times}"
+            )
             return None, True
 
     # 所有尝试均失败，暂停等待用户介入
     console("⚠ 连续多次发送无响应，请检查游戏状态（可能卡菜单、掉线等），按暂停键恢复后重试。")
+    logger.log_trace(
+        f"[TRACE][main.send_and_capture] phase=EXIT ok=False reason=no_response_paused "
+        f"attempts={try_times} wait=manual_resume"
+    )
     _pause_until_resume()
     return None, False
 
@@ -294,6 +323,10 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
     timeout = float(cfg["timeouts"].get("response_wait", 12.0))
     try_wait = float(cfg["timeouts"].get("try_wait", 6.0))
     try_times = int(cfg["timeouts"].get("try_times", 3))
+    logger.log_trace(
+        f"[TRACE][main.query_guild_list] phase=ENTER retries={retries} "
+        f"timeout={timeout:.1f}s try_wait={try_wait:.1f}s try_times={try_times}"
+    )
     last_err = None
     attempt = 1
     used_first_paste = False  # 首条"直接粘贴试探"仅用一次;暂停恢复后不再走试探分支
@@ -335,12 +368,21 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
             if cfg.get("guild_name"):
                 if info["guild_name"] != cfg["guild_name"]:
                     last_err = f"公会名不匹配: 期望 {cfg['guild_name']},实际 {info['guild_name']}"
+                    logger.log_trace(
+                        f"[TRACE][main.query_guild_list] phase=DECIDE "
+                        f"rule=guild_name_match hit=False attempt={attempt}/{retries} "
+                        f"conclusion=retry reason=name_mismatch"
+                    )
                     attempt += 1
                     continue
             else:
                 logger.log_warning(
                     "config.guild_name 为空:无法校验 /guild list 来源,"
                     "存在伪造面板风险(建议在 config.json 填写公会名)"
+                )
+                logger.log_trace(
+                    "[TRACE][main.query_guild_list] phase=DECIDE rule=guild_name_match "
+                    "hit=unknown reason=guild_name_empty conclusion=accept"
                 )
             # 一致性自检:解析出的成员总数应接近面板声明的 total(差值≤跳过职位数)。
             # 伪造面板很难同时凑齐总数一致,可拦截大部分假花名册
@@ -351,12 +393,30 @@ def query_guild_list(cfg, watcher, human, hwnd, detector=None, stop_check=None):
                         f"面板成员数不一致: 声明总数 {info['total']},"
                         f"实际解析 {parsed_sum}(疑似伪造输出)"
                     )
+                    logger.log_trace(
+                        f"[TRACE][main.query_guild_list] phase=DECIDE "
+                        f"rule=member_count_consistency hit=False attempt={attempt}/{retries} "
+                        f"declared={info['total']} parsed={parsed_sum} "
+                        f"tolerance={len(cfg.get('skip_ranks', []))} conclusion=retry"
+                    )
                     attempt += 1
                     continue
+            logger.log_trace(
+                f"[TRACE][main.query_guild_list] phase=EXIT ok=True attempt={attempt}/{retries} "
+                f"total={info['total']} groups={len(info['groups'])}"
+            )
             return info
         except ParseError as e:
             last_err = str(e)
+            logger.log_trace(
+                f"[TRACE][main.query_guild_list] phase=DECIDE rule=parse hit=False "
+                f"attempt={attempt}/{retries} err_len={len(str(e))} conclusion=retry"
+            )
             attempt += 1
+    logger.log_trace(
+        f"[TRACE][main.query_guild_list] phase=EXIT ok=False reason=retries_exhausted "
+        f"attempts={attempt - 1} err_len={len(last_err or '')}"
+    )
     raise RuntimeError(f"/guild list 解析失败: {last_err}")
 
 
@@ -368,11 +428,20 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
     不去 burn 重试次数,报告里留着"查询重试耗尽"会让人以为是网络抖动。
     """
     cmds = cfg["commands"]
+    logger.log_trace(
+        f"[TRACE][main.query_member] phase=ENTER player=<snip> "
+        f"retries={int(cfg['timeouts'].get('max_retries', 3))} "
+        f"timeout={float(cfg['timeouts'].get('response_wait', 12.0)):.1f}s"
+    )
     # blocked_name_policy 必须在这里也生效:串行是默认模式,若只有异步路径认这个
     # 策略,等于「两种策略均可生效」(验收 17)只有一种真的能用。
     _policy = str(cfg.get("blocked_name_policy", "skip")).lower()
     if parsers.is_masked_name(pid) and _policy != "query_attempt":
         logger.log_error(f"查询跳过(玩家名被网易屏蔽词替换为星号,身份不可读): {pid}")
+        logger.log_trace(
+            f"[TRACE][main.query_member] phase=EXIT ok=False player=<snip> "
+            f"rule=blocked_name_policy policy={_policy} conclusion=skip"
+        )
         return None
     cmd = cmds["guild_member"].format(player=pid)
     retries = int(cfg["timeouts"].get("max_retries", 3))
@@ -418,10 +487,23 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
                 f"解析 [{pid}] 成功: 周贡献={info['weekly_total']} "
                 f"daily={len(info.get('daily') or [])} 条"
             )
+            logger.log_trace(
+                f"[TRACE][main.query_member] phase=EXIT ok=True player=<snip> "
+                f"attempt={attempt}/{retries} "
+                f"daily={len(info.get('daily') or [])} lines={len(block)}"
+            )
             return info
         except ParseError as e:
             console(f"    [{pid}] 第{attempt}次解析失败: {e}")
+            logger.log_trace(
+                f"[TRACE][main.query_member] phase=DECIDE rule=parse hit=False player=<snip> "
+                f"attempt={attempt}/{retries} err_len={len(str(e))} conclusion=retry"
+            )
             attempt += 1
+    logger.log_trace(
+        f"[TRACE][main.query_member] phase=EXIT ok=False player=<snip> "
+        f"reason=retries_exhausted attempts={attempt - 1}"
+    )
     return None
 
 
@@ -667,6 +749,12 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     )
     # S0 缓冲在 logger 就绪后补写（配置探测/加载阶段即便卡住，前面的错误也已有缓冲）
     _flush_prelog()
+    logger.log_trace(
+        f"[TRACE][main.prepare_config] phase=ENTER config={os.path.basename(str(args.config))} "
+        f"created={created} level={log_cfg.get('level', 4)} "
+        f"enabled={bool(log_cfg.get('enabled', True))} "
+        f"ui_enabled={bool(cfg.get('ui', {}).get('enabled', False))}"
+    )
 
     if created:
         wants_ui = _bool_arg(args, "ui") or bool(cfg.get("ui", {}).get("enabled", False))
@@ -679,6 +767,9 @@ def prepare_config(args, console_fn=None, exit_fn=None):
             # 要开界面就继续走：界面首启会把用户锁在配置页（§3.5），不需要再按回车
             console_fn("即将打开配置页，请在其中核对并保存后再开始运行…")
             logger.log_info("首次运行且启用 UI：跳过『按回车退出』，直接进入配置页")
+            logger.log_trace(
+                "[TRACE][main.prepare_config] phase=DECIDE first_run=True action=enter_ui"
+            )
         else:
             # 仅纯控制台模式才停一下，且只在交互终端上等；非交互（管道/计划任务）不留挂
             if sys.stdin is not None and sys.stdin.isatty():
@@ -688,6 +779,9 @@ def prepare_config(args, console_fn=None, exit_fn=None):
                     logger.log_warning("首次运行等待回车被中断，直接退出")
             else:
                 logger.log_warning("首次运行且非交互终端：不等待回车，直接退出")
+            logger.log_trace(
+                "[TRACE][main.prepare_config] phase=EXIT ok=False reason=first_run_exit"
+            )
             exit_fn(0)
     logger.log_info(
         f"脚本启动 (日志级别 {logger.current_level()}, {'启用' if logger.is_enabled() else '禁用'})"
@@ -777,6 +871,10 @@ def prepare_config(args, console_fn=None, exit_fn=None):
 
     if errors:
         console_fn("配置校验失败,请修正后重试(参考 docs/《配置说明.md》)", level="error")
+        logger.log_trace(
+            f"[TRACE][main.prepare_config] phase=EXIT ok=False reason=config_invalid "
+            f"errors={len(errors)} warnings={len(issues) - len(errors)}"
+        )
         exit_fn(1)
 
     sw = cfg["switches"]
@@ -791,6 +889,12 @@ def prepare_config(args, console_fn=None, exit_fn=None):
         f"通知{'✓' if sw['notify_enabled'] else '✗'}"
     )
     console_fn("=" * 56)
+    logger.log_trace(
+        f"[TRACE][main.prepare_config] phase=EXIT ok=True "
+        f"admin={'set' if cfg.get('admin') else 'unset'} "
+        f"operation_mode={cfg.get('operation_mode') or 'command'} "
+        f"dry_run={bool(getattr(args, 'dry_run', False))}"
+    )
     return cfg
 
 

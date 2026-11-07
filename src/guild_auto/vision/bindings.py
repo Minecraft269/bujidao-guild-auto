@@ -52,15 +52,26 @@ def read_hotbar_binding(options_path: str, slot: int) -> str | None:
     编码兼容 utf-8 / gbk / gb2312(与读日志同一套经验值);三种都失败时记警告后返回
     None,不猜测内容。
     """
+    logger.trace_call(
+        "vision.bindings.read_hotbar_binding",
+        args=(os.path.basename(options_path or "") or "<path>", slot),
+    )
     if not options_path:
         logger.log_warning("vision.bindings: 未配置 game_options 路径,无法解析 hotbar 绑定")
+        logger.trace_return("vision.bindings.read_hotbar_binding", result="<no_option_path>")
         return None
     try:
         with open(options_path, "rb") as f:
             data = f.read()
     except OSError as e:
         logger.log_warning(f"vision.bindings: 读取 options.txt 失败({options_path}): {e}")
+        logger.trace_code_location(
+            "vision.bindings.read_hotbar_binding.read_fail", error=type(e).__name__
+        )
+        logger.trace_return("vision.bindings.read_hotbar_binding", result="<read_error>")
         return None
+
+    logger.trace_file_read(os.path.basename(options_path), size=len(data))
 
     for enc in _OPTIONS_ENCODINGS:
         try:
@@ -68,14 +79,22 @@ def read_hotbar_binding(options_path: str, slot: int) -> str | None:
         except UnicodeDecodeError:
             continue
         binding = parse_options_binding(text, slot)
+        logger.trace_code_location(
+            "vision.bindings.read_hotbar_binding.decode",
+            encoding=enc,
+            slot=slot,
+            found=binding is not None,
+        )
         if binding is None:
             logger.log_warning(
                 f"vision.bindings: {os.path.basename(options_path)} 中没有 "
                 f"{HOTBAR_KEY_PREFIX}{slot},不提供默认键值"
             )
+        logger.trace_return("vision.bindings.read_hotbar_binding", result=binding)
         return binding
 
     logger.log_warning(f"vision.bindings: options.txt 编码无法识别(已尝试 {_OPTIONS_ENCODINGS})")
+    logger.trace_return("vision.bindings.read_hotbar_binding", result="<decode_error>")
     return None
 
 
@@ -95,8 +114,16 @@ def binding_to_press_key(binding: str | None) -> str | None:
 
 def hotbar_key(options_path: str, slot: int) -> str | None:
     """读取并翻译一个 hotbar 槽位的按键;任意一步失败都返回 None(不兜底)。"""
+    logger.trace_call("vision.bindings.hotbar_key", args=(slot,))
     binding = read_hotbar_binding(options_path, slot)
     key = binding_to_press_key(binding)
     if binding is not None and key is None:
         logger.log_warning(f"vision.bindings: 无法映射绑定 {binding!r} 为按键名")
+    logger.trace_code_location(
+        "vision.bindings.hotbar_key.decide",
+        slot=slot,
+        binding=binding,
+        mapped=key,
+    )
+    logger.trace_return("vision.bindings.hotbar_key", result=key)
     return key

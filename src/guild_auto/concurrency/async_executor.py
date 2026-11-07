@@ -125,6 +125,11 @@ class AsyncCommandExecutor:
         name = threading.current_thread().name
         reason = "stop"
         task_desc = None
+        logger.log_trace(
+            f"[TRACE][async_executor._worker] phase=ENTER thread={name} "
+            f"depth={self._queue.qsize()} "
+            f"unfinished={getattr(self._queue, 'unfinished_tasks', -1)}"
+        )
         try:
             while not self._stop_event.is_set():
                 try:
@@ -133,10 +138,20 @@ class AsyncCommandExecutor:
                     continue
 
                 task_desc = f"{player}/{str(cmd)[:60]}"
+                logger.log_trace(
+                    f"[TRACE][async_executor._worker] task_got player=<snip> "
+                    f"cmd_len={len(str(cmd))} depth_after={self._queue.qsize()} "
+                    f"unfinished={getattr(self._queue, 'unfinished_tasks', -1)}"
+                )
                 done = False
                 try:
                     if self._stop_event.is_set():
                         # stop 已置位但任务刚取出:不再执行,标记 skipped 并退出
+                        logger.log_trace(
+                            f"[TRACE][async_executor._worker] task_dropped "
+                            f"reason=executor_stopped phase=after_get player=<snip> "
+                            f"cmd_len={len(str(cmd))}"
+                        )
                         with self._results_lock:
                             self._results.append(
                                 {
@@ -161,6 +176,11 @@ class AsyncCommandExecutor:
                     result = None
                     error = None
                     attempt = 0
+                    logger.log_trace(
+                        f"[TRACE][async_executor._worker] task_begin player=<snip> "
+                        f"cmd_len={len(str(cmd))} max_attempts={retries_left} "
+                        f"retry_delay_s={self._retry_delay}"
+                    )
 
                     while retries_left > 0 and not self._stop_event.is_set():
                         attempt += 1
@@ -217,7 +237,17 @@ class AsyncCommandExecutor:
                                 f"cmd={str(cmd)[:60]}, status=failed, retries={attempt}, "
                                 f"error={err_txt!r}, retry_queue_depth={depth}"
                             )
+                            logger.log_trace(
+                                f"[TRACE][async_executor._worker] retry_enqueue "
+                                f"player=<snip> attempts={attempt} "
+                                f"retry_queue_depth={depth} error={err_txt!r}"
+                            )
 
+                    logger.log_trace(
+                        f"[TRACE][async_executor._worker] task_end player=<snip> "
+                        f"status={result.get('status')} attempts={result.get('retries')} "
+                        f"error={str(result.get('error'))[:80]!r}"
+                    )
                     with self._results_lock:
                         self._results.append(result)
                     # 通知主线程:本 player 的结果已就绪
@@ -244,6 +274,10 @@ class AsyncCommandExecutor:
                             )
                     break
         finally:
+            logger.log_trace(
+                f"[TRACE][async_executor._worker] phase=EXIT thread={name} reason={reason} "
+                f"unfinished={getattr(self._queue, 'unfinished_tasks', -1)}"
+            )
             _log.log_info(
                 f"[异步-线程] worker.exit: thread={name}, reason={reason}, "
                 f"unfinished_tasks={getattr(self._queue, 'unfinished_tasks', -1)}"
@@ -252,25 +286,50 @@ class AsyncCommandExecutor:
     # ---- 生命周期 ----
     def start(self):
         """启动后台工作线程(幂等)。"""
+        logger.log_trace(
+            f"[TRACE][async_executor.start] phase=ENTER started={self._started} "
+            f"workers={self._num_workers} queue_max={self._queue.maxsize}"
+        )
         if self._started:
+            logger.log_trace(
+                "[TRACE][async_executor.start] phase=EXIT skipped=true reason=already_started"
+            )
             return
         self._stop_event.clear()
         for i in range(self._num_workers):
             t = threading.Thread(target=self._worker, name=f"async-exec-{i}", daemon=True)
             t.start()
             self._workers.append(t)
+            logger.trace_thread("start", thread=t, role="worker", index=i)
         self._started = True
         _log.log_info(
             f"(异步)执行器已启动 workers={self._num_workers} "
             f"max_queue={self._queue.maxsize} max_retries={self._max_retries}"
         )
+        logger.log_trace(
+            f"[TRACE][async_executor.start] phase=EXIT workers_alive="
+            f"{sum(1 for t in self._workers if t.is_alive())}"
+        )
 
     def submit(self, command_str, player, verify_fn=None):
         """提交命令到异步队列(非阻塞)。返回 False 表示队列已满被丢弃(调用方可感知)。"""
+        logger.log_trace(
+            f"[TRACE][async_executor.submit] phase=ENTER player=<snip> "
+            f"cmd_len={len(str(command_str))} has_verify={verify_fn is not None} "
+            f"depth={self._queue.qsize()} queue_max={self._queue.maxsize}"
+        )
         try:
             self._queue.put((command_str, player, verify_fn), block=False)
+            logger.log_trace(
+                f"[TRACE][async_executor.submit] phase=EXIT accepted=true "
+                f"depth={self._queue.qsize()}"
+            )
             return True
         except queue.Full:
+            logger.log_trace(
+                f"[TRACE][async_executor.submit] phase=EXIT accepted=false "
+                f"reason=queue_full dropped=true queue_max={self._queue.maxsize}"
+            )
             _log.log_warning(
                 f"(异步)队列已满({self._queue.maxsize}),丢弃任务: {player} {command_str[:50]}"
             )
@@ -291,6 +350,11 @@ class AsyncCommandExecutor:
         unfinished = getattr(self._queue, "unfinished_tasks", -1)
         workers = [t.name for t in self._workers if t.is_alive()]
         basis = "caller" if timeout is not None else "per-worker*%g" % _JOIN_TOTAL_FACTOR
+        logger.log_trace(
+            f"[TRACE][async_executor.join] phase=ENTER unfinished={unfinished} "
+            f"workers_alive={len(workers)} total_timeout_s={total:.1f} "
+            f"timeout_given={timeout is not None} basis={basis}"
+        )
         _log.log_info(
             f"[异步-等待] join.enter: unfinished_tasks={unfinished}, "
             f"workers={len(workers)}, timeout_policy=per-worker {timeout_per_worker}s, "
@@ -305,6 +369,10 @@ class AsyncCommandExecutor:
             time.sleep(min(0.05, remaining))
         left = getattr(self._queue, "unfinished_tasks", -1)
         elapsed = time.monotonic() - started
+        logger.log_trace(
+            f"[TRACE][async_executor.join] phase=EXIT waited_s={elapsed:.2f} "
+            f"unfinished_left={left} timed_out={left > 0} total_timeout_s={total:.1f}"
+        )
         if left > 0:
             alive = [t.name for t in self._workers if t.is_alive()]
             _log.log_warning(
@@ -325,6 +393,11 @@ class AsyncCommandExecutor:
         pending = getattr(self._queue, "unfinished_tasks", -1)
         join_timeout = _DEFAULT_STOP_JOIN_TIMEOUT if timeout is None else float(timeout)
         basis = "infinite→default" if timeout is None else "caller"
+        logger.log_trace(
+            f"[TRACE][async_executor.stop] phase=ENTER pending={pending} "
+            f"drain_timeout_s={join_timeout:.1f} join_timeout_s={join_timeout:.1f} "
+            f"basis={basis}"
+        )
         _log.log_info(
             f"[异步-停止] stop.enter: pending={pending}, drain_timeout={join_timeout:.1f}s, "
             f"join_timeout={join_timeout:.1f}s(basis={basis})"
@@ -341,6 +414,11 @@ class AsyncCommandExecutor:
                 )
         _log.log_info(
             f"[异步-停止] stop.exit: drained={drained}, elapsed={time.monotonic() - started:.2f}s"
+        )
+        logger.log_trace(
+            f"[TRACE][async_executor.stop] phase=EXIT drained={drained} "
+            f"elapsed_s={time.monotonic() - started:.2f} "
+            f"alive_workers={sum(1 for t in self._workers if t.is_alive())}"
         )
 
     def _drain_pending(self):

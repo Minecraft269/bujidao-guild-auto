@@ -23,6 +23,7 @@ UI 需要的"把配置摊平成表单字段 / 把表单值写回配置 / 校验�
 from __future__ import annotations
 
 import copy
+import time
 
 from guild_auto.config.defaults import CONFIG_COMMENTS, DEFAULT_CONFIG
 
@@ -243,6 +244,13 @@ def apply_edits(cfg, edits):
     new_cfg = copy.deepcopy(cfg)
     fields = {f.path: f for f in flatten_config(cfg)}
     errors = []
+    decisions = []
+    t0 = time.monotonic()
+    _log(
+        "trace",
+        f"[TRACE][config.ui_binding.apply_edits] phase=ENTER edits={len(edits)} "
+        f"fields={len(fields)}",
+    )
 
     for path, raw in edits.items():
         if path in READONLY_PATHS:
@@ -253,18 +261,28 @@ def apply_edits(cfg, edits):
                 " | 已拒绝、配置未落盘",
             )
             errors.append({"path": path, "message": f"只读字段不可写回: {path}"})
+            decisions.append(f"{path}:readonly_rejected")
             continue
         field = fields.get(path)
         if field is None:
             errors.append({"path": path, "message": f"未知配置项: {path}"})
+            decisions.append(f"{path}:unknown")
             continue
         try:
             _set_path(new_cfg, path, _coerce(field, raw))
+            decisions.append(f"{path}:{field.kind}=ok")
         except ValueError as e:
             errors.append({"path": path, "message": str(e)})
+            decisions.append(f"{path}:{field.kind}=fail")
 
     if errors:
         _log_rejection(errors)
+        _log(
+            "trace",
+            f"[TRACE][config.ui_binding.apply_edits] phase=EXIT stage=coerce "
+            f"errors={len(errors)} decisions={','.join(decisions)[:260] or '<none>'} "
+            f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.2f}",
+        )
         return new_cfg, errors
 
     # 结构化字段保持原值（编辑它们的是专用面板，不经表单）
@@ -294,8 +312,20 @@ def apply_edits(cfg, edits):
             )
     if errors:
         _log_rejection(errors)
+        _log(
+            "trace",
+            f"[TRACE][config.ui_binding.apply_edits] phase=EXIT stage=validate "
+            f"errors={len(errors)} decisions={','.join(decisions)[:260] or '<none>'} "
+            f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.2f}",
+        )
         return new_cfg, errors
     _log("info", f"配置/保存前校验通过，共 {len(edits)} 项修改")
+    _log(
+        "trace",
+        f"[TRACE][config.ui_binding.apply_edits] phase=EXIT stage=ok "
+        f"errors=0 decisions={','.join(decisions)[:260] or '<none>'} "
+        f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.2f}",
+    )
     return new_cfg, errors
 
 
@@ -321,6 +351,8 @@ def render_field_value(field):
 
 def diff_against_default(cfg):
     """与 DEFAULT_CONFIG 相比哪些字段被改过（首次运行要求"必须有修改才放行"）。"""
+    t0 = time.monotonic()
+    _log("trace", "[TRACE][config.ui_binding.diff_against_default] phase=ENTER")
     changed = []
     unchanged = []
     for f in flatten_config(cfg):
@@ -332,4 +364,10 @@ def diff_against_default(cfg):
     # 首次运行锁在配置页时，用日志解释"还剩哪些项未改"(只记 path，不记值)
     _log("info", f"配置/首次运行判定: changed={len(changed)} 项")
     _log("debug", f"配置/首次运行判定: 仍为默认值的字段({len(unchanged)})={unchanged}")
+    _log(
+        "trace",
+        f"[TRACE][config.ui_binding.diff_against_default] phase=EXIT "
+        f"changed={len(changed)} unchanged={len(unchanged)} "
+        f"elapsed_ms={(time.monotonic() - t0) * 1000.0:.2f}",
+    )
     return changed

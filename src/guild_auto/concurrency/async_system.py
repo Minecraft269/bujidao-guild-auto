@@ -231,6 +231,10 @@ class AsyncVerifySystem:
         保证 wait_all() 不会因残留任务永久挂起、任务不丢失。"""
         with self._tasks_lock:
             unfinished_now = sum(1 for t in self._tasks.values() if not t.is_done())
+        logger.log_trace(
+            f"[TRACE][async_system.stop] phase=ENTER queued={self._send_q.qsize()} "
+            f"unfinished={unfinished_now} join_timeout_s={timeout}"
+        )
         logger.log_info(
             f"[异步-停止] stop.enter: queued={self._send_q.qsize()}, "
             f"unfinished={unfinished_now}, join_timeout={timeout}s"
@@ -277,6 +281,12 @@ class AsyncVerifySystem:
         logger.log_info(
             f"[异步-停止] stop.exit: stopped={stopped}, elapsed={time.monotonic() - started:.2f}s"
         )
+        logger.log_trace(
+            f"[TRACE][async_system.stop] phase=EXIT stopped={stopped} "
+            f"elapsed_s={time.monotonic() - started:.2f} "
+            f"send_q={self._send_q.qsize()} retry_q={len(self.get_retry_queue())} "
+            f"alive_threads={sum(1 for t in self._threads if t.is_alive())}"
+        )
 
     def is_alive(self):
         return any(t.is_alive() for t in self._threads)
@@ -286,6 +296,11 @@ class AsyncVerifySystem:
     # ------------------------------------------------------------------
     def submit(self, command, player, meta=None):
         """主线程投递一条指令。**立即返回,不等验证**(异步模式核心)。返回 task_id。"""
+        logger.log_trace(
+            f"[TRACE][async_system.submit] phase=ENTER player=<snip> "
+            f"cmd_len={len(str(command))} meta_keys={sorted(meta) if meta else []} "
+            f"depth={self._send_q.qsize()} pending={self.pending_count()}"
+        )
         with self._id_lock:
             self._next_id += 1
             task_id = self._next_id
@@ -296,6 +311,10 @@ class AsyncVerifySystem:
             self._pending_count += 1
         self._all_done.clear()
         self._send_q.put(task_id)  # 主线程唯一动作;实际按键在 sender 线程
+        logger.log_trace(
+            f"[TRACE][async_system.submit] phase=EXIT task_id={task_id} "
+            f"depth={self._send_q.qsize()} pending={self.pending_count()}"
+        )
         logger.log_trace(
             f"TRACE_QUEUE async_system.submit | task_id={task_id} "
             f"player={player!r} depth={self._send_q.qsize()}"
@@ -310,6 +329,10 @@ class AsyncVerifySystem:
             cmd, player = item[0], item[1]
             meta = item[2] if len(item) > 2 else None
             ids.append(self.submit(cmd, player, meta))
+        logger.log_trace(
+            f"[TRACE][async_system.submit_many] phase=EXIT items={len(ids)} "
+            f"depth={self._send_q.qsize()} pending={self.pending_count()}"
+        )
         logger.log_info(f"(异步系统)批量投递 {len(ids)} 条指令(主线程不等验证)")
         return ids
 
@@ -437,6 +460,11 @@ class AsyncVerifySystem:
             if explicit
             else f"task_timeout*2(task_timeout={self._task_timeout}s)"
         )
+        logger.log_trace(
+            f"[TRACE][async_system.wait_all] phase=ENTER timeout_s={timeout:.1f} "
+            f"explicit={explicit} basis={basis} pending={self.pending_count()} "
+            f"depth={self._send_q.qsize()}"
+        )
         logger.log_info(
             f"[异步-等待] event=wait_all.enter, effective_timeout={timeout:.1f}s, "
             f"basis={basis}, pending_count={self.pending_count()}"
@@ -444,6 +472,11 @@ class AsyncVerifySystem:
         started = time.monotonic()
         got = self._all_done.wait(timeout=timeout)
         elapsed = time.monotonic() - started
+        logger.log_trace(
+            f"[TRACE][async_system.wait_all] phase=EXIT got={got} "
+            f"waited_s={elapsed:.2f} timeout_s={timeout:.1f} "
+            f"pending={self.pending_count()}"
+        )
         if got:
             logger.log_info(
                 f"[异步-等待] event=wait_all.exit, got=True, elapsed={elapsed:.2f}s, "
@@ -474,11 +507,20 @@ class AsyncVerifySystem:
     def _sender_loop(self):
         """后台发送线程:取任务 → 调注入的 send_fn 发送 → mark_sent → 立刻取下一条。
         本线程**不验证**;验证完全交给 _verifier_loop。"""
+        thread_name = threading.current_thread().name
+        logger.log_trace(
+            f"[TRACE][async_system._sender_loop] phase=ENTER thread={thread_name} "
+            f"poll_s=0.3 stopped={self._stop_event.is_set()} depth={self._send_q.qsize()}"
+        )
         while not self._stop_event.is_set():
             try:
                 task_id = self._send_q.get(timeout=0.3)
             except queue.Empty:
                 continue
+            logger.log_trace(
+                f"[TRACE][async_system._sender_loop] task_got task_id={task_id} "
+                f"depth_after={self._send_q.qsize()} pending={self.pending_count()}"
+            )
             try:
                 with self._tasks_lock:
                     task = self._tasks.get(task_id)
@@ -488,6 +530,10 @@ class AsyncVerifySystem:
                 logger.log_error(f"(异步系统)发送线程异常: {e!r}")
             finally:
                 self._send_q.task_done()
+        logger.log_trace(
+            f"[TRACE][async_system._sender_loop] phase=EXIT thread={thread_name} "
+            f"reason=stop depth={self._send_q.qsize()} pending={self.pending_count()}"
+        )
 
     def _send_one(self, task):
         """发送单条指令并标记已发送。
@@ -501,12 +547,21 @@ class AsyncVerifySystem:
         这类任务不能标记已发送,直接判失败离开 SENT,避免为没发出去的命令计时。
         """
         send_fn = self._send_fn
+        logger.log_trace(
+            f"[TRACE][async_system._send_one] phase=ENTER task_id={task.task_id} "
+            f"player=<snip> cmd_len={len(str(task.command))} "
+            f"attempt_next={task.attempts_count + 1} has_send_fn={send_fn is not None}"
+        )
         if send_fn is None:
             # 未注入发送函数(如单测):只记账标记,不真发
             task.mark_sent()
             logger.log_debug(
                 f"[异步-状态] send.state PENDING->SENT: task_id={task.task_id}, "
                 f"player={task.player}, attempts={task.attempts_count}(未注入 send_fn)"
+            )
+            logger.log_trace(
+                f"[TRACE][async_system._send_one] phase=EXIT task_id={task.task_id} "
+                f"marked=sent send_fn=none"
             )
             return
         logger.log_trace(
@@ -518,6 +573,10 @@ class AsyncVerifySystem:
             emitted = send_fn(task.command, task.player, task.meta)
         except Exception as e:  # 发送异常 → 记失败,由主线程决定重试
             logger.log_error(f"(异步系统)发送异常 player={task.player}: {e!r}")
+            logger.log_trace(
+                f"[TRACE][async_system._send_one] phase=EXIT task_id={task.task_id} "
+                f"emitted=exception error={e!r}"
+            )
             task.mark_verified(False, error=f"send failed: {e!r}")
             # 发送失败让任务直接离开 SENT 状态,**不会**再被验证线程处理到,
             # 所以必须在此递减 pending —— 否则 _pending_count 只增不减,
@@ -525,6 +584,11 @@ class AsyncVerifySystem:
             self._dec_pending()
             return
         elapsed_ms = (time.monotonic() - started) * 1000.0
+        logger.log_trace(
+            f"[TRACE][async_system._send_one] phase=EXIT task_id={task.task_id} "
+            f"emitted={emitted!r} elapsed_ms={elapsed_ms:.0f} "
+            f"slow={elapsed_ms > 2000.0}"
+        )
         logger.log_info(
             f"[异步-发送] send.return: task_id={task.task_id}, player={task.player}, "
             f"emitted={emitted!r}, elapsed_ms={elapsed_ms:.0f}"
@@ -568,6 +632,12 @@ class AsyncVerifySystem:
         """
         reason = "stop"
         failed_count = 0
+        logger.log_trace(
+            f"[TRACE][async_system._verifier_loop] phase=ENTER "
+            f"thread={threading.current_thread().name} poll_s={self._poll} "
+            f"task_timeout_s={self._task_timeout} "
+            f"has_verify_fn={self._verify_fn is not None}"
+        )
         try:
             while not self._stop_event.is_set():
                 with self._tasks_lock:
@@ -582,6 +652,11 @@ class AsyncVerifySystem:
                         continue
                     time.sleep(self._poll)
                     continue
+                logger.log_trace(
+                    f"[TRACE][async_system._verifier_loop] poll "
+                    f"candidates={len(candidates)} pending={self.pending_count()} "
+                    f"depth={self._send_q.qsize()}"
+                )
                 for task in candidates:
                     if self._stop_event.is_set():
                         break
@@ -640,6 +715,12 @@ class AsyncVerifySystem:
                     )
                     # 无论成功/失败/异常,任务都已离开 SENT 状态 —— 递减待验证计数
                     self._dec_pending()
+                    logger.log_trace(
+                        f"[TRACE][async_system._verifier_loop] judge task_id={task.task_id} "
+                        f"player=<snip> state={task.state} "
+                        f"attempts={task.attempts_count} "
+                        f"elapsed_ms={(time.monotonic() - started) * 1000.0:.0f}"
+                    )
                     if task.state == OK:
                         logger.log_trace(
                             f"TRACE_VERIFY ok | task_id={task.task_id} player={task.player!r}"
@@ -659,6 +740,11 @@ class AsyncVerifySystem:
         finally:
             # stop 时兜底置完成信号,避免主线程 wait_all 挂起
             self._all_done.set()
+            logger.log_trace(
+                f"[TRACE][async_system._verifier_loop] phase=EXIT "
+                f"thread={threading.current_thread().name} reason={reason} "
+                f"pending={self.pending_count()} failed={failed_count}"
+            )
             logger.log_info(
                 f"[异步-线程] event=verifier_loop.exit, reason={reason}, "
                 f"pending={self.pending_count()}, failed={failed_count}"
@@ -717,6 +803,10 @@ def run_async_round(system, commands, send_fn, max_retries=3):
 
     remaining = list(commands)
     max_rounds = max(1, int(max_retries))
+    logger.log_trace(
+        f"[TRACE][async_system.run_async_round] phase=ENTER "
+        f"items={len(remaining)} max_rounds={max_rounds}"
+    )
     all_round_ids = set()  # 本次闭环提交过的全部 task_id(用于收尾时只统计本次的任务)
 
     for round_no in range(1, max_rounds + 1):
@@ -738,6 +828,11 @@ def run_async_round(system, commands, send_fn, max_retries=3):
         results_ok.extend(system.get_completed(task_ids=round_ids))
 
         failed = system.get_failed(task_ids=round_ids)
+        logger.log_trace(
+            f"[TRACE][async_system.run_async_round] round={round_no}/{max_rounds} "
+            f"submitted={len(round_ids)} ok_total={len(results_ok)} "
+            f"failed={len(failed)}"
+        )
         if not failed:
             remaining = []
             break
@@ -827,4 +922,9 @@ def run_async_round(system, commands, send_fn, max_retries=3):
     results_ok = deduped
 
     logger.log_info(f"(异步系统)闭环结束:成功 {len(results_ok)} 条,最终失败 {len(final_failed)} 条")
+    logger.log_trace(
+        f"[TRACE][async_system.run_async_round] phase=EXIT ok={len(results_ok)} "
+        f"final_failed={len(final_failed)} archived={archived} "
+        f"stranded={len(stranded)}"
+    )
     return results_ok, final_failed

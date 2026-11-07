@@ -90,12 +90,20 @@ def verify_rank_change(
     回显含玩家名,所以可以精确归因;匹配不到就是失败(不猜"应该成功了")。
     """
     lines = tuple(chat_reader() or ())
+    logger.trace_call(
+        "vision.verifier.verify_rank_change",
+        args=("<snip>", expected_rank),
+    )
     logger.log_debug(
         f"vision.verifier: 职位变更验证输入(player={player!r},"
         f"expected_rank={expected_rank!r},回显行数={len(lines)})"
     )
     denied = _permission_denied(lines)
     if denied is not None:
+        logger.trace_return(
+            "vision.verifier.verify_rank_change",
+            result={"ok": False, "method": "permission", "lines": len(lines)},
+        )
         return denied
 
     expected = RANK_ECHO_PATTERN.format(player=player, rank=expected_rank)
@@ -103,9 +111,17 @@ def verify_rank_change(
         logger.log_info(
             f"vision.verifier: 职位变更验证结论 ok=True method=echo reason=回显匹配 {expected!r}"
         )
+        logger.trace_return(
+            "vision.verifier.verify_rank_change",
+            result={"ok": True, "method": "echo", "lines": len(lines)},
+        )
         return VerifyResult(ok=True, reason=f"聊天回显匹配:{expected}", method="echo")
     logger.log_info(
         f"vision.verifier: 职位变更验证结论 ok=False method=echo reason=回显中未找到 {expected!r}"
+    )
+    logger.trace_return(
+        "vision.verifier.verify_rank_change",
+        result={"ok": False, "method": "echo", "lines": len(lines)},
     )
     return VerifyResult(
         ok=False,
@@ -165,6 +181,7 @@ def verify_kick(
     if method not in KICK_METHODS:
         raise ValueError(f"kick_verify 取值非法: {method!r},应为 {KICK_METHODS} 之一")
 
+    logger.trace_call("vision.verifier.verify_kick", args=(method,))
     # 回显只读一次:读取函数可能接实时日志钩子,重复调用会漏掉窗口内的行
     lines: tuple[ChatLine | str, ...] = tuple(chat_reader() or ()) if chat_reader else ()
     logger.log_debug(
@@ -176,6 +193,10 @@ def verify_kick(
     if lines:
         denied = _permission_denied(lines)
         if denied is not None:
+            logger.trace_return(
+                "vision.verifier.verify_kick",
+                result={"ok": False, "method": "permission", "lines": len(lines)},
+            )
             return denied
 
     grid = _grid_check(member_gone)
@@ -191,12 +212,26 @@ def verify_kick(
             logger.log_info(
                 f"vision.verifier: 踢出验证结论 ok=True method=any 证据={details} 成立项={passing}"
             )
+            logger.trace_return(
+                "vision.verifier.verify_kick",
+                result={"ok": True, "method": "any", "passing": passing, "lines": len(lines)},
+            )
             return VerifyResult(
                 ok=True,
                 reason=f"交叉验证成立({', '.join(passing)}):{details}",
                 method=method,
             )
         logger.log_info(f"vision.verifier: 踢出验证结论 ok=False method=any 证据={details}")
+        logger.trace_return(
+            "vision.verifier.verify_kick",
+            result={
+                "ok": False,
+                "method": "any",
+                "passing": [],
+                "evidence": [name for name, (value, _d) in evidence.items() if value is True],
+                "lines": len(lines),
+            },
+        )
         return VerifyResult(
             ok=False,
             reason=f"{UNCONFIRMED}:{details}",
@@ -206,11 +241,23 @@ def verify_kick(
     value, detail = evidence[method]
     if value is True:
         logger.log_info(f"vision.verifier: 踢出验证结论 ok=True method={method} reason={detail}")
+        logger.trace_return(
+            "vision.verifier.verify_kick",
+            result={"ok": True, "method": method, "reason": detail, "lines": len(lines)},
+        )
         return VerifyResult(ok=True, reason=detail, method=method)
     if value is False:
         logger.log_info(f"vision.verifier: 踢出验证结论 ok=False method={method} reason={detail}")
+        logger.trace_return(
+            "vision.verifier.verify_kick",
+            result={"ok": False, "method": method, "reason": detail, "lines": len(lines)},
+        )
         return VerifyResult(ok=False, reason=f"{UNCONFIRMED}:{detail}", method=method)
     logger.log_info(
         f"vision.verifier: 踢出验证结论 ok=False method={method} reason={UNCONFIRMED}:{detail}"
+    )
+    logger.trace_return(
+        "vision.verifier.verify_kick",
+        result={"ok": False, "method": method, "reason": "no_data", "lines": len(lines)},
     )
     return VerifyResult(ok=False, reason=f"{UNCONFIRMED}:{detail}", method=method)

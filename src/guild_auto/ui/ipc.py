@@ -144,9 +144,13 @@ class IpcServer:
             self.create()
         if self._stop.is_set():
             logger.log_info(f"[阶段] S6 ipc.accept 已停止，不再等待连接 管道={self.masked_path}")
+            logger.log_trace("[TRACE][ipc.accept] phase=EXIT ok=False reason=stopped_before_wait")
             return False
         timeout = CONNECT_TIMEOUT if timeout is None else float(timeout)
         started = time.monotonic()
+        logger.log_trace(
+            f"[TRACE][ipc.accept] phase=ENTER timeout={timeout:.1f}s pipe={self.masked_path}"
+        )
         logger.log_info(
             f"[阶段][ENTER] S6 ipc.accept 等待 GUI 连接 管道={self.masked_path} 超时={timeout:.0f}s"
         )
@@ -201,6 +205,10 @@ class IpcServer:
                 f"[阶段][EXIT ] S6 ipc.accept 耗时={time.monotonic() - started:.2f}s "
                 f"结果=超时未连接"
             )
+            logger.log_trace(
+                f"[TRACE][ipc.accept] phase=EXIT ok=False reason=timeout "
+                f"elapsed={time.monotonic() - started:.2f}s timeout={timeout:.1f}s"
+            )
             return False
         if thread_handle is not None:
             _kernel32.CloseHandle(thread_handle)
@@ -224,6 +232,10 @@ class IpcServer:
                 f"[阶段] S6 ipc.accept 失败: WinError {err} 已等待={elapsed:.2f}s "
                 f"管道={self.masked_path}"
             )
+        logger.log_trace(
+            f"[TRACE][ipc.accept] phase=EXIT ok={bool(ok)} elapsed={elapsed:.2f}s "
+            f"win_err={err if not ok else 0}"
+        )
         return bool(ok)
 
     def stop(self) -> None:
@@ -303,9 +315,15 @@ class IpcServer:
         ERROR_PIPE_CONNECTED 接受，形成「连上-超时-断开」死循环（实测刷出 15MB 日志）。
         真正的重连交给 GUI 侧重发。
         """
+        logger.log_trace(
+            f"[TRACE][ipc.serve_forever] phase=ENTER connected={self._connected.is_set()} "
+            f"stop={self._stop.is_set()} pipe={self.masked_path}"
+        )
         if not self.accept():
+            logger.log_trace("[TRACE][ipc.serve_forever] phase=EXIT reason=accept_failed")
             return
         handle = self._handle
+        frames = 0
         # 进入读循环前留痕：若 _stop 已置位，读循环会一条日志都不打就结束，
         # 这类静默退出必须先被看见（否则「已连接但没有任何后续」无从解释）。
         logger.log_info(
@@ -336,6 +354,7 @@ class IpcServer:
             for line in self._read_lines(handle):
                 first_frame.set()
                 reply = self.handle_line(line)
+                frames += 1
                 # 每处理一行都留痕：只有「首包已读」无法回答
                 # 「第二个请求到底有没有到核、有没有被应答」。
                 logger.log_debug(
@@ -349,14 +368,25 @@ class IpcServer:
         finally:
             first_frame.set()  # 正常断开时别让看门狗再打一条误导性 WARNING
             self._connected.clear()
+            logger.log_trace(
+                f"[TRACE][ipc.serve_forever] phase=EXIT frames={frames} "
+                f"stop={self._stop.is_set()} connected={self._connected.is_set()} "
+                f"pipe={self.masked_path}"
+            )
             self._close_handle()
 
     # ── 协议 ──────────────────────────────────────────────────────────────
     def handle_line(self, line: str) -> dict | None:
         """处理一行请求，返回应答字典（含原 id）。token 不对 → ok=false 并断连。"""
+        started = time.monotonic()
+        logger.log_trace(f"[TRACE][ipc.handle_line] phase=ENTER line_len={len(line)}")
         try:
             msg = json.loads(line)
         except json.JSONDecodeError as e:
+            logger.log_trace(
+                f"[TRACE][ipc.handle_line] phase=EXIT ok=False reason=bad_json "
+                f"err={type(e).__name__} elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
+            )
             return {"ok": False, "error": f"请求不是合法 JSON: {e}"}
         req_id = msg.get("id")
         method = str(msg.get("method") or "")
@@ -364,12 +394,28 @@ class IpcServer:
         # 带 token 的请求必须对得上；对不上直接拒绝并停止服务（一次性 token 语义）
         if msg.get("token") is not None and msg.get("token") != self.token:
             self._stop.set()
+            logger.log_trace(
+                f"[TRACE][ipc.handle_line] phase=EXIT ok=False reason=bad_token "
+                f"method={method or '?'} conclusion=disconnect"
+            )
             return {"id": req_id, "ok": False, "error": "token 无效，连接被拒绝"}
         handler = self._handlers.get(method)
         if handler is None:
+            logger.log_trace(
+                f"[TRACE][ipc.handle_line] phase=EXIT ok=False reason=unknown_method "
+                f"method={method or '?'} handlers={len(self._handlers)}"
+            )
             return {"id": req_id, "ok": False, "error": f"未知方法: {method}"}
         try:
             result = handler(params)
         except Exception as e:  # 原样回传错误文本，不吞
+            logger.log_trace(
+                f"[TRACE][ipc.handle_line] phase=EXIT ok=False reason=handler_raised "
+                f"method={method or '?'} err={type(e).__name__} err_len={len(str(e))}"
+            )
             return {"id": req_id, "ok": False, "error": str(e)}
+        logger.log_trace(
+            f"[TRACE][ipc.handle_line] phase=EXIT ok=True method={method or '?'} "
+            f"params={len(params)} elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
+        )
         return {"id": req_id, "ok": True, "result": result}
