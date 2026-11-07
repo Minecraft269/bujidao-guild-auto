@@ -528,7 +528,7 @@ class TestTraceCodeLocation(LoggerTempCase):
 
     def test_phase_with_detail(self):
         logger.trace_code_location("main.execute", "player=P1")
-        self.assertEqual(self.messages(), ["TRACE_LOCATION main.execute | player=P1"])
+        self.assertEqual(self.messages(), ["TRACE_LOCATION main.execute | player=<snip>"])
 
     def test_empty_detail_omitted(self):
         logger.trace_code_location("main.execute", "")
@@ -537,7 +537,8 @@ class TestTraceCodeLocation(LoggerTempCase):
     def test_detail_plus_fields(self):
         logger.trace_code_location("main.execute", "player=P1", attempt=1, retry=False)
         self.assertEqual(
-            self.messages(), ["TRACE_LOCATION main.execute | player=P1 | attempt=1 | retry=False"]
+            self.messages(),
+            ["TRACE_LOCATION main.execute | player=<snip> | attempt=1 | retry=False"],
         )
 
     def test_fields_only(self):
@@ -674,7 +675,7 @@ class TestTraceVerifyStage(LoggerTempCase):
         self.assertEqual(
             self._verify_lines(),
             [
-                f"TRACE_VERIFY {s} | task_id=T1 | player=P1"
+                f"TRACE_VERIFY {s} | task_id=T1 | player=<snip>"
                 for s in ("submit", "send", "read_log", "judge", "retry", "done")
             ],
         )
@@ -689,7 +690,7 @@ class TestTraceVerifyStage(LoggerTempCase):
 
     def test_player_only(self):
         logger.trace_verify_stage("judge", player="P2")
-        self.assertEqual(self._verify_lines(), ["TRACE_VERIFY judge | player=P2"])
+        self.assertEqual(self._verify_lines(), ["TRACE_VERIFY judge | player=<snip>"])
 
     def test_fields_carry_verdict_details(self):
         logger.trace_verify_stage("judge", task_id="T1", ok=True, reason="匹配成功")
