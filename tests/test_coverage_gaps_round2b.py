@@ -38,7 +38,7 @@ class _Human:
 
 
 class _Executor:
-    """只实现 gc_broadcast_with_retry：按预设序列返回 (ok, err)。"""
+    """只实现 gc_broadcast_with_retry / send_gated:按预设序列返回 (ok, err)。"""
 
     def __init__(self, results):
         self.results = list(results)
@@ -47,6 +47,11 @@ class _Executor:
     def gc_broadcast_with_retry(self, text, retries=3, timeout=4.0):
         self.sent.append(text)
         return self.results.pop(0) if self.results else (True, None)
+
+    def send_gated(self, cmd):
+        # P0-1 / R-14:异步发送改走 executor.send_gated(与串行同一条门禁)
+        self.sent.append(cmd)
+        return True
 
 
 class _Rt:
@@ -220,5 +225,6 @@ def test_query_async_inner_closures_cover_send_and_parse_error(monkeypatch):
     cfg = _cfg()
     cfg["commands"]["guild_member"] = "/guild member {player}"
     records, failures = stages.stage_query_async(rt, [("member", "示例玩家")], cfg)
-    assert sent == ["/guild member 示例玩家"]
+    # P0-1 / R-14:发送经 executor.send_gated(统一门禁),记录落在 fake executor 上
+    assert rt.executor.sent == ["/guild member 示例玩家"]
     assert records == [] and failures == []

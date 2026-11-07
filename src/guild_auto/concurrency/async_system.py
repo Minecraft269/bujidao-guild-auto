@@ -116,6 +116,18 @@ class VerifyTask:
         """后台:等待超时(没找到响应块)→ 记为失败。"""
         self.mark_verified(False, error=reason)
 
+    def mark_retry_verify(self):
+        """重试轮:让任务**重新进入验证**(不重新发送)。
+
+        为什么必须有这个原语:重试若走 submit 会再发一次命令 —— 升职/踢出被重复
+        执行。异步执行的正确语义是"命令只发一次,失败就再判一次回显"。
+        attempts 不 +1,它记的是"发送次数",不是判定次数。
+        """
+        with self._lock:
+            self._state = SENT
+            self.ok = None
+            self.error = None
+
     def mark_stopped(self, reason="stopped"):
         with self._lock:
             self._state = STOPPED
@@ -446,20 +458,21 @@ class AsyncVerifySystem:
     def wait_all(self, timeout=None):
         """主线程**全部工作完成后**才调用:等待后台返回完成信号。
 
-        带总超时(默认 task_timeout*2);超时返回 False 表示后台未全部完成,
-        但绝不无限阻塞——这是防死锁的第 2 道保险。
+        隐式超时**随在途任务数线性增长**(R-05):
+            timeout = (in_flight + 1) * task_timeout
+        旧实现固定 task_timeout*2,5 条任务必然超时 → 后台随后成功的任务被记成
+        "最终失败" → 重发升/降/踢。显式传 timeout 时仍按调用方的值(不变)。
 
         阻塞点埋点三态(进入前 INFO → 返回后 INFO → 超时 WARNING 含已等待时长):
         有效超时是隐式推导出来的,所以进入前必须把「超时值 + 推导依据」写进日志,
         否则卡住时无法从最后几行判断上限是多少。"""
         explicit = timeout is not None
         if timeout is None:
-            timeout = self._task_timeout * 2
-        basis = (
-            f"caller(timeout={timeout:.1f}s)"
-            if explicit
-            else f"task_timeout*2(task_timeout={self._task_timeout}s)"
-        )
+            inflight = self._inflight_count()
+            timeout = self.implicit_timeout(self._task_timeout, inflight)
+            basis = f"(in_flight={inflight}+1)*task_timeout({self._task_timeout}s)"
+        else:
+            basis = f"caller(timeout={timeout:.1f}s)"
         logger.log_trace(
             f"[TRACE][async_system.wait_all] phase=ENTER timeout_s={timeout:.1f} "
             f"explicit={explicit} basis={basis} pending={self.pending_count()} "
@@ -500,6 +513,52 @@ class AsyncVerifySystem:
                 if t.state in (PENDING, SENT)
             ]
         return items[:10] if items else []
+
+    @staticmethod
+    def implicit_timeout(task_timeout, inflight):
+        """wait_all 的隐式超时公式(R-05):随在途任务数**线性增长**。
+
+        每条在途任务最坏占用一个 task_timeout(后台验证是一轮一条串行判定的),
+        再留一个 task_timeout 的收尾余量:
+
+            timeout = (max(1, in_flight) + 1) * task_timeout
+
+        实测见 tests/test_p0_1_async_no_duplicate.py::TestWaitAllTimeout。
+        显式传 timeout 的调用方(通知阶段)不受影响。
+        """
+        return float(task_timeout) * (max(1, int(inflight)) + 1)
+
+    def _inflight_count(self):
+        with self._tasks_lock:
+            return sum(1 for t in self._tasks.values() if t.state in (PENDING, SENT))
+
+    def reverify(self, task_ids):
+        """重试轮:把这批失败任务**重新交给验证线程**,但**绝不重新发送**(R-01)。
+
+        这是"同一玩家同一动作一轮内最多发送一次"的落点:重试轮不再 submit
+        (submit 会走 _send_one → send_fn → 真的再发一条升职/踢出命令),
+        而是把任务状态从 FAILED 改回 SENT,让验证线程按新到的日志再判一次。
+
+        返回实际重新排队的条数;0 表示这批任务已经不在系统里(被归档),调用方
+        应直接记为最终失败。
+        """
+        refreshed = 0
+        with self._tasks_lock:
+            for tid in task_ids:
+                t = self._tasks.get(tid)
+                if t is None or t.state != FAILED:
+                    continue
+                t.mark_retry_verify()
+                refreshed += 1
+        if refreshed:
+            with self._count_lock:
+                self._pending_count += refreshed
+            self._all_done.clear()
+            logger.log_info(
+                f"(异步系统)重试改为**只重新验证、不重发** {refreshed} 条(避免同一动作被重复执行)"
+            )
+            logger.log_trace(f"[TRACE][async_system.reverify] requeued={refreshed} resent=0")
+        return refreshed
 
     # ------------------------------------------------------------------
     # 后台:发送线程(只发不验)
@@ -772,13 +831,19 @@ class AsyncVerifySystem:
             )
 
 
-def run_async_round(system, commands, send_fn, max_retries=3):
+def run_async_round(system, commands, send_fn, max_retries=3, resend_on_retry=True):
     """异步模式的"一轮发送+验证+重试"闭环(对应规格 B→D→E→D→B)。
 
     规格语义:
       B: 主线程逐条发送(只发不验)→ 全部发送完毕后等待 → D
       D: 后台读日志并验证 → 成功的抛弃,失败的记录等待 → E
       E: 若有失败且需重试则重试(仅发一次,后台继续验证)→ 回到 B
+
+    resend_on_retry=False 时的重试语义(P0-1 验收):
+      **不重发**。失败任务由 system.reverify() 重新排进验证队列,按新到的日志
+      再判一次。这是"异步一轮(含失败重试)中,同一玩家同一动作最多发送一次"
+      的结构保证 —— 重试路径根本不经过 send_fn。
+      执行阶段(升/降/踢)必须用 False;查询阶段是只读命令,保持 True 以便真正重查。
 
     返回 (成功结果列表, 最终仍失败的任务列表)。
 
@@ -805,20 +870,32 @@ def run_async_round(system, commands, send_fn, max_retries=3):
     max_rounds = max(1, int(max_retries))
     logger.log_trace(
         f"[TRACE][async_system.run_async_round] phase=ENTER "
-        f"items={len(remaining)} max_rounds={max_rounds}"
+        f"items={len(remaining)} max_rounds={max_rounds} "
+        f"resend_on_retry={resend_on_retry}"
     )
     all_round_ids = set()  # 本次闭环提交过的全部 task_id(用于收尾时只统计本次的任务)
+    pending_retry_ids = []  # resend_on_retry=False 时,下一轮要重新验证的 task_id
 
     for round_no in range(1, max_rounds + 1):
-        if not remaining:
-            break
-        logger.log_info(
-            f"(异步系统)第 {round_no}/{max_rounds} 轮:投递 {len(remaining)} 条指令(只发不验)"
-        )
-        system.attach_sender(send_fn)
-        system.start()  # 幂等
-        # 本轮 task_id 集合:用于只统计本轮结果,避免多轮共用 system 时重复计数
-        round_ids = set(system.submit_many(remaining))
+        if resend_on_retry or round_no == 1:
+            if not remaining:
+                break
+            logger.log_info(
+                f"(异步系统)第 {round_no}/{max_rounds} 轮:投递 {len(remaining)} 条指令(只发不验)"
+            )
+            system.attach_sender(send_fn)
+            system.start()  # 幂等
+            # 本轮 task_id 集合:用于只统计本轮结果,避免多轮共用 system 时重复计数
+            round_ids = set(system.submit_many(remaining))
+        else:
+            # 不重发:reverify() 已把上一轮失败任务重新排进验证队列
+            if not pending_retry_ids:
+                break
+            logger.log_info(
+                f"(异步系统)第 {round_no}/{max_rounds} 轮:重新验证 "
+                f"{len(pending_retry_ids)} 条(不重发)"
+            )
+            round_ids = set(pending_retry_ids)
         all_round_ids |= round_ids
 
         # 主线程在"全部发送完毕后"才等待后台完成信号
@@ -840,17 +917,37 @@ def run_async_round(system, commands, send_fn, max_retries=3):
         # 还有轮次可重试 → 全部转入下一轮(本轮 FAILED 不算"最终失败",
         # 它只是"这条要重试"的信号);最后一轮才把未通过的计入 final_failed。
         if round_no < max_rounds:
-            # 重试必须携带原 meta:否则 verify_fn 在第二轮拿不到 action 等上下文
-            # (执行阶段就是靠 meta["action"] 定位该执行哪个动作)。
-            remaining = [
-                (
-                    (s["command"], s["player"], s["meta"])
-                    if s.get("meta")
-                    else (s["command"], s["player"])
+            if resend_on_retry:
+                # 重试必须携带原 meta:否则 verify_fn 在第二轮拿不到 action 等上下文
+                # (执行阶段就是靠 meta["action"] 定位该执行哪个动作)。
+                remaining = [
+                    (
+                        (s["command"], s["player"], s["meta"])
+                        if s.get("meta")
+                        else (s["command"], s["player"])
+                    )
+                    for s in failed
+                ]
+                logger.log_warning(f"(异步系统)第 {round_no} 轮有 {len(remaining)} 条失败需重试")
+            else:
+                # 不重发:只把失败任务重新排队验证。命令已经在游戏里发过一次了,
+                # 再发就是重复升职/重复踢人(P0-1 验收:一轮内最多发送一次)。
+                refused = [s["task_id"] for s in failed]
+                refreshed = system.reverify(refused)
+                remaining = []
+                if not refreshed:
+                    final_failed.extend(failed)
+                    pending_retry_ids = []
+                    logger.log_warning(
+                        f"(异步系统)第 {round_no} 轮 {len(failed)} 条失败无法重新验证"
+                        f"(任务已不在系统内),记最终失败"
+                    )
+                    break
+                pending_retry_ids = refused
+                logger.log_warning(
+                    f"(异步系统)第 {round_no} 轮有 {refreshed} 条失败 → "
+                    f"只重新验证、不重发(避免重复执行)"
                 )
-                for s in failed
-            ]
-            logger.log_warning(f"(异步系统)第 {round_no} 轮有 {len(remaining)} 条失败需重试")
         else:
             final_failed.extend(failed)
             remaining = []

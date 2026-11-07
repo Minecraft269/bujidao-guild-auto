@@ -71,7 +71,8 @@ def stage_query_async(rt, targets, cfg):
         _gate(rt, "查询发送", cmd)
         if sw.get("verbose_log", True):
             console(f"  → {cmd}")
-        sent = rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
+        # R-14:与串行路径同一条门禁(发送锁 + 暂停门 + 恢复重置)
+        sent = rt.executor.send_gated(cmd)
         rt.human.wait_between_commands()
         # 只有明确的 False 才算没发出去(成功路径返回 True/None):
         # 被暂停取消的查询命令不该被标记已发送、白烧一次重试
@@ -159,9 +160,17 @@ def stage_query_async(rt, targets, cfg):
 
     logger.log_info(f"(异步)阶段2 查询: {len(commands)} 条指令,主线程只发不验")
     logger.trace_queue("submit", name="async_verify", depth=len(commands), stage="query")
-    ok_snaps, failed_snaps = run_async_round(
-        system, commands, send_only, max_retries=int(cfg.get("timeouts", {}).get("max_retries", 3))
-    )
+    try:
+        ok_snaps, failed_snaps = run_async_round(
+            system,
+            commands,
+            send_only,
+            max_retries=int(cfg.get("timeouts", {}).get("max_retries", 3)),
+        )
+    finally:
+        # R-06:中断/异常时也必须 stop(),否则后台线程继续读日志/发送,
+        # 而调用方已收工(补做队列无人取、线程泄漏)。
+        system.stop()
     logger.trace_queue(
         "join",
         name="async_verify",
@@ -169,7 +178,6 @@ def stage_query_async(rt, targets, cfg):
         ok=len(ok_snaps),
         failed=len(failed_snaps),
     )
-    system.stop()
 
     records, failures = [], []
     for snap in ok_snaps:
@@ -243,9 +251,11 @@ def stage_confirm_execution(rt, records, cfg):
         )
         return execution_enabled, False
 
-    n_p = sum(1 for r in actionable if r["actions"][0] == "promote")
-    n_d = sum(1 for r in actionable if r["actions"][0] == "demote")
-    n_k = sum(1 for r in actionable if r["actions"][0] == "kick")
+    # 计数按"动作是否存在"而不是 actions[0]:含 kick 的混合列表([demote,kick])
+    # 也要被看见 —— 否则控制台会写"踢出 0 人"却真的踢人(R-03)。
+    n_p = sum(1 for r in actionable if "promote" in r["actions"])
+    n_d = sum(1 for r in actionable if "demote" in r["actions"])
+    n_k = sum(1 for r in actionable if "kick" in r["actions"])
     console(f"待执行操作: 升职 {n_p} 人, 降职 {n_d} 人, 踢出 {n_k} 人")
     logger.trace_code_location(
         "stages.stage_confirm_execution.gate1",
@@ -269,7 +279,10 @@ def stage_confirm_execution(rt, records, cfg):
         execution_enabled = False
 
     # ---- 门 2:kick 二次确认(踢出不可逆) ----
-    pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
+    # R-03:必须按"是否含 kick"筛,不能只看 actions[0]。[demote,kick] 这种混合
+    # 列表此前直接绕过二次确认把玩家踢了(规则引擎把一条规则的多个动作按序摊平,
+    # first_match 策略即可产生该列表)。
+    pending_kicks = [r for r in records if "kick" in (r.get("actions") or [])]
     skipped_kicks = False
     if execution_enabled and pending_kicks and cfg.get("kick_confirm", True):
         console(
@@ -302,10 +315,21 @@ def stage_confirm_execution(rt, records, cfg):
         if ans != expected:
             console("已跳过全部踢出(其他操作照常执行)")
             for r in pending_kicks:
-                r["executed"] = True  # 标记已处理,防止执行循环再次执行(不可逆操作)
-                r["error"] = "kick 已按确认要求跳过"
-                r["skipped_by_confirm"] = True  # 写待办时排除:不得下次补踢
-                r["new_rank"] = r["rank"]
+                # 只摘掉 kick,保留同一条记录里的升/降职 —— 整条标 executed
+                # 会把用户已经确认的升/降职也一并取消(混合动作列表, R-03)。
+                rest = [a for a in (r.get("actions") or []) if a != "kick"]
+                r["kick_skipped"] = True
+                r["actions"] = rest
+                if not rest:
+                    r["executed"] = True  # 无可执行动作,防止执行循环再处理
+                    r["error"] = "kick 已按确认要求跳过"
+                    r["skipped_by_confirm"] = True  # 写待办时排除:不得下次补踢
+                    r["new_rank"] = r["rank"]
+                else:
+                    logger.log_warning(
+                        f"踢出已跳过,保留其余动作 player={r['player']} actions={rest}"
+                        f"(未经二次确认的 kick 不会执行)"
+                    )
             skipped_kicks = True
 
     logger.trace_return(
@@ -385,22 +409,33 @@ def stage_notify(rt, records, cfg, debug_notify_skipped=False):
         # 异步通知:主线程只发,验证交给后台;但**必须在本阶段内收回结果** ——
         # 否则 notify_failures 恒为空,报告里的"通知 成功/失败"是假的,
         # 失败只能等到进程结束进待办(验收 14 要求等验证完成再进下一步)。
+        #
+        # R-02:用通知专用的后台系统(判定 /gc 的 [CHAT] 回显),
+        # 不再复用 rt.async_system —— 它的 verify_fn 用 wait_for_chat_block
+        # 等"公会面板块",而 /gc 回显只是普通聊天行,永远判失败 → 重复广播。
+        system = _new_notify_system(rt, cfg)
         pending = []  # [(task_id, label, 业务 key, 原文)]
-        if mode == "summary":
-            msg = build_summary_message(records, cfg)
-            _gate(rt, "通知发送", msg)
-            logger.log_info(f"/gc summary: {msg}")
-            pending.append((_notify_one_async(rt, msg, "summary", cfg), "summary", "summary", msg))
-        else:
-            for r in records:
-                msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
+        try:
+            if mode == "summary":
+                msg = build_summary_message(records, cfg)
                 _gate(rt, "通知发送", msg)
-                label = f"{r['player']}[周贡献 {r['weekly_total']}]"
+                logger.log_info(f"/gc summary: {msg}")
                 pending.append(
-                    (_notify_one_async(rt, msg, r["player"], cfg), label, r["player"], msg)
+                    (_notify_one_async(system, msg, "summary"), "summary", "summary", msg)
                 )
-                rt.human.wait_between_commands()
-        failures.extend(_collect_async_notifications(rt, pending, cfg))
+            else:
+                for r in records:
+                    msg = build_notification(r["player"], r["weekly_total"], r["actions"], cfg)
+                    _gate(rt, "通知发送", msg)
+                    label = f"{r['player']}[周贡献 {r['weekly_total']}]"
+                    pending.append(
+                        (_notify_one_async(system, msg, r["player"]), label, r["player"], msg)
+                    )
+                    rt.human.wait_between_commands()
+            failures.extend(_collect_async_notifications(system, pending, cfg))
+        finally:
+            # R-06:中断/异常时停掉后台线程,避免它继续广播
+            system.stop()
     elif mode == "summary":
         msg = build_summary_message(records, cfg)
         _gate(rt, "通知发送", msg)
@@ -440,26 +475,92 @@ def _notify_one_sync(rt, msg, cfg):
     return rt.executor.gc_broadcast_with_retry(msg, retries=retries, timeout=timeout)
 
 
-def _notify_one_async(rt, msg, player, cfg):
-    """异步模式:提交广播指令(主线程不读日志、不验证),返回 task_id。
+def _notify_one_async(system, msg, player):
+    """异步通知:提交广播指令(主线程不读日志、不验证),返回 task_id。
 
     结果由 `_collect_async_notifications` 在本阶段内收回 —— 只提交不回收,
     失败会静默漏到进程结束。
     """
-    return rt.async_verify_submit(f"/gc {msg}", player, msg=msg)
+    return system.submit(f"/gc {msg}", player, {"msg": msg})
 
 
-def _collect_async_notifications(rt, pending, cfg):
+def _broadcast_send_fn(rt):
+    """通知发送器:只发 /gc,不读日志。走 executor 的统一门禁(R-14)。"""
+
+    def send(cmd, player, meta):
+        msg = (meta or {}).get("msg")
+        if msg is None:  # meta 丢了正文就无法验证,不发(避免发出无法归因的广播)
+            return False
+        sent = rt.executor.gc_broadcast(msg)
+        rt.human.wait_between_commands()
+        return sent is not False
+
+    return send
+
+
+def _broadcast_verify(rt, timeout):
+    """按**串行口径**判定 /gc 回显(R-02):窗口内出现 [CHAT] 行且包含广播正文即成功。
+
+    串行路径(action_executor.gc_broadcast_with_retry)就是这么判的;
+    异步路径此前用 wait_for_chat_block 等公会面板块,普通聊天行永远拿不到块,
+    于是每次通知恒判失败并按 max_retries 重复广播。
+    """
+
+    def verify(cmd, player, meta):
+        msg = (meta or {}).get("msg") or cmd
+        lines = rt.watcher.read_until(timeout=timeout) or []
+        patterns = getattr(rt.executor, "error_patterns", None)
+        if isinstance(patterns, list) and patterns:
+            from guild_auto.domain.parsers import strip_chat_prefix
+
+            for line in lines:
+                if "[CHAT]" not in line:
+                    continue
+                content = strip_chat_prefix(line)
+                for pat in patterns:
+                    if pat and pat in content:
+                        return False, pat, None
+        from guild_auto.domain.parsers import strip_chat_prefix as _strip
+
+        for line in lines:
+            if "[CHAT]" in line and msg in _strip(line):
+                return True, None, None
+        return False, "广播未在日志中回显", None
+
+    return verify
+
+
+def _new_notify_system(rt, cfg):
+    """通知专用的后台验证系统(R-02)。测试可 monkeypatch 本函数注入假系统。
+
+    不复用 rt.async_system:它的 verify_fn 是 runtime._async_verify_fn(等面板块),
+    与 /gc 的回显形态不匹配。这里用与串行通知完全相同的判定口径。
+    """
+    from guild_auto.concurrency.async_system import AsyncVerifySystem
+
+    timeout = float(cfg.get("timeouts", {}).get("response_wait", 12.0))
+    system = AsyncVerifySystem(
+        verify_fn=_broadcast_verify(rt, timeout),
+        task_timeout=timeout + 5.0,
+        name="async-notify",
+    )
+    system.attach_sender(_broadcast_send_fn(rt))
+    system.start()
+    return system
+
+
+def _collect_async_notifications(system, pending, cfg):
     """等后台验证完,失败项按 max_retries 重发,再转成通知失败清单。
 
     为什么要重试:串行路径调 gc_broadcast_with_retry(retries=max_retries),
     异步路径若只提交一次,同一份配置下两种模式行为就不同(验收 1「双模式行为一致」
     要求只差发送节奏);一次失败直接记失败会让报告低估重试后的成功率。
+
+    system 由调用方传入(通知专用的局部系统,R-02);不再读 rt.async_system。
     """
     if not pending:
         logger.trace_return("stages._collect_async_notifications", "failures=0 reason=no_pending")
         return []
-    system = rt.async_system
     timeouts = cfg.get("timeouts", {})
     timeout = float(timeouts.get("response_wait", 12.0)) + 5.0
     max_retries = max(1, int(timeouts.get("max_retries", 3)))
@@ -540,7 +641,7 @@ def _collect_async_notifications(rt, pending, cfg):
         )
         time.sleep(retry_delay)
         alive = [
-            (_notify_one_async(rt, msg, key, cfg), label, key, msg) for label, key, msg in retry
+            (_notify_one_async(system, msg, key), label, key, msg) for label, key, msg in retry
         ]
 
     out = []
@@ -610,9 +711,11 @@ def stage_execute_async(rt, records, cfg):
             # 游戏里却真发了",下次启动会从待办再发一次 —— 踢人/升职被重复执行。
             logger.log_warning("异步执行发送已取消(本轮已收工),跳过发送:" + str(cmd))
             return False
-        sent = rt.human.send_chat_text(cmd, detector=rt.detector, stop_check=rt.is_paused)
+        # R-14:走 executor 的统一门禁(发送锁 + 暂停门 + 恢复重置),
+        # 与串行路径同一条;不再直接调 human.send_chat_text 绕过窗口/锁。
+        sent = executor.send_gated(cmd)
         rt.human.wait_between_commands()
-        # 只有明确的 False 才算"没发出去"(成功路径返回 None)
+        # 只有明确的 False 才算"没发出去"(成功路径返回 None/True)
         return sent is not False
 
     # ---- 验证器:后台线程调用,委托 executor 单条执行(含重试/回显判定) ----
@@ -657,7 +760,24 @@ def stage_execute_async(rt, records, cfg):
     console(f"[5/5] 执行操作(异步模式:主线程只发不验,{len(commands)} 条命令)...")
     logger.log_info(f"(异步)阶段5 执行: {len(commands)} 条命令(主线程只发不验)")
     logger.trace_queue("submit", name="async_verify", depth=len(commands), stage="execute")
-    ok_snaps, failed_snaps = run_async_round(system, commands, send_only, max_retries=retries)
+    # R-01:本轮所有任务共用一本回显账本(增量读取 + 按玩家名认领),
+    # 不再"每个任务各自读 4s 窗口"互相吞回显(后发任务的回显被前一条读走)。
+    executor.begin_verify_round(len(commands))
+    try:
+        ok_snaps, failed_snaps = run_async_round(
+            system,
+            commands,
+            send_only,
+            max_retries=retries,
+            # 验收:异步一轮(含失败重试)里同一玩家同一动作最多发一次。
+            # 因此重试只"重新验证",绝不重发(重发就是重复升职/重复踢人)。
+            resend_on_retry=False,
+        )
+    finally:
+        # R-06:中断/异常时也必须 stop() —— 否则后台 sender/verifier 线程继续发送,
+        # 而 records 的 executed/error 未回填,这些命令既不进报告也不进待办。
+        executor.end_verify_round()
+        system.stop()
     console("(异步)执行阶段验证完成,回填结果")
     logger.trace_queue(
         "join",
@@ -666,7 +786,6 @@ def stage_execute_async(rt, records, cfg):
         ok=len(ok_snaps),
         failed=len(failed_snaps),
     )
-    system.stop()
 
     # ---- 回填:按 meta.key 精确知道"第几条动作成功",不靠命令文本匹配 ----
     ok_keys = {(s.get("meta") or {}).get("key") for s in ok_snaps}
