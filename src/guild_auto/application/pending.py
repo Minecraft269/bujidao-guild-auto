@@ -280,7 +280,9 @@ def run_pending(
         sw = cfg.get("switches", {})
         skip_kick = False
         kick_items = [
-            it for it in items if "kick" in (it.get("actions") or []) and sw.get("kick_enabled", True)
+            it
+            for it in items
+            if "kick" in (it.get("actions") or []) and sw.get("kick_enabled", True)
         ]
         if kick_items and cfg.get("kick_confirm", True):
             expected = str(cfg.get("kick_confirm_text") or "").strip()

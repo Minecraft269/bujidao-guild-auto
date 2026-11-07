@@ -1375,9 +1375,7 @@ def main():
         # 进入通知/执行 —— 名单残缺会漏通知,甚至按残缺数据踢人。异步侧的门在
         # 查询分支内,这里补一道对称的(同一变量、同一默认:不确认继续就中止)。
         if not rt.async_enabled and not ui_mode and _query_fail:
-            _halt_before_exec = gate_on_failures(
-                rt, "串行查询失败", _query_fail, "串行查询有失败"
-            )
+            _halt_before_exec = gate_on_failures(rt, "串行查询失败", _query_fail, "串行查询有失败")
             _halt_reason = "串行查询有失败"
 
         # 6. 判定(继承规则)
@@ -1453,7 +1451,9 @@ def main():
             note=(
                 f"已中止({_halt_reason})"
                 if _halt_before_exec
-                else ("UI 模式跳过" if ui_mode else ("有失败,用户确认继续" if notify_failures else ""))
+                else (
+                    "UI 模式跳过" if ui_mode else ("有失败,用户确认继续" if notify_failures else "")
+                )
             ),
         )
 

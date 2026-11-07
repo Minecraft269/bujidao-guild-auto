@@ -167,7 +167,10 @@ class _MainCase(unittest.TestCase):
             ("wait_if_paused", NO_RET),
             ("reset_window_state_after_pause", NO_RET),
             ("query_guild_list", guild),
-            ("query_member", records[0] if query_member_ret is _UNSET and records else query_member_ret),
+            (
+                "query_member",
+                records[0] if query_member_ret is _UNSET and records else query_member_ret,
+            ),
             ("stage_query_async", (records, query_failures or [])),
             ("stage_notify", notify_failures or []),
             ("stage_confirm_execution", stage_conf),
