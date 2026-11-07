@@ -29,7 +29,7 @@ jobs:
     # 因此不阻塞合并，但必须留下可读报告。
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
