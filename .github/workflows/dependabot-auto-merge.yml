@@ -36,19 +36,29 @@ jobs:
         run: |
           set -euo pipefail
           # 坑①：不能用 `gh pr checks --watch` —— 本 job 自身的检查也在列表里，
-          # 会一直等自己 → 死锁。改为轮询 commits/{sha}/check-runs，
-          # 并在 jq 中排除名为 "Auto-merge" 的检查。
+          # 会一直等自己 → 死锁。改为轮询 commits/{sha}/check-runs。
+          #
+          # 坑③（2026-11-07 实测）：排除名必须写 **job id**。本 job 没有显式 name，
+          # check-run 名就是 `auto-merge`（小写连字符）；原来只排除 "Auto-merge"，
+          # 于是自己永远算作 pending=1 → 轮询满 80 轮超时 → 合并步骤整段不执行，
+          # 而脚本结尾 exit 0，运行显示 success，表现为"自动合并没生效"却无任何报错。
+          SELF_NAME=auto-merge
           for i in $(seq 1 80); do
             json=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100")
-            total=$(echo "$json" | jq '[.check_runs[] | select(.name != "Auto-merge")] | length')
-            pending=$(echo "$json" | jq '[.check_runs[] | select(.name != "Auto-merge") | select(.status != "completed")] | length')
-            failed=$(echo "$json" | jq '[.check_runs[] | select(.name != "Auto-merge") | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length')
+            total=$(echo "$json" | jq --arg me "$SELF_NAME" '[.check_runs[] | select(.name != $me and .name != "Auto-merge")] | length')
+            pending=$(echo "$json" | jq --arg me "$SELF_NAME" '[.check_runs[] | select(.name != $me and .name != "Auto-merge") | select(.status != "completed")] | length')
+            failed=$(echo "$json" | jq --arg me "$SELF_NAME" '[.check_runs[] | select(.name != $me and .name != "Auto-merge") | select(.status == "completed" and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length')
             echo "checks total=$total pending=$pending failed=$failed (round $i)"
             if [ "$failed" -gt 0 ]; then echo "has_failure=true" >> "$GITHUB_OUTPUT"; exit 0; fi
             if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then echo "all_green=true" >> "$GITHUB_OUTPUT"; exit 0; fi
             sleep 20
           done
+          # 超时前的最后一次判定：失败为 0 且剩余 pending 也为 0（已排除自身）时，
+          # 仍按全部通过处理，避免因某个长期 queued 的非阻塞检查而永远不合。
           echo "timeout=true" >> "$GITHUB_OUTPUT"
+          if [ "$failed" -eq 0 ] && [ "$pending" -eq 0 ]; then
+            echo "all_green=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 合并（不加 --delete-branch）
         if: steps.wait.outputs.all_green == 'true'
@@ -66,7 +76,9 @@ jobs:
           if [ $rc -ne 0 ]; then
             gh pr comment "$PR" --body "@dependabot rebase — 自动合并失败（可能与其他改动冲突），请 rebase 后重试。"
           fi
-          exit 0
+          # 失败必须暴露成红：以前这里固定 exit 0，合并失败也显示成功，
+          # 于是"自动合并没有生效"完全看不出来（2026-11-07 实测踩过）。
+          exit $rc
 
       - name: 有检查失败 — 留给人处理
         if: steps.wait.outputs.has_failure == 'true'
