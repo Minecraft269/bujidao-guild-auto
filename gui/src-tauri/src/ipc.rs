@@ -21,6 +21,90 @@ use crate::protocol::{build_request, classify_line, strip_id, Classified};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// ERROR_NO_DATA：PIPE_NOWAIT 下"暂时没有数据"的返回值（不是错误）。
+const ERROR_NO_DATA: i32 = 232;
+
+/// 把读句柄切到 PIPE_NOWAIT（轮询读）。
+///
+/// 为什么必须这么做（本轮根因）：Windows 上**同步句柄在同一文件对象上的 I/O 会被串行化**。
+/// 读线程一旦挂起阻塞的 ReadFile，同进程另一句柄的 WriteFile 就永远不返回 ——
+/// 实测表现为 `[ENTER] RPC method=config` 之后再无 `[EXIT]`、核侧也收不到这一帧，
+/// 而 hello 能成是因为它恰好抢在阻塞读之前写出。改成轮询后读不再长期占住对象。
+///
+/// 代价：轮询间隔 5ms（空闲时极低开销），换来写入不再被读阻塞。
+#[cfg(windows)]
+/// 管道里有没有待读数据（PeekNamedPipe：不阻塞、不占住文件对象）。
+#[cfg(windows)]
+fn pipe_has_data(file: &std::fs::File) -> Option<bool> {
+    use std::os::windows::io::AsRawHandle;
+
+    extern "system" {
+        fn PeekNamedPipe(
+            handle: *mut core::ffi::c_void,
+            buffer: *mut core::ffi::c_void,
+            buffer_size: u32,
+            bytes_read: *mut u32,
+            total_bytes_avail: *mut u32,
+            bytes_left: *mut u32,
+        ) -> i32;
+    }
+    let mut avail: u32 = 0;
+    let ok = unsafe {
+        PeekNamedPipe(
+            file.as_raw_handle().cast(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &mut avail,
+            std::ptr::null_mut(),
+        )
+    } != 0;
+    if ok {
+        Some(avail > 0)
+    } else {
+        None // 断开等：交给调用方按读取错误处理
+    }
+}
+
+fn set_pipe_nowait(file: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+
+    const PIPE_NOWAIT: u32 = 0x0000_0001;
+    extern "system" {
+        fn SetNamedPipeHandleState(
+            handle: *mut core::ffi::c_void,
+            mode: *mut u32,
+            max_collection_count: *mut u32,
+            collect_data_timeout: *mut u32,
+        ) -> i32;
+    }
+    let mut mode = PIPE_NOWAIT;
+    let ok = unsafe {
+        SetNamedPipeHandleState(
+            file.as_raw_handle().cast(),
+            &mut mode,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    } != 0;
+    if ok {
+        logger::info(
+            "ipc",
+            "[S6] 读句柄已设为 PIPE_NOWAIT（轮询读，不与写串行化）",
+        );
+    } else {
+        // 设置失败不能静默：退回阻塞读会让 RPC 再次卡死
+        logger::warn(
+            "ipc",
+            &format!(
+                "[S6] 设置 PIPE_NOWAIT 失败（os error {:?}），退回阻塞读：RPC 写入可能被读阻塞",
+                std::io::Error::last_os_error()
+            ),
+        );
+    }
+    ok
+}
+
 /// 核未就绪时不能一次失败就永久放弃：45 × 200ms ≈ 9s，与前端轮询上限对齐。
 const CONNECT_ATTEMPTS: u32 = 45;
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(200);
@@ -137,9 +221,21 @@ impl Ipc {
             .spawn(move || {
                 let mut lines_read: u64 = 0;
                 let mut events: u64 = 0;
+                // 读句柄切轮询：见 set_pipe_nowait() 的说明（本轮 RPC 卡死的根因）
+                set_pipe_nowait(&file);
+                // NOWAIT 设置可能被系统拒绝（实测 os error 231），所以再用 Peek 兜底：
+                // 只有确认有数据才 ReadFile，保证读不会长期占住文件对象、把写卡死。
+                let peek_handle = file.try_clone().ok();
                 let mut reader = BufReader::new(file);
                 let mut line = String::new();
                 loop {
+                    // 有数据才读：避免阻塞读长期占住文件对象（写会被它卡住）
+                    if let Some(h) = &peek_handle {
+                        if pipe_has_data(h) == Some(false) {
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+                    }
                     match reader.read_line(&mut line) {
                         Ok(0) => {
                             logger::warn(
@@ -151,6 +247,11 @@ impl Ipc {
                             break;
                         }
                         Ok(_) => {}
+                        // PIPE_NOWAIT 下"暂无数据"不是错误；已读到的半行留在 line 里
+                        Err(e) if e.raw_os_error() == Some(ERROR_NO_DATA) => {
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
                         Err(e) => {
                             logger::warn(
                                 "ipc",
@@ -257,10 +358,13 @@ impl Ipc {
             .insert(id, tx);
         let line = build_request(id, method, params, &self.token);
         {
+            // 写入段留痕：实测「RPC 只有 ENTER、核侧收不到」时，卡点就在这几十行里。
+            logger::trace("ipc", &format!("等待写锁 id={id} 待写字节={}", line.len()));
             let mut guard = self.out.lock().map_err(|_| {
                 logger::error("ipc", &format!("RPC method={method} id={id} 管道锁中毒"));
                 "管道锁中毒".to_string()
             })?;
+            logger::trace("ipc", &format!("已获写锁 id={id}"));
             let writer = guard.as_mut().ok_or_else(|| {
                 logger::warn(
                     "ipc",
@@ -278,6 +382,7 @@ impl Ipc {
                 }
                 return Err(format!("写管道失败: {e}"));
             }
+            logger::trace("ipc", &format!("写入完成 id={id} 字节={}", line.len() + 1));
         }
         match rx.recv_timeout(timeout) {
             Ok(text) => {

@@ -540,7 +540,9 @@ function markDirty(path, value) {
 }
 
 async function saveConfig() {
-  if (pendingEdits.size === 0) return;
+  // 首启时即便一项都没改也必须落盘：否则「请先保存配置」的锁永远解不开，
+  // 点保存也毫无反应（实机反馈：点了「保存」啥事没发生）。
+  if (pendingEdits.size === 0 && !S.firstRun) return;
   const r = await rpc("save_config", { values: Object.fromEntries(pendingEdits) });
   if (r.ok) {
     pendingEdits.clear();
@@ -553,9 +555,14 @@ async function saveConfig() {
     if (S.firstRun) {
       S.firstRun = false;
       unlockTabs();
+      // 核侧 _save_config 保存后立刻 load_config() 回填内存配置 = 热重载；
+      // 只有 RESTART_REQUIRED_PATHS（log.dir / ui.enabled）才需要重启。
+      const body_text = restart.length
+        ? `配置已保存并热重载。其中 ${restart.length} 项需重启才生效：${restart.join("、")}`
+        : "配置已保存并已热重载生效，可以直接点「开始」运行。";
       await openModal({
         title: "配置已保存",
-        body: "配置已保存，请重新启动脚本以使其生效。",
+        body: body_text,
         actions: [{ label: "知道了", value: true, primary: true }],
       });
     }
