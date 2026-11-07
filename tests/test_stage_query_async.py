@@ -114,13 +114,22 @@ def _make_rt(cfg, watcher, send_log=None):
     """构造带假依赖的 Runtime(零真实硬件)。"""
     human = MagicMock()
     human.chat_key = "t"
+    executor = MagicMock()
+    # P0-1 / R-14:异步发送改走 executor.send_gated(与串行同一条门禁),
+    # 所以发送记录要挂在 executor 上;human.send_chat_text 是门禁内部的真实落点。
     if send_log is not None:
+
+        def _gated(cmd):
+            send_log.append(cmd)
+            return True
+
+        executor.send_gated.side_effect = _gated
         human.send_chat_text.side_effect = lambda cmd, **kw: send_log.append(cmd)
     return Runtime(
         cfg=cfg,
         watcher=watcher,
         human=human,
-        executor=MagicMock(),
+        executor=executor,
         detector=None,
         hwnd=None,
         ask_confirm=lambda p, d=False: True,

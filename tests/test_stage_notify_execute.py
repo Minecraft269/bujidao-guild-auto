@@ -35,6 +35,8 @@ class _FakeRT:
         self.async_enabled = async_enabled
         self.human = mock.Mock()
         self.executor = mock.Mock()
+        # P0-1 / R-14:异步发送改走 executor.send_gated(与串行同一条门禁)
+        self.executor.send_gated.return_value = True
         self.detector = None
         self.hwnd = 123
         self.pause_gate_calls = 0
@@ -42,11 +44,16 @@ class _FakeRT:
         # 异步通知会在本阶段内 wait_all + get_failed 收回结果:
         # 默认返回"全部成功",个别用例可改写 return_value 模拟失败。
         self.async_system = mock.Mock()
+        self.async_system.submit.side_effect = self._record_submit
         self.async_system.get_failed.return_value = []
         # 默认"全部成功":成功集要覆盖传入的 task_id,否则会被判成"在途/超时"
         self.async_system.get_completed.side_effect = lambda ids: [
             {"task_id": i, "state": "ok"} for i in ids
         ]
+
+    def _record_submit(self, command, player, meta=None):
+        self.submitted.append((command, player, dict(meta or {})))
+        return f"task-{player}"
 
     def pause_gate(self):
         self.pause_gate_calls += 1
@@ -57,12 +64,17 @@ class _FakeRT:
     def reset_window_state_after_pause(self, hwnd=None, detector=None):
         return False
 
-    def async_verify_submit(self, command, player, meta=None, **kw):
-        # stage_notify 用 msg=... 关键字传文案，这里必须接受额外关键字
-        m = dict(meta or {})
-        m.update(kw)
-        self.submitted.append((command, player, m))
-        return f"task-{player}"
+
+def _patch_notify_system(testcase):
+    """把"通知专用后台系统"(R-02)换成该用例 rt 自己的 async_system Mock。
+
+    stage_notify 现在不再复用 rt.async_system(它的 verify_fn 等公会面板块,
+    而 /gc 回显只是普通聊天行),而是建一个局部系统;测试仍用同一套 Mock
+    断言提交次数与结果收回。
+    """
+    p = mock.patch.object(stages_mod, "_new_notify_system", lambda rt, _cfg: rt.async_system)
+    p.start()
+    testcase.addCleanup(p.stop)
 
 
 def _record(player="甲", actions=None, weekly=100, rank="entry"):
@@ -80,6 +92,7 @@ def _record(player="甲", actions=None, weekly=100, rank="entry"):
 class TestStageNotify(unittest.TestCase):
     def setUp(self):
         self.cfg = _cfg()
+        _patch_notify_system(self)
 
     def test_no_records_sends_nothing(self):
         rt = _FakeRT()
@@ -226,14 +239,16 @@ class TestStageExecuteAsync(unittest.TestCase):
         stages_mod.stage_execute_async(rt, [rec], cfg)
         self.assertEqual(rec["actions"], ["demote"], "只应保留开关开启的动作")
 
-    def test_sender_uses_human_not_executor_in_main_thread(self):
-        """主线程只发:发送走 human.send_chat_text;验证者只读日志,不再调 execute_action。"""
+    def test_sender_uses_gate_but_never_execute_action(self):
+        """主线程只发:发送走 executor.send_gated(与串行同一条门禁);
+        验证者只读日志,绝不调 execute_action(那会再发一遍)。"""
         rt = _FakeRT(async_enabled=True)
         rt.executor.verify_action.return_value = (True, None)
         rec = _record("甲", ["promote"])
         stages_mod.stage_execute_async(rt, [rec], self.cfg)
-        rt.human.send_chat_text.assert_called()
+        rt.executor.send_gated.assert_called()
         rt.human.wait_between_commands.assert_called()
+        rt.executor.execute_action.assert_not_called()
 
     def test_each_command_is_sent_exactly_once(self):
         """异步模式每条命令只发一次:验证者不得重复发送。
@@ -246,7 +261,7 @@ class TestStageExecuteAsync(unittest.TestCase):
         rt.executor.verify_action.return_value = (True, None)
         rec = _record("甲", ["promote", "promote"])
         stages_mod.stage_execute_async(rt, [rec], self.cfg)
-        self.assertEqual(rt.human.send_chat_text.call_count, 2, "两条动作应各发送一次,不能翻倍")
+        self.assertEqual(rt.executor.send_gated.call_count, 2, "两条动作应各发送一次,不能翻倍")
         self.assertEqual(rt.executor.verify_action.call_count, 2)
         rt.executor.execute_action.assert_not_called()
 
@@ -258,6 +273,7 @@ class TestAsyncPauseGateAndNotifyRetry(unittest.TestCase):
         self.cfg = _cfg()
         self.cfg["timeouts"]["error_check_window"] = 0.1
         self.cfg["timeouts"]["retry_delay"] = 0.0
+        _patch_notify_system(self)
 
     def test_async_execute_sender_passes_pause_gate(self):
         """发送器必须过暂停门:缺门时暂停中发送会返回 False,任务却已 mark_sent,
