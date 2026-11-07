@@ -88,7 +88,7 @@ def stage_query_async(rt, targets, cfg):
         logger.log_debug(f"验证 ENTER player={player} 超时={timeout:.1f}s")
         logger.trace_call(
             "stages.stage_query_async.verify",
-            args=("player={logger.player_tag(player)}",),
+            args=(f"player={logger.player_tag(player)}",),
             kwargs={"timeout_s": timeout},
         )
         verify_started = time.monotonic()

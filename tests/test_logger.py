@@ -12,6 +12,7 @@ test_logger.py —— 分级日志系统单元测试
 
 import gzip
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -133,7 +134,7 @@ class TestTraceFunctions(unittest.TestCase):
 
     def test_trace_code_location(self):
         logger.trace_code_location("main.execute_phase.player", "player=P1")
-        self.assertIn("TRACE_LOCATION main.execute_phase.player | player=P1", self._read())
+        self.assertIn("TRACE_LOCATION main.execute_phase.player | player=<snip>", self._read())
 
     def test_trace_silent_below_level6(self):
         d2 = tempfile.mkdtemp()
@@ -195,6 +196,66 @@ class TestArchive(unittest.TestCase):
         self.assertIn("脚本意外关闭", c)
         self.assertIn("RuntimeError", c)
         self.assertIn("崩溃原因XYZ", c)
+
+
+class TestTraceRedaction(unittest.TestCase):
+    """R-16/R-19:TRACE 落盘前必须脱敏(玩家名、命令原文、绝对路径)。
+
+    验收口径:日志与事件流中玩家名按既有脱敏规则(<snip>)处理;
+    但 player_tag 的稳定短标识 p-xxxxxx 要保留 —— 并发查询靠它归因。
+    """
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="logredact_")
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+        logger._initialized = False
+        logger.init_logger(log_dir=self.d, level=6, enabled=True)
+
+    def _read(self):
+        with open(os.path.join(self.d, "latest.log"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_player_field_redacted(self):
+        logger.log_trace(
+            "TRACE_VERIFY send | task_id=7 player='合成玩家甲' cmd='/guild kick 合成玩家甲 原因'"
+        )
+        c = self._read()
+        self.assertNotIn("合成玩家甲", c, f"真实玩家名落盘了: {c}")
+        self.assertIn("player=<snip>", c)
+        self.assertIn("cmd=<redacted>", c)
+
+    def test_plain_player_field_redacted(self):
+        self.assertEqual(
+            logger.sanitize_text("player=合成玩家乙 attempts=2"), "player=<snip> attempts=2"
+        )
+
+    def test_player_tag_preserved(self):
+        tag = logger.player_tag("合成玩家甲")
+        self.assertEqual(logger.sanitize_text(f"player={tag}"), f"player={tag}")
+
+    def test_non_player_fields_untouched(self):
+        # \b 边界:multiplayer / min_player 不是玩家字段
+        self.assertEqual(
+            logger.sanitize_text("multiplayer=on min_player=3"), "multiplayer=on min_player=3"
+        )
+
+    def test_windows_abs_path_redacted(self):
+        logger.trace_file_write(r"D:\Test\Dev\secret\reports\r.md", size=88)
+        c = self._read()
+        self.assertNotIn("secret", c)
+        self.assertIn("TRACE_FILE_WRITE <path>", c)
+
+    def test_long_trace_line_truncated(self):
+        logger.log_trace("TRACE_LOCATION x | detail=" + "y" * 600)
+        line = [ln for ln in self._read().splitlines() if "TRACE_LOCATION x" in ln][-1]
+        self.assertIn("...(+", line)
+        self.assertLess(len(line), 500)
+
+    def test_below_trace_level_writes_nothing(self):
+        logger._initialized = False
+        logger.init_logger(log_dir=self.d, level=4, enabled=True)
+        logger.log_trace("TRACE_VERIFY begin | player='合成玩家丙'")
+        self.assertNotIn("合成玩家丙", self._read())
 
 
 if __name__ == "__main__":

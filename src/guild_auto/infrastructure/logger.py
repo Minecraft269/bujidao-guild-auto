@@ -65,6 +65,8 @@ VERIFY_STAGES = ("submit", "send", "read_log", "judge", "retry", "done")
 
 # trace 快照截断长度:防止单个返回值/参数把日志撑爆
 _SNAP_MAX = 200
+# TRACE 行落盘前的单行上限(规范:TRACE 行要求单行 400 字符内)
+_TRACE_LINE_MAX = 400
 
 _logger = None  # 实际 logging.Logger
 _log_dir = "logs"  # 日志目录(相对脚本运行目录)
@@ -124,6 +126,29 @@ _ABS_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/][^\s'\"，。；|]*)|(?:\\\\[^\s'\"
 _CHAT_NAME_RE = re.compile(r"(\[CHAT\]\s*)([^\n\[\]:：]{1,32})([:：])")
 _KICK_NAME_RE = re.compile(r"([^\s，。！:：\[\]]{1,32})被([^\s，。！:：]{0,6}踢出)")
 _BULLET_NAME_RE = re.compile(r"●\s*([^\s●]{1,32})")
+# `player=张三` / `player='张三'` / `player_name=...` → 打码（R-16/R-19）。
+# \b 保证不误伤 multiplayer= / min_player= 这类非玩家字段。
+_PLAYER_FIELD_RE = re.compile(
+    r"(?i)\b(player|player_name|玩家)=(?:\"[^\"]*\"|'[^']*'|[^\s,;|)'\"]+)"
+)
+# 已是稳定短标识（player_tag 的 p-xxxxxx）或已打码的保持原样：
+# 并发查询要靠它把一条验证链归因到人，全抹平就失去可观测性。
+_PLAYER_TAG_KEEP_RE = re.compile(
+    r"(?i)^(?:player|player_name|玩家)=(?:p-[0-9a-f]{6}|<snip>|<none>)$"
+)
+# 命令文本里必然含玩家名（`/guild kick 张三 理由`）→ 整段打码：
+# 逐字剥离名字的规则会随命令格式漂移，整字段打码才是稳定契约。
+_CMD_FIELD_RE = re.compile(r"(?i)\b(cmd|command)=(?:\"[^\"]*\"|'[^']*'|[^\s,;|)'\"]+)")
+
+
+def _redact_player_field(m):
+    if _PLAYER_TAG_KEEP_RE.match(m.group(0)):
+        return m.group(0)
+    return f"{m.group(1)}=<snip>"
+
+
+def _redact_cmd_field(m):
+    return f"{m.group(1)}=<redacted>"
 
 
 def player_tag(name) -> str:
@@ -144,7 +169,8 @@ def player_tag(name) -> str:
 def sanitize_text(text, max_len=None):
     """诊断日志脱敏 + 可选截断。
 
-    玩家名 → <snip>;Windows 绝对路径 → <path>;token/群号 → <redacted>。
+    玩家名 → <snip>;字段 player=/cmd= → <snip>/<redacted>;
+    Windows 绝对路径 → <path>;token/群号 → <redacted>。
     max_len: 截断上限(TRACE 行要求单行 400 字符内);None 表示不截断。
     """
     s = "" if text is None else str(text)
@@ -154,6 +180,10 @@ def sanitize_text(text, max_len=None):
     s = _CHAT_NAME_RE.sub(r"\1<snip>\3", s)
     s = _KICK_NAME_RE.sub(lambda m: f"<snip>被{m.group(2)}", s)
     s = _BULLET_NAME_RE.sub("●<snip>", s)
+    # 结构化字段最后处理:前面的规则不会碰到 `player=张三` 这种形态,
+    # 而打了码的值(<snip>/<path>)不会再被这两条二次改写(幂等)。
+    s = _PLAYER_FIELD_RE.sub(_redact_player_field, s)
+    s = _CMD_FIELD_RE.sub(_redact_cmd_field, s)
     if max_len is not None and len(s) > max_len:
         s = s[:max_len] + f"...(+{len(s) - max_len}字符)"
     return s
@@ -408,7 +438,10 @@ def log_trace(msg):
     # 但把「是否该记」隐式交给阈值会让单测与实际行为脱节。
     if _current_level < 6 or not _enabled:
         return
-    _log(TRACE_LEVEL, msg)
+    # R-16/R-19:TRACE 是唯一会把原始上下文整行落盘的级别(玩家真名、命令原文、
+    # 绝对路径)。在**唯一出口**脱敏 —— 160+ 个调用点不必各自记得脱敏,
+    # 新增埋点自动继承规则。
+    _log(TRACE_LEVEL, sanitize_text(msg, _TRACE_LINE_MAX))
 
 
 def log_exception(msg, exc=None):

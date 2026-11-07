@@ -25,9 +25,15 @@ export class Ring {
     return this.items.length;
   }
 
-  /** 按 level 过滤后的副本（§6.3：默认只看 4 级以上）。 */
-  visible(minLevel) {
-    return this.items.filter((e) => (e.level ?? 4) >= minLevel);
+  /**
+   * 按 level 过滤后的副本（§6.3；分级语义见规范第一节）。
+   *
+   * 规范：数字越大越详细，**每级包含上一级全部内容** —— level=4 看得到 1~4，
+   * 看不到 5~6。所以方向是「e.level <= level」；写成 >= 会把最该看的
+   * 致命/错误行过滤掉、只留最啰嗦的调试行，语义正好反了。
+   */
+  visible(level = 4) {
+    return this.items.filter((e) => (e.level ?? 4) <= level);
   }
 
   clear() {

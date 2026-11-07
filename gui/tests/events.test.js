@@ -29,10 +29,13 @@ describe("Ring（§6.2 环形缓冲 2000）", () => {
 
   it("visible 按 level 过滤且不改动原缓冲", () => {
     const ring = new Ring(10);
-    ring.push({ level: 2, text: "trace" });
-    ring.push({ level: 5, text: "warn" });
-    expect(ring.visible(4).map((e) => e.text)).toEqual(["warn"]);
-    expect(ring.size).toBe(2);
+    ring.push({ level: 2, text: "error" });
+    ring.push({ level: 4, text: "info" });
+    ring.push({ level: 5, text: "debug" });
+    // 规范第一节：数字越大越详细，每级包含上一级 —— level=4 看得到 1~4、看不到 5~6
+    expect(ring.visible(4).map((e) => e.text)).toEqual(["error", "info"]);
+    expect(ring.visible(6).map((e) => e.text)).toEqual(["error", "info", "debug"]);
+    expect(ring.size).toBe(3);
   });
 
   it("缺 level 的事件按 4（信息）处理", () => {
