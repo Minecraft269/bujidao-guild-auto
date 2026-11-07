@@ -45,7 +45,7 @@ jobs:
         run: npx vitest run --coverage
 
       - name: Set up Python（快照比对需要 Pillow）
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
