@@ -207,7 +207,7 @@ def rule_matches(rule, member):
     在 kick 规则上等于全员被踢（不可逆）。内置规则走 _eval_builtin，不经此函数。
     """
     logger.log_trace(
-        f"[TRACE][rules.rule_matches] event=ENTER rule_id={rule.get('id')} player=<snip> "
+        f"[TRACE][rules.rule_matches] event=ENTER rule_id={rule.get('id')} player={logger.player_tag(member.get('player'))} "
         f"conditions={len(rule.get('conditions')) if isinstance(rule.get('conditions'), list) else 0}"
     )
     rid = rule.get("id")
@@ -316,7 +316,7 @@ def evaluate_rules(rules, member, strategy="first_match"):
       traces         [{rule_id, matched, trigger, conditions:[...]}]
     """
     logger.log_trace(
-        f"[TRACE][rules.evaluate_rules] event=ENTER player=<snip> "
+        f"[TRACE][rules.evaluate_rules] event=ENTER player={logger.player_tag(member.get('player'))} "
         f"rank={member.get('rank') if isinstance(member, dict) else None} "
         f"weekly_total={member.get('weekly_total') if isinstance(member, dict) else None} "
         f"rules_total={len(rules) if rules is not None else 0} strategy={strategy}"

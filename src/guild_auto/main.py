@@ -429,7 +429,7 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
     """
     cmds = cfg["commands"]
     logger.log_trace(
-        f"[TRACE][main.query_member] phase=ENTER player=<snip> "
+        f"[TRACE][main.query_member] phase=ENTER player={logger.player_tag(pid)} "
         f"retries={int(cfg['timeouts'].get('max_retries', 3))} "
         f"timeout={float(cfg['timeouts'].get('response_wait', 12.0)):.1f}s"
     )
@@ -439,7 +439,7 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
     if parsers.is_masked_name(pid) and _policy != "query_attempt":
         logger.log_error(f"查询跳过(玩家名被网易屏蔽词替换为星号,身份不可读): {pid}")
         logger.log_trace(
-            f"[TRACE][main.query_member] phase=EXIT ok=False player=<snip> "
+            f"[TRACE][main.query_member] phase=EXIT ok=False player={logger.player_tag(pid)} "
             f"rule=blocked_name_policy policy={_policy} conclusion=skip"
         )
         return None
@@ -488,7 +488,7 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
                 f"daily={len(info.get('daily') or [])} 条"
             )
             logger.log_trace(
-                f"[TRACE][main.query_member] phase=EXIT ok=True player=<snip> "
+                f"[TRACE][main.query_member] phase=EXIT ok=True player={logger.player_tag(pid)} "
                 f"attempt={attempt}/{retries} "
                 f"daily={len(info.get('daily') or [])} lines={len(block)}"
             )
@@ -496,12 +496,12 @@ def query_member(cfg, watcher, human, hwnd, pid, detector=None, stop_check=None)
         except ParseError as e:
             console(f"    [{pid}] 第{attempt}次解析失败: {e}")
             logger.log_trace(
-                f"[TRACE][main.query_member] phase=DECIDE rule=parse hit=False player=<snip> "
+                f"[TRACE][main.query_member] phase=DECIDE rule=parse hit=False player={logger.player_tag(pid)} "
                 f"attempt={attempt}/{retries} err_len={len(str(e))} conclusion=retry"
             )
             attempt += 1
     logger.log_trace(
-        f"[TRACE][main.query_member] phase=EXIT ok=False player=<snip> "
+        f"[TRACE][main.query_member] phase=EXIT ok=False player={logger.player_tag(pid)} "
         f"reason=retries_exhausted attempts={attempt - 1}"
     )
     return None

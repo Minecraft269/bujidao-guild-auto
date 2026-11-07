@@ -486,7 +486,7 @@ class Runtime:
         logger.log_debug(f"异步验证 ENTER command={command} 超时={timeout:.1f}s")
         logger.trace_call(
             "runtime._async_verify_fn",
-            args=("player=<snip>",),
+            args=("player={logger.player_tag(player)}",),
             kwargs={
                 "timeout_s": timeout,
                 "kind": "broadcast" if str(meta.get("msg", "")).startswith("/gc ") else "query",

@@ -273,7 +273,9 @@ def build_command(cfg, action, player):
     """
     cmds = cfg.get("commands", {})
 
-    logger.log_trace(f"[TRACE][decisions.build_command] event=ENTER action={action} player=<snip>")
+    logger.log_trace(
+        f"[TRACE][decisions.build_command] event=ENTER action={action} player={logger.player_tag(player)}"
+    )
 
     def _cmd(key):
         try:
@@ -284,19 +286,19 @@ def build_command(cfg, action, player):
     if action == "promote":
         logger.log_trace(
             f"[TRACE][decisions.build_command] event=EXIT action=promote "
-            f"template=commands.guild_promote player=<snip>"
+            f"template=commands.guild_promote player={logger.player_tag(player)}"
         )
         return _cmd("guild_promote").format(player=player)
     if action == "demote":
         logger.log_trace(
             f"[TRACE][decisions.build_command] event=EXIT action=demote "
-            f"template=commands.guild_demote player=<snip>"
+            f"template=commands.guild_demote player={logger.player_tag(player)}"
         )
         return _cmd("guild_demote").format(player=player)
     if action == "kick":
         logger.log_trace(
             f"[TRACE][decisions.build_command] event=EXIT action=kick "
-            f"template=commands.guild_kick player=<snip>"
+            f"template=commands.guild_kick player={logger.player_tag(player)}"
         )
         return _cmd("guild_kick").format(player=player, reason=_cmd("kick_reason"))
     logger.log_trace(
@@ -416,7 +418,7 @@ def decide_for_player(
       * 其余 → 交给 decide_actions 走原阈值矩阵(业务规则零改动)
     """
     logger.log_trace(
-        f"[TRACE][decisions.decide_for_player] event=ENTER player=<snip> rank={rank} "
+        f"[TRACE][decisions.decide_for_player] event=ENTER player={logger.player_tag(player)} rank={rank} "
         f"weekly={weekly} rules_enabled={bool(cfg.get('rules_enabled'))} "
         f"has_joined_at={member_joined_at is not None} "
         f"has_last_online={member_last_online is not None}"
@@ -429,7 +431,7 @@ def decide_for_player(
         )
         logger.log_trace(
             f"[TRACE][decisions.decide_for_player] event=EXIT path=name_list "
-            f"player=<snip> block_reason={blocked} actions=0 trigger={blocked}"
+            f"player={logger.player_tag(player)} block_reason={blocked} actions=0 trigger={blocked}"
         )
         return [], blocked
 
@@ -470,7 +472,7 @@ def decide_for_player(
                 )
                 logger.log_trace(
                     f"[TRACE][decisions.decide_for_player] event=EXIT path=rules_engine "
-                    f"player=<snip> protected=keep actions={len(kept)} trigger={_snip(trigger)}"
+                    f"player={logger.player_tag(player)} protected=keep actions={len(kept)} trigger={_snip(trigger)}"
                 )
                 return kept, trigger
             logger.log_warning(
@@ -480,7 +482,7 @@ def decide_for_player(
             )
             logger.log_trace(
                 f"[TRACE][decisions.decide_for_player] event=EXIT path=rules_engine "
-                f"player=<snip> protected=drop_all actions=0 trigger=whitelist_protected"
+                f"player={logger.player_tag(player)} protected=drop_all actions=0 trigger=whitelist_protected"
             )
             return [], "whitelist_protected"
         logger.log_debug(
@@ -490,7 +492,7 @@ def decide_for_player(
         )
         logger.log_trace(
             f"[TRACE][decisions.decide_for_player] event=EXIT path=rules_engine "
-            f"player=<snip> protected=none actions={len(actions)} "
+            f"player={logger.player_tag(player)} protected=none actions={len(actions)} "
             f"hits_total={len(hits)} trigger={_snip(trigger)}"
         )
         return actions, trigger
@@ -507,7 +509,7 @@ def decide_for_player(
             )
             logger.log_trace(
                 f"[TRACE][decisions.decide_for_player] event=EXIT path=threshold "
-                f"player=<snip> protected=keep actions={len(kept)} trigger={_snip(trigger)}"
+                f"player={logger.player_tag(player)} protected=keep actions={len(kept)} trigger={_snip(trigger)}"
             )
             return kept, trigger
         logger.log_warning(
@@ -517,7 +519,7 @@ def decide_for_player(
         )
         logger.log_trace(
             f"[TRACE][decisions.decide_for_player] event=EXIT path=threshold "
-            f"player=<snip> protected=drop_all actions=0 trigger=whitelist_protected"
+            f"player={logger.player_tag(player)} protected=drop_all actions=0 trigger=whitelist_protected"
         )
         return [], "whitelist_protected"
     logger.log_debug(
@@ -526,6 +528,6 @@ def decide_for_player(
     )
     logger.log_trace(
         f"[TRACE][decisions.decide_for_player] event=EXIT path=threshold "
-        f"player=<snip> protected=none actions={len(actions)} trigger={_snip(trigger)}"
+        f"player={logger.player_tag(player)} protected=none actions={len(actions)} trigger={_snip(trigger)}"
     )
     return actions, trigger

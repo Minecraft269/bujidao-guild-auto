@@ -506,7 +506,7 @@ def parse_guild_member(block_lines, expected_id=None):
         f"daily_rows={len(daily)} joined_at={_snip(joined_at)} last_online={_snip(last_online)}"
     )
     logger.log_trace(
-        f"[TRACE][parsers.parse_guild_member] event=EXIT player=<snip> "
+        f"[TRACE][parsers.parse_guild_member] event=EXIT player={logger.player_tag(player)} "
         f"weekly_total={weekly_total} daily_rows={len(daily)} "
         f"has_joined_at={joined_at is not None} has_last_online={last_online is not None} "
         f"block_lines={len(rows)}"

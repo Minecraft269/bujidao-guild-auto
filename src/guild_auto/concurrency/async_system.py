@@ -297,7 +297,7 @@ class AsyncVerifySystem:
     def submit(self, command, player, meta=None):
         """主线程投递一条指令。**立即返回,不等验证**(异步模式核心)。返回 task_id。"""
         logger.log_trace(
-            f"[TRACE][async_system.submit] phase=ENTER player=<snip> "
+            f"[TRACE][async_system.submit] phase=ENTER player={logger.player_tag(player)} "
             f"cmd_len={len(str(command))} meta_keys={sorted(meta) if meta else []} "
             f"depth={self._send_q.qsize()} pending={self.pending_count()}"
         )
@@ -549,7 +549,7 @@ class AsyncVerifySystem:
         send_fn = self._send_fn
         logger.log_trace(
             f"[TRACE][async_system._send_one] phase=ENTER task_id={task.task_id} "
-            f"player=<snip> cmd_len={len(str(task.command))} "
+            f"player={logger.player_tag(task.player)} cmd_len={len(str(task.command))} "
             f"attempt_next={task.attempts_count + 1} has_send_fn={send_fn is not None}"
         )
         if send_fn is None:
@@ -717,7 +717,7 @@ class AsyncVerifySystem:
                     self._dec_pending()
                     logger.log_trace(
                         f"[TRACE][async_system._verifier_loop] judge task_id={task.task_id} "
-                        f"player=<snip> state={task.state} "
+                        f"player={logger.player_tag(task.player)} state={task.state} "
                         f"attempts={task.attempts_count} "
                         f"elapsed_ms={(time.monotonic() - started) * 1000.0:.0f}"
                     )

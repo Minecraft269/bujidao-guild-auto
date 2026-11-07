@@ -139,7 +139,7 @@ class AsyncCommandExecutor:
 
                 task_desc = f"{player}/{str(cmd)[:60]}"
                 logger.log_trace(
-                    f"[TRACE][async_executor._worker] task_got player=<snip> "
+                    f"[TRACE][async_executor._worker] task_got player={logger.player_tag(player)} "
                     f"cmd_len={len(str(cmd))} depth_after={self._queue.qsize()} "
                     f"unfinished={getattr(self._queue, 'unfinished_tasks', -1)}"
                 )
@@ -149,7 +149,7 @@ class AsyncCommandExecutor:
                         # stop 已置位但任务刚取出:不再执行,标记 skipped 并退出
                         logger.log_trace(
                             f"[TRACE][async_executor._worker] task_dropped "
-                            f"reason=executor_stopped phase=after_get player=<snip> "
+                            f"reason=executor_stopped phase=after_get player={logger.player_tag(player)} "
                             f"cmd_len={len(str(cmd))}"
                         )
                         with self._results_lock:
@@ -177,7 +177,7 @@ class AsyncCommandExecutor:
                     error = None
                     attempt = 0
                     logger.log_trace(
-                        f"[TRACE][async_executor._worker] task_begin player=<snip> "
+                        f"[TRACE][async_executor._worker] task_begin player={logger.player_tag(player)} "
                         f"cmd_len={len(str(cmd))} max_attempts={retries_left} "
                         f"retry_delay_s={self._retry_delay}"
                     )
@@ -239,12 +239,12 @@ class AsyncCommandExecutor:
                             )
                             logger.log_trace(
                                 f"[TRACE][async_executor._worker] retry_enqueue "
-                                f"player=<snip> attempts={attempt} "
+                                f"player={logger.player_tag(player)} attempts={attempt} "
                                 f"retry_queue_depth={depth} error={err_txt!r}"
                             )
 
                     logger.log_trace(
-                        f"[TRACE][async_executor._worker] task_end player=<snip> "
+                        f"[TRACE][async_executor._worker] task_end player={logger.player_tag(player)} "
                         f"status={result.get('status')} attempts={result.get('retries')} "
                         f"error={str(result.get('error'))[:80]!r}"
                     )
@@ -314,7 +314,7 @@ class AsyncCommandExecutor:
     def submit(self, command_str, player, verify_fn=None):
         """提交命令到异步队列(非阻塞)。返回 False 表示队列已满被丢弃(调用方可感知)。"""
         logger.log_trace(
-            f"[TRACE][async_executor.submit] phase=ENTER player=<snip> "
+            f"[TRACE][async_executor.submit] phase=ENTER player={logger.player_tag(player)} "
             f"cmd_len={len(str(command_str))} has_verify={verify_fn is not None} "
             f"depth={self._queue.qsize()} queue_max={self._queue.maxsize}"
         )

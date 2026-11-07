@@ -117,6 +117,21 @@ _KICK_NAME_RE = re.compile(r"([^\s，。！:：\[\]]{1,32})被([^\s，。！:：
 _BULLET_NAME_RE = re.compile(r"●\s*([^\s●]{1,32})")
 
 
+def player_tag(name) -> str:
+    """玩家的稳定短标识（trace 关联用）。
+
+    为什么不直接用 sanitize_text：那会把**所有**玩家都变成常量 <snip>，
+    并发查询时无法把一条链归属到具体玩家（复核实测指出的缺口）。
+    这里用 6 位哈希：同一玩家跨运行稳定、可关联，但不暴露真实名。
+    """
+    import hashlib
+
+    s = "" if name is None else str(name)
+    if not s:
+        return "<none>"
+    return "p-" + hashlib.sha1(s.encode("utf-8")).hexdigest()[:6]
+
+
 def sanitize_text(text, max_len=None):
     """诊断日志脱敏 + 可选截断。
 
