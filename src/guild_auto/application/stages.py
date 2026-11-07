@@ -813,6 +813,9 @@ def stage_execute_async(rt, records, cfg):
         r["new_rank"] = (
             new_rank_after(r["rank"], r["actions"][:ok_count]) if ok_count else r["rank"]
         )
+        # R-09:待办只存未完成的后缀。per_err 是"没做成的那些动作",已成功的
+        # 不得再落盘 —— 否则下次续做会把异步侧已成功的升/降/踢重放一遍。
+        r["remaining_actions"] = [a for a, _e in per_err]
         if per_err:
             console(f"    ⚠ {player} 执行失败({per_err[0][0]}): {per_err[0][1]}")
         else:

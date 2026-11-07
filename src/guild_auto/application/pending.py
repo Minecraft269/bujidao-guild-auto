@@ -107,16 +107,130 @@ def save_pending(path, guild_name, items):
     logger.trace_return("pending.save_pending", f"items={len(items)}")
 
 
-def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, input_fn=None):
+def merge_pending(existing, new_items):
+    """合并待办:同一玩家同一动作列表只保留一条(R-10)。
+
+    跨轮重复登记会让续做把同一条指令发两次 —— 踢出不可逆,所以合并必须在
+    数据层完成,不能靠每个调用方自觉去重(此前主流程完全不去重、finally 分支
+    按玩家去重,两处口径不一致)。后写入的是本轮最新状态,覆盖先前的同键项。
+    """
+    merged = {}
+    for it in list(existing or []) + list(new_items or []):
+        merged[(it.get("player"), tuple(it.get("actions") or []))] = it
+    return list(merged.values())
+
+
+def pending_items_from_records(records):
+    """从本轮记录生成待办条目 —— R-09 的**写入侧契约**,单一真源。
+
+    规则(顺序即语义):
+      1. 被功能开关拦下 / kick 二次确认跳过 / 本次 UI 模式未执行的记录不写
+         (否则下次续做会绕过本次的决定);
+      2. 没有动作或没有错误的记录不写(已全部成功);
+      3. **只写未完成的后缀**:执行层回填的 `remaining_actions` 才是"还没做的",
+         没有该键说明整条都没进执行层(dry-run),此时才取全部动作。
+
+    为什么必须集中在这里:此前这段逻辑内联在 main(),跨轮重放已成功的踢/升降
+    正是因为没有单一可测的裁剪点(串行/异步各自一份,都可以漏)。
+    """
+    items = []
+    for r in records:
+        if r.get("blocked_by_switch") or r.get("skipped_by_confirm") or r.get("skipped_by_mode"):
+            continue
+        if not (r.get("actions") and r.get("error")):
+            continue
+        remaining_actions = r.get("remaining_actions")
+        if remaining_actions is None:
+            remaining_actions = r["actions"]
+        if not remaining_actions:
+            continue  # 已全部成功 → 不得再入待办
+        items.append(
+            {
+                "player": r["player"],
+                "rank": r["rank"],
+                "actions": list(remaining_actions),
+                "trigger": r.get("trigger"),
+                "weekly": r.get("weekly_total"),
+                "status": "failed",
+                "error": r.get("error"),
+            }
+        )
+    return items
+
+
+def split_async_tasks(snaps):
+    """按 meta.action 把异步任务快照分成 (可续做, 不可续做) —— R-12。
+
+    旧实现拿 `command.split(",")` 当 actions,而 command 是
+    `/guild kick <玩家>` 这种整句:续做端认不出任何一项,条目永久卡在待办里。
+    `/gc` 广播类任务没有 action,本来就不可续做(广播非幂等),必须单独处置。
+    """
+    resumable, unresumable = [], []
+    for s in snaps:
+        action = (s.get("meta") or {}).get("action")
+        (resumable if action else unresumable).append(s)
+    return resumable, unresumable
+
+
+def pending_items_from_async_system(system, verify_error="(异步)验证失败"):
+    """把异步系统的未完成任务转成待办条目(R-12 + R-13)。
+
+    **先 stop() 再取补做队列**:stop() 才会把"已提交但未验证"的任务标 STOPPED
+    并推进补做队列;先取后停,队列恒为空,验证失败/在途任务被静默丢弃
+    —— 既不进报告也不进待办,下次启动当然也不会补做。
+
+    返回 (items, unresumable):unresumable 是不可续做的任务数(如 /gc 广播),
+    由调用方明确处置并留痕,不得写成"动作=命令文本"的坏条目。
+    """
+    system.stop(timeout=5)
+    resumable, unresumable = split_async_tasks(system.get_retry_queue())
+    # 兜底:stop 后理论上没有在途任务了,但拿不到终态的任务绝不能被静默抹掉。
+    stranded, stranded_bad = split_async_tasks(system.get_stranded())
+    failed_players = {t["player"] for t in resumable}
+    items = [
+        {
+            "player": t["player"],
+            "rank": "?",
+            "actions": [(t.get("meta") or {})["action"]],
+            "trigger": None,
+            "weekly": None,
+            "status": "failed",
+            "error": f"{verify_error}: {t.get('error')}",
+        }
+        for t in resumable
+    ]
+    items.extend(
+        {
+            "player": s["player"],
+            "rank": "?",
+            "actions": [(s.get("meta") or {})["action"]],
+            "trigger": None,
+            "weekly": None,
+            "status": "failed",
+            "error": "(异步)脚本中断,任务未完成,已转待办",
+        }
+        for s in stranded
+        if s["player"] not in failed_players
+    )
+    return items, len(unresumable) + len(stranded_bad)
+
+
+def run_pending(
+    cfg, watcher, human, hwnd, executor, path, console_fn=None, input_fn=None, ask_text_fn=None
+):
     """断点续做:读取上次未完成(或失败)的操作,询问后执行,并更新待办文件。
 
     返回 (continue_stat, remaining):是否继续新的统计 + 仍未完成的项。
     不进行任何新的统计查询。
 
-    console_fn / input_fn 可注入,测试不必真的读终端。
+    console_fn / input_fn / ask_text_fn 可注入,测试不必真的读终端。
+    ask_text_fn 拿**原文**(kick 二次确认的确认词),不能用布尔化的 input_fn ——
+    否则"按提示输入 kick-confirm"会被判成否、凭习惯敲 y 反而真踢(与主流程
+    stage_confirm_execution 门 2 同一语义,R-11)。
     """
     console_fn = console_fn or console
     input_fn = input_fn or input
+    ask_text_fn = ask_text_fn or input
     logger.trace_call("pending.run_pending", args=("<path>",))
     items = load_pending(path)
     if not items:
@@ -158,6 +272,47 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
         from guild_auto.application import runtime as _runtime
         from guild_auto.application.pause import reset_window_state_after_pause, wait_if_paused
 
+        # ---- R-11:续做路径的 kick 二次确认 ----
+        # 续做同样是"真踢人",不能只靠上面那句 y/回车。此前续做只问一次
+        # (y 或回车=执行),等于给不可逆操作留了一道可被顺手确认的口子。
+        # 这里复用主流程门 2 的语义:逐字匹配确认词,不匹配就跳过全部 kick;
+        # 配置缺确认词时不放行(宁可少踢,不可错踢)。
+        sw = cfg.get("switches", {})
+        skip_kick = False
+        kick_items = [
+            it
+            for it in items
+            if "kick" in (it.get("actions") or []) and sw.get("kick_enabled", True)
+        ]
+        if kick_items and cfg.get("kick_confirm", True):
+            expected = str(cfg.get("kick_confirm_text") or "").strip()
+            ans = ""
+            logger.log_info(
+                f"待办续做踢出二次确认 ENTER 人数={len(kick_items)} 确认词={'缺失' if not expected else '已配置'}"
+            )
+            if expected:
+                try:
+                    ans = (
+                        ask_text_fn(
+                            f"⚠ 续做将踢出 {len(kick_items)} 人(不可逆):"
+                            f"{[it['player'] for it in kick_items]}。"
+                            f"输入 {expected} 后回车执行,其他输入跳过踢出: "
+                        )
+                        or ""
+                    ).strip()
+                except EOFError as e:
+                    logger.log_warning(f"待办续做踢出确认 EOF(终端关闭/无输入),按跳过处理: {e!r}")
+            if not expected or ans != expected:
+                # 配置里缺确认词时不放行(宁可少踢,不可错踢):空确认词等于
+                # "任何人按回车都能真踢",是不可逆操作上最危险的一档默认。
+                skip_kick = True
+                logger.log_warning(
+                    f"待办续做的踢出未经二次确认,已跳过 kick: "
+                    f"{[it['player'] for it in kick_items]}"
+                    f"(原因={'配置缺少 kick_confirm_text' if not expected else '输入不匹配'})"
+                )
+                console_fn("已跳过续做中的全部踢出(升/降照常;kick 不再补做)")
+
         for it in items:
             _runtime.set_pause_context(stage="待办续做", command="/".join(it["actions"]))
             wait_if_paused()
@@ -180,6 +335,19 @@ def run_pending(cfg, watcher, human, hwnd, executor, path, console_fn=None, inpu
                 )
                 remaining.append(it)
                 continue
+            if skip_kick and "kick" in allowed:
+                # 摘掉 kick 但保留同条记录里的升/降职(混合动作列表,与主流程门 2 一致)
+                allowed = [a for a in allowed if a != "kick"]
+                if not allowed:
+                    # 用户明确跳过 → 不再补踢(留待办等于下次再问/再踢)
+                    console_fn(f"    - {it['player']}: 踢出未获二次确认,已跳过(不再补做)")
+                    logger.log_warning(
+                        f"续做跳过 player={it['player']} 原因=踢出未获二次确认(不写回待办)"
+                    )
+                    continue
+                logger.log_warning(
+                    f"续做跳过踢出,保留其余动作 player={it['player']} actions={allowed}"
+                )
             console_fn(f"  执行 {it['player']}: {allowed}")
             item_started = time.monotonic()
             results = executor.execute_actions(it["player"], allowed)

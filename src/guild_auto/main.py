@@ -80,6 +80,9 @@ from guild_auto.application.pause import (  # noqa: E402
 from guild_auto.application.pause import _on_press  # noqa: E402,F401
 from guild_auto.application.pending import (  # noqa: E402
     load_pending,
+    merge_pending,
+    pending_items_from_async_system,
+    pending_items_from_records,
     pending_path_of,
     run_pending,
     save_pending,
@@ -918,6 +921,23 @@ def _gui_pending(items):
     return _b.pending_rows(items)
 
 
+def gate_on_failures(rt, label, count, halt_reason):
+    """流程失败门(R-15):有失败项时必须给用户明确处置,不得静默继续。
+
+    查询/通知阶段留下未消除的失败时调用。返回 True = 后续阶段必须中止。
+    默认值 False 意味着「回车 / EOF = 中止」—— 状态不明时宁可不发破坏性指令。
+    用户明确选择继续时留 ERROR 级痕迹,报告里的失败清单照实记录。
+    """
+    if not count:
+        return False
+    console(f"⚠ {label} {count} 条,按规格不自动进入后续阶段")
+    if not rt.confirm(f"{label}仍未消除;仍继续后续阶段吗?", default=False):
+        console(f"已中止后续阶段({halt_reason},报告仍会输出,失败项照实记录)")
+        return True
+    logger.log_error(f"{label}仍有 {count} 条失败,用户确认带病继续({halt_reason})")
+    return False
+
+
 def main():
     # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
     # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。
@@ -1182,9 +1202,10 @@ def main():
         operation_mode = str(cfg.get("operation_mode") or "command")
         ui_mode = operation_mode == "ui"
         ui_outcome = None
-        # 异步"零失败才进下一步"门(验收 14):所有路径(含 UI 模式)都要能读到,
-        # 所以在这里初始化;只有异步查询重试耗尽仍有失败、且用户未确认继续时才置 True。
-        _halt_after_async_query = False
+        # 流程失败门(R-15):查询失败(异步/串行)或通知失败时必须给出明确处置,
+        # 不得静默继续。所有路径(含 UI 模式)都要能读到,所以在这里初始化。
+        _halt_before_exec = False
+        _halt_reason = ""
         # debug 段在判定/通知/执行阶段还要用,必须在分派前定义(UI 模式不走 list 分支)
         debug = cfg.get("debug", {})
         if ui_mode:
@@ -1292,10 +1313,6 @@ def main():
                         # 验收 14:异步模式必须"等验证完成且没有失败(有重试上限)"才进下一步。
                         # 重试耗尽仍有失败 → 停下来问,不静默带着残缺名单进入通知/执行
                         # (名单不全会导致漏通知,甚至按错误数据踢人)。
-                        console(
-                            f"⚠ 异步查询验证失败 {len(_real_failures)} 条(重试已到上限),"
-                            f"按规格不自动进入后续阶段"
-                        )
                         for _f in _real_failures[:5]:
                             # stage_query_async 的失败字典用 reason(不是 error),
                             # 只读 error 会让用户看到"甲: None",等于没给原因
@@ -1303,12 +1320,10 @@ def main():
                                 f"    - {_f.get('player')}: "
                                 f"{_f.get('error') or _f.get('reason') or '未知原因'}"
                             )
-                        _halt_after_async_query = not rt.confirm(
-                            "异步模式要求「验证完成且无失败」才进下一步;仍继续通知/执行吗?",
-                            default=False,
+                        _halt_before_exec = gate_on_failures(
+                            rt, "异步查询验证失败", len(_real_failures), "异步查询有失败"
                         )
-                        if _halt_after_async_query:
-                            console("已中止后续阶段(报告仍会输出,失败项照实记录)")
+                        _halt_reason = "异步查询有失败"
                 else:
                     # 默认串行模式:逐条发送 → 逐条读日志验证
                     for idx, (rk, pid) in enumerate(targets, 1):
@@ -1356,6 +1371,13 @@ def main():
             note=f"屏蔽词不可查 {_blocked_queries} 人" if _blocked_queries else "",
         )
 
+        # R-15:串行查询失败也必须给出明确处置。此前串行侧只 log_error 就静默
+        # 进入通知/执行 —— 名单残缺会漏通知,甚至按残缺数据踢人。异步侧的门在
+        # 查询分支内,这里补一道对称的(同一变量、同一默认:不确认继续就中止)。
+        if not rt.async_enabled and not ui_mode and _query_fail:
+            _halt_before_exec = gate_on_failures(rt, "串行查询失败", _query_fail, "串行查询有失败")
+            _halt_reason = "串行查询有失败"
+
         # 6. 判定(继承规则)
         logger.log_info(f"阶段3 起点: 决策判定 records={len(records)}")
         logger.log_info(f"阶段1 完成: 查询+判定 解析={len(records)} records")
@@ -1401,10 +1423,10 @@ def main():
             # UI 模式仅实现 查询→报告:跳过必须明说并写进报告第六节,
             # 不得静默假装已通知(用户会以为群里收到了公告)
             console("[4/5] UI 模式本次跳过通知(仅 查询→报告)")
-        elif _halt_after_async_query:
+        elif _halt_before_exec:
             # 验收 14:异步查询仍有失败且用户未确认继续 → 不进入后续阶段。
             # 必须明说跳过,不能让报告看起来像"已通知"。
-            console("[4/5] 已中止:异步查询存在未消除的失败,本次跳过通知")
+            console(f"[4/5] 已中止: {_halt_reason},本次跳过通知")
         else:
             if _debug_notify_skipped:
                 console("Debug: 跳过通知发送(仅走流程,不实际广播)")
@@ -1414,14 +1436,24 @@ def main():
                     len(records) if sw.get("notify_mode", "summary") == "per_player" else 1
                 )
         failures.extend(notify_failures)
+        # R-15:通知失败不得静默继续执行 —— 用户会以为群里收到了公告,实际没有;
+        # 此时照常升/降/踢等于"按未通知的口径处理会员"。
+        if notify_failures and not ui_mode and not _halt_before_exec:
+            for _nf in notify_failures[:5]:
+                console(f"    - {_nf.get('scope') or _nf.get('player')}: {_nf.get('error')}")
+            if gate_on_failures(rt, "通知失败", len(notify_failures), "通知有失败"):
+                _halt_before_exec = True
+                _halt_reason = "通知有失败"
         _mark_stage(
             "通知",
             ok=max(0, _notify_attempted - len(notify_failures)),
             fail=len(notify_failures),
             note=(
-                "已中止(异步查询有失败)"
-                if _halt_after_async_query
-                else ("UI 模式跳过" if ui_mode else "")
+                f"已中止({_halt_reason})"
+                if _halt_before_exec
+                else (
+                    "UI 模式跳过" if ui_mode else ("有失败,用户确认继续" if notify_failures else "")
+                )
             ),
         )
 
@@ -1433,8 +1465,8 @@ def main():
         actionable = [r for r in records if r["actions"]]
         if ui_mode:
             console("  UI 模式本次跳过执行(仅 查询→报告,不执行升/降/踢)")
-        elif _halt_after_async_query:
-            console("  已中止:异步查询存在未消除的失败,本次不执行任何升/降/踢")
+        elif _halt_before_exec:
+            console(f"  已中止: {_halt_reason},本次不执行任何升/降/踢")
         elif not actionable:
             # 查询阶段无任何成功(records 为空),无可执行操作,显式提示后直接走报告
             console("  无玩家需要执行(查询阶段无成功结果),跳过执行阶段")
@@ -1446,7 +1478,7 @@ def main():
         pending_kicks = [r for r in records if r["actions"] and r["actions"][0] == "kick"]
 
         # ---- 执行循环前统一重置（只执行一次） ----
-        if not ui_mode and not _halt_after_async_query and sw["execution_enabled"]:
+        if not ui_mode and not _halt_before_exec and sw["execution_enabled"]:
             console("执行前重置界面状态...")
             if hwnd:
                 activate_window(hwnd)
@@ -1473,7 +1505,7 @@ def main():
         _skip_exec_reason = (
             "UI 模式本次未执行"
             if ui_mode
-            else ("已中止:异步查询存在未消除的失败(验收 14)" if _halt_after_async_query else "")
+            else (f"已中止: {_halt_reason}" if _halt_before_exec else "")
         )
         if _skip_exec_reason:
             # UI 模式只实现 查询→报告 / 异步"零失败"门中止:逐条明确标"未执行",
@@ -1523,6 +1555,10 @@ def main():
                         if ok_count
                         else r["rank"]
                     )
+                    # R-09:待办只存**未完成的后缀**。execute_actions 失败即停,
+                    # 所以 actions[ok_count:] 正好是"没做成的那部分";把全量 actions
+                    # 落盘会让下次续做重放已成功的升/降/踢(踢出不可逆)。
+                    r["remaining_actions"] = r["actions"][ok_count:]
                     if failed:
                         console(f"    ⚠ {r['player']} 执行失败: {failed[1]}")
                         logger.log_error(f"执行失败 {r['player']} ({failed[0]}): {failed[1]}")
@@ -1553,8 +1589,8 @@ def main():
             ),
             fail=len(execution_failures),
             note=(
-                "已中止(异步查询有失败)"
-                if _halt_after_async_query
+                f"已中止({_halt_reason})"
+                if _halt_before_exec
                 else (
                     "UI 模式跳过"
                     if ui_mode
@@ -1566,9 +1602,17 @@ def main():
         console("\n输出报告 ...")
         p1 = write_contribution_report(cfg["report_dir"], gname, records, cfg.get("admin", ""))
         action_records = executed + [
-            dict(f, new_rank=f.get("rank"), actions=[], error=f.get("reason") or "查询失败")
+            dict(
+                f,
+                # 通知失败项只有 scope 没有 player(summary 模式):此前这里直接
+                # f["player"] 会 KeyError,把"通知失败"变成"报告阶段崩溃"(R-15)。
+                player=f.get("player") or f.get("scope") or "通知",
+                new_rank=f.get("rank"),
+                actions=[],
+                error=f.get("reason") or "查询失败",
+            )
             for f in failures
-            if not any(f["player"] == e.get("player") for e in executed)
+            if not any(f.get("player") and f.get("player") == e.get("player") for e in executed)
         ]
         p2 = write_action_report(cfg["report_dir"], gname, action_records, cfg)
         console(f"  贡献报告: {os.path.abspath(p1)}")
@@ -1617,31 +1661,14 @@ def main():
                 console(f"  分析报告: {os.path.abspath(p3)}")
 
         # 10. 未完成操作(跳过/失败)写入待办,供下次启动续做(与上次失败项合并)
-        incomplete = []
-        for r in records:
-            # 被功能开关拦下、被 kick 二次确认跳过、或本次 UI 模式未执行的记录
-            # 不得写入待办 —— 否则下次启动会在指令模式续做这些从未尝试过的
-            # 升/降/踢,等于绕过本次的模式选择。
-            if (
-                r.get("blocked_by_switch")
-                or r.get("skipped_by_confirm")
-                or r.get("skipped_by_mode")
-            ):
-                continue
-            if r.get("actions") and r.get("error"):
-                incomplete.append(
-                    {
-                        "player": r["player"],
-                        "rank": r["rank"],
-                        "actions": r["actions"],
-                        "trigger": r.get("trigger"),
-                        "weekly": r.get("weekly_total"),
-                        "status": "failed",
-                        "error": r.get("error"),
-                    }
-                )
+        # R-09/R-10:写入侧契约集中在 pending 模块 —— 只写未完成的后缀,
+        # 被开关/二次确认/模式拦下的不写;合并按 (玩家, 动作列表) 去重。
+        # 此前这段内联在此且完全不去重,跨轮会把已成功的踢/升降重放一遍。
+        incomplete = pending_items_from_records(records)
         if incomplete:
-            merged = load_pending(pending_path) + incomplete
+            # R-10:与已有待办按 (玩家, 动作列表) 去重 —— 主流程此前完全不合并去重,
+            # 跨轮会把同一条指令登记两次,续做时发两遍(踢出不可逆)。
+            merged = merge_pending(load_pending(pending_path), incomplete)
             save_pending(pending_path, gname, merged)
             _g_pending_after = _gui_bridge()
             if _g_pending_after is not None:
@@ -1677,44 +1704,13 @@ def main():
         # 停止异步系统(若已启动):失败/中断的任务真正写入 pending_actions.json(不丢失)
         if rt.async_enabled and rt.async_system is not None:
             try:
-                retry_tasks = rt.async_system.get_retry_queue()
-                failed_players = {t["player"] for t in retry_tasks}
-                # ① 重试耗尽的补做任务 → 待办格式
-                incomplete_async = [
-                    {
-                        "player": t["player"],
-                        "rank": "?",
-                        "actions": [a for a in (t.get("command") or "").split(",") if a],
-                        "trigger": None,
-                        "weekly": None,
-                        "status": "failed",
-                        "error": f"(异步)验证失败: {t.get('error')}",
-                    }
-                    for t in retry_tasks
-                ]
-                # ② Ctrl+C/异常中断兜底:补扫仍在途的任务(get_stranded)
-                # 在途任务绝不能被归档抹掉,否则主线程再也拿不到结果(静默丢指令)
-                stranded = rt.async_system.get_stranded()
-                incomplete_interrupted = [
-                    {
-                        "player": s["player"],
-                        "rank": "?",
-                        "actions": [a for a in (s.get("command") or "").split(",") if a],
-                        "trigger": None,
-                        "weekly": None,
-                        "status": "failed",
-                        "error": "(异步)脚本中断,任务未完成,已转待办",
-                    }
-                    for s in stranded
-                    if s["player"] not in failed_players
-                ]
-                to_save = incomplete_async + incomplete_interrupted
+                # R-12/R-13:转换与"先停后用"的顺序由 pending 统一负责 ——
+                # 动作取自 meta.action(不再拿命令整句 split),stop() 在取队列之前。
+                to_save, unresumable = pending_items_from_async_system(rt.async_system)
                 if to_save:
-                    merged = load_pending(pending_path) + to_save
-                    dedup = {}
-                    for it in merged:
-                        dedup[it["player"]] = it
-                    merged = list(dedup.values())
+                    # R-10:统一走 merge_pending —— 主流程与这里此前两套去重口径,
+                    # 同一玩家同一动作会被登记两次,续做时发两遍。
+                    merged = merge_pending(load_pending(pending_path), to_save)
                     save_pending(pending_path, gname, merged)
                     console(
                         f"⚠ {len(to_save)} 条异步失败/中断任务已写入待办"
@@ -1724,7 +1720,14 @@ def main():
                         f"{len(to_save)} 条异步失败/中断任务转入待办: "
                         f"{[it['player'] for it in to_save]}"
                     )
-                rt.async_system.stop(timeout=5)
+                if unresumable:
+                    # R-12/R-15:无 action 的任务(如 /gc 广播)不可续做,必须明确处置 ——
+                    # 旧实现把命令整句写成 action,续做端认不出就永久卡在待办里。
+                    logger.log_error(
+                        f"{unresumable} 条异步任务无法转待办(缺 meta.action,如 /gc 广播)"
+                        f" —— 广播非幂等,不自动重做"
+                    )
+                    console(f"⚠ {unresumable} 条通知/无法归因任务未回显,已记日志(不自动续做)")
             except Exception as e:
                 logger.log_error(f"停止异步系统异常: {e}")
         try:
