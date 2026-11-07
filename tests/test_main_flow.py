@@ -34,6 +34,9 @@ from guild_auto.config import DEFAULT_CONFIG
 NO_RET = object()  # 哨兵:patch 但不设 return_value(None 本身是合法返回值)
 
 
+_UNSET = object()
+
+
 def _base_cfg():
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     cfg["log"] = {"enabled": False, "level": 4, "dir": "logs"}
@@ -108,6 +111,7 @@ class _MainCase(unittest.TestCase):
         stage_conf=(True, False),
         cfg_override=None,
         input_value="",
+        query_member_ret=_UNSET,
     ):
         """跑一次 main(),返回断言用的 mocks 字典。
 
@@ -163,7 +167,7 @@ class _MainCase(unittest.TestCase):
             ("wait_if_paused", NO_RET),
             ("reset_window_state_after_pause", NO_RET),
             ("query_guild_list", guild),
-            ("query_member", records[0] if records else None),
+            ("query_member", records[0] if query_member_ret is _UNSET and records else query_member_ret),
             ("stage_query_async", (records, query_failures or [])),
             ("stage_notify", notify_failures or []),
             ("stage_confirm_execution", stage_conf),
@@ -219,6 +223,9 @@ class _MainCase(unittest.TestCase):
             "listener": entered["start_pause_listener"],
             "stage_notify": entered["stage_notify"],
             "stage_exec_async": entered["stage_execute_async"],
+            "stage_confirm": entered["stage_confirm_execution"],
+            "query_member": entered["query_member"],
+            "executor": rt.executor,
             "write_contrib": entered["write_contribution_report"],
             "write_action": entered["write_action_report"],
             "write_analysis": entered["write_analysis_report"],
@@ -238,6 +245,40 @@ class TestSerialMode(_MainCase):
     def test_listener_started(self):
         mocks = self._run()
         mocks["listener"].assert_called_once()
+
+    # ---- R-15 流程失败门(串行侧) ----
+
+    def test_serial_query_failure_gate_halts_when_user_declines(self):
+        """串行查询失败此前只 log_error 就静默继续,残缺名单会漏通知/错踢人。"""
+        mocks = self._run(
+            async_enabled=False,
+            query_member_ret=None,  # 查询重试耗尽
+            confirm_fn=lambda prompt, default=False: "串行查询失败" not in str(prompt),
+        )
+        mocks["stage_notify"].assert_not_called()
+        mocks["stage_confirm"].assert_not_called()
+
+    def test_serial_query_failure_gate_continues_when_user_confirms(self):
+        mocks = self._run(async_enabled=False, query_member_ret=None, confirm_answer=True)
+        mocks["stage_notify"].assert_called_once()
+
+    def test_notify_failure_gate_halts_when_user_declines(self):
+        """通知失败不得静默继续执行升/降/踢(用户会以为群里收到了公告)。"""
+        mocks = self._run(
+            async_enabled=False,
+            notify_failures=[{"scope": "summary", "error": "广播未在日志中回显"}],
+            confirm_fn=lambda prompt, default=False: "通知失败" not in str(prompt),
+        )
+        mocks["stage_confirm"].assert_not_called()
+        mocks["executor"].execute_actions.assert_not_called()
+
+    def test_notify_failure_gate_continues_when_user_confirms(self):
+        mocks = self._run(
+            async_enabled=False,
+            notify_failures=[{"scope": "summary", "error": "广播未在日志中回显"}],
+            confirm_answer=True,
+        )
+        mocks["stage_confirm"].assert_called_once()
 
 
 class TestAsyncMode(_MainCase):
@@ -260,7 +301,7 @@ class TestAsyncMode(_MainCase):
         mocks = self._run(
             async_enabled=True,
             query_failures=[{"player": "****", "blocked": True, "reason": "身份不可读"}],
-            confirm_fn=lambda prompt, default=False: "异步模式要求" not in str(prompt),
+            confirm_fn=lambda prompt, default=False: "异步查询验证失败" not in str(prompt),
         )
         mocks["stage_notify"].assert_called_once()
 
@@ -273,7 +314,7 @@ class TestAsyncMode(_MainCase):
             async_enabled=True,
             query_failures=[{"player": "甲", "reason": "查询验证超时"}],
             # 只在"异步零失败门"这一问上回答否,其余确认点照常同意
-            confirm_fn=lambda prompt, default=False: "异步模式要求" not in str(prompt),
+            confirm_fn=lambda prompt, default=False: "异步查询验证失败" not in str(prompt),
         )
         mocks["stage_notify"].assert_not_called()
         mocks["stage_exec_async"].assert_not_called()

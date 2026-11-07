@@ -125,8 +125,13 @@ class TestSavePending(_Base):
 
 
 class TestRunPending(_Base):
-    def _run(self, answers, executor=None, sw=None):
-        cfg = {"switches": sw or {"execution_enabled": True}, "guild_name": "演示公会"}
+    def _run(self, answers, executor=None, sw=None, kick_text="kick-confirm"):
+        cfg = {
+            "switches": sw or {"execution_enabled": True},
+            "guild_name": "演示公会",
+            "kick_confirm": True,
+            "kick_confirm_text": "kick-confirm",
+        }
         if executor is None:
             ex = mock.Mock()
             ex.execute_actions.return_value = []
@@ -134,6 +139,12 @@ class TestRunPending(_Base):
             ex = executor  # 调用方已配置好返回值，不得覆盖
         answers = list(answers)
         console = mock.Mock()
+
+        def _ask_text(*a, **k):
+            if isinstance(kick_text, Exception):
+                raise kick_text
+            return kick_text
+
         cont, rem = pending_mod.run_pending(
             cfg,
             mock.Mock(),
@@ -143,6 +154,7 @@ class TestRunPending(_Base):
             self.path,
             console_fn=console,
             input_fn=lambda *a, **k: answers.pop(0) if answers else "",
+            ask_text_fn=_ask_text,
         )
         return cont, rem, ex, console
 
@@ -241,6 +253,203 @@ class TestRunPending(_Base):
         ex.execute_actions.assert_not_called()
         self.assertEqual(len(rem), 1)
         self.assertFalse(cont)
+
+    # ---- R-11:续做路径的 kick 二次确认 ----
+
+    def test_resume_kick_with_correct_word_executes(self):
+        self._write(_items("甲"))
+        ex = mock.Mock()
+        ex.execute_actions.return_value = [("kick", True, None)]
+        _, rem, ex, _ = self._run(["y", ""], executor=ex, kick_text="kick-confirm")
+        ex.execute_actions.assert_called_once()
+        self.assertEqual(rem, [])
+
+    def test_resume_kick_wrong_word_skips_kick_entirely(self):
+        """不逐字匹配确认词 → 一条 kick 都不发,且不再补做(不写回待办)。"""
+        self._write(_items("甲"))
+        ex = mock.Mock()
+        with mock.patch.object(pending_mod.logger, "log_warning") as m_warn:
+            _, rem, ex, console = self._run(["y", "", ""], executor=ex, kick_text="y")
+        ex.execute_actions.assert_not_called()
+        self.assertEqual(rem, [], "用户明确跳过踢出后仍留在待办 → 下次会再踢")
+        self.assertTrue(
+            any("踢出" in str(c) for c in console.call_args_list),
+            f"没有向用户说明踢出被跳过: {console.call_args_list}",
+        )
+        m_warn.assert_called()
+
+    def test_resume_kick_missing_confirm_word_fails_safe(self):
+        """配置缺确认词时不得放行(空确认词+回车=真踢)。"""
+        self._write(_items("甲"))
+        cfg = {
+            "switches": {"execution_enabled": True},
+            "guild_name": "G",
+            "kick_confirm": True,
+            "kick_confirm_text": "",
+        }
+        ex = mock.Mock()
+        cont, rem = pending_mod.run_pending(
+            cfg,
+            mock.Mock(),
+            mock.Mock(),
+            None,
+            ex,
+            self.path,
+            console_fn=mock.Mock(),
+            input_fn=lambda *a, **k: "y",
+            ask_text_fn=lambda *a, **k: "",
+        )
+        ex.execute_actions.assert_not_called()
+        self.assertEqual(rem, [])
+
+    def test_resume_kick_eof_on_confirm_skips_kick(self):
+        self._write(_items("甲"))
+        ex = mock.Mock()
+        self._run(["y", "", ""], executor=ex, kick_text=EOFError())
+        ex.execute_actions.assert_not_called()
+
+    def test_resume_skipped_kick_keeps_promote_in_same_item(self):
+        """混合动作列表:踢出未确认只摘 kick,同条记录的升职照常执行。"""
+        self._write(
+            [{"player": "甲", "rank": "entry", "actions": ["promote", "kick"], "status": "pending"}]
+        )
+        ex = mock.Mock()
+        ex.execute_actions.return_value = [("promote", True, None)]
+        _, rem, ex, _ = self._run(["y", ""], executor=ex, kick_text="nope")
+        ex.execute_actions.assert_called_once()
+        self.assertEqual(ex.execute_actions.call_args[0][1], ["promote"])
+        self.assertEqual(rem, [])
+
+
+class TestMergePending(_Base):
+    def test_same_player_same_actions_kept_once(self):
+        """R-10:跨轮重复登记必须合并(否则续做把同一指令发两遍)。"""
+        old = [{"player": "甲", "actions": ["kick"], "status": "failed"}]
+        new = [{"player": "甲", "actions": ["kick"], "status": "failed"}]
+        merged = pending_mod.merge_pending(old, new)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["player"], "甲")
+
+    def test_later_status_wins(self):
+        old = [{"player": "甲", "actions": ["kick"], "error": "旧"}]
+        new = [{"player": "甲", "actions": ["kick"], "error": "新"}]
+        self.assertEqual(pending_mod.merge_pending(old, new)[0]["error"], "新")
+
+    def test_different_actions_not_collapsed(self):
+        """promote×2 是两次真实操作,不能被去重成一条。"""
+        items = [
+            {"player": "甲", "actions": ["promote"]},
+            {"player": "甲", "actions": ["promote", "promote"]},
+        ]
+        self.assertEqual(len(pending_mod.merge_pending([], items)), 2)
+
+    def test_different_players_kept(self):
+        items = [{"player": "甲", "actions": ["kick"]}, {"player": "乙", "actions": ["kick"]}]
+        self.assertEqual(len(pending_mod.merge_pending([], items)), 2)
+
+
+class TestPendingItemsFromRecords(_Base):
+    """R-09 写入侧契约:只存未完成后缀,已成功的不得再入待办。"""
+
+    def _rec(self, **kw):
+        base = {
+            "player": "甲",
+            "rank": "entry",
+            "weekly_total": 100,
+            "actions": ["promote", "promote"],
+            "error": "执行失败(promote): 超时",
+            "remaining_actions": ["promote"],
+        }
+        base.update(kw)
+        return base
+
+    def test_only_unfinished_suffix_is_saved(self):
+        items = pending_mod.pending_items_from_records([self._rec()])
+        self.assertEqual(items[0]["actions"], ["promote"], "已成功的动作被写进了待办")
+        self.assertEqual(items[0]["status"], "failed")
+
+    def test_fully_succeeded_record_not_saved(self):
+        rec = self._rec(error=None, remaining_actions=[])
+        self.assertEqual(pending_mod.pending_items_from_records([rec]), [])
+
+    def test_record_without_remaining_key_keeps_all_actions(self):
+        """没进执行层(dry-run)的记录没有 remaining_actions → 全部动作仍未做。"""
+        rec = self._rec(remaining_actions=None, error="未执行(dry-run)")
+        del rec["remaining_actions"]
+        self.assertEqual(len(pending_mod.pending_items_from_records([rec])), 1)
+
+    def test_gated_records_not_saved(self):
+        for flag in ("blocked_by_switch", "skipped_by_confirm", "skipped_by_mode"):
+            self.assertEqual(
+                pending_mod.pending_items_from_records([self._rec(**{flag: True})]), [], flag
+            )
+
+    def test_empty_remaining_actions_skips_record(self):
+        self.assertEqual(
+            pending_mod.pending_items_from_records([self._rec(remaining_actions=[])]), []
+        )
+
+
+class TestAsyncTaskConversion(_Base):
+    """R-12 / R-13:动作取 meta.action;先 stop 再取补做队列。"""
+
+    class _Sys:
+        def __init__(self, queue):
+            self._queue = queue
+            self.calls = []
+
+        def stop(self, timeout=5.0):
+            self.calls.append("stop")
+
+        def get_retry_queue(self):
+            self.calls.append("get_retry_queue")
+            return self._queue
+
+        def get_stranded(self):
+            self.calls.append("get_stranded")
+            return []
+
+    def test_split_by_meta_action(self):
+        kick = {"player": "甲", "command": "/guild kick 甲", "meta": {"action": "kick"}}
+        gc = {"player": "甲", "command": "/gc 通知", "meta": {"msg": "通知"}}
+        good, bad = pending_mod.split_async_tasks([kick, gc])
+        self.assertEqual(good, [kick])
+        self.assertEqual(bad, [gc])
+
+    def test_command_whole_sentence_is_not_used_as_action(self):
+        """回归:此前用 command.split(',') 当 actions,续做端认不出 → 条目永久卡住。"""
+        items, bad = pending_mod.pending_items_from_async_system(
+            self._Sys([{"player": "甲", "command": "/guild kick 甲", "meta": {"action": "kick"}}])
+        )
+        self.assertEqual(items[0]["actions"], ["kick"])
+        self.assertEqual(bad, 0)
+
+    def test_unresumable_counted(self):
+        items, bad = pending_mod.pending_items_from_async_system(
+            self._Sys([{"player": "甲", "command": "/gc x", "meta": {}}])
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(bad, 1)
+
+    def test_stop_before_read_order(self):
+        sys_ = self._Sys([])
+        pending_mod.pending_items_from_async_system(sys_)
+        self.assertEqual(sys_.calls[0], "stop", f"先取队列后停 → 队列恒空: {sys_.calls}")
+
+    def test_stranded_converted_and_deduped_against_retry(self):
+        class _Sys2(self._Sys):
+            def get_stranded(self):
+                return [
+                    {"player": "甲", "command": "/guild demote 甲", "meta": {"action": "demote"}},
+                    {"player": "乙", "command": "/guild kick 乙", "meta": {"action": "kick"}},
+                ]
+
+        items, bad = pending_mod.pending_items_from_async_system(
+            _Sys2([{"player": "甲", "command": "/guild kick 甲", "meta": {"action": "kick"}}])
+        )
+        players = [i["player"] for i in items]
+        self.assertEqual(players, ["甲", "乙"], "同一玩家既在补做队列又在途 → 只留一条")
+        self.assertEqual(bad, 0)
 
 
 if __name__ == "__main__":
