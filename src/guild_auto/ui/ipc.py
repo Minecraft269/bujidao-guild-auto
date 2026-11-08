@@ -69,6 +69,33 @@ if os.name == "nt":  # pragma: no cover - 非 Windows 上只用于 import
     _kernel32.CancelSynchronousIo.argtypes = [wintypes.HANDLE]
     _kernel32.CancelSynchronousIo.restype = wintypes.BOOL
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    # 读循环要先 Peek 再 Read（见 _read_lines 的说明）：没有原型会把 64 位句柄
+    # 当 c_int 传，句柄一被截断 Peek/Read/Write 全部失败。
+    _kernel32.PeekNamedPipe.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _kernel32.PeekNamedPipe.restype = wintypes.BOOL
+    _kernel32.ReadFile.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    _kernel32.ReadFile.restype = wintypes.BOOL
+    _kernel32.WriteFile.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_char_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    _kernel32.WriteFile.restype = wintypes.BOOL
 
 
 class IpcError(RuntimeError):
@@ -89,6 +116,10 @@ class IpcServer:
 
     def __init__(self, handlers: dict[str, Callable[[dict], Any]], token: str | None = None):
         self.token = token or secrets.token_hex(8)
+        # GUI 托盘「退出」→ 核自己退出（R-45）：GUI 进程既没有核的 pid，也不该
+        # 去杀别的进程。让核收到请求后自己收尾，是唯一可靠的方向。
+        # 回调由入口（main.py）注册；未注册时 quit 仍按未知方法拒绝。
+        self.on_quit: Callable[[], None] | None = None
         self.pipe_name = PIPE_PREFIX + self.token
         self.path = "\\\\.\\pipe\\" + self.pipe_name
         self._handlers = handlers
@@ -289,6 +320,21 @@ class IpcServer:
             f"[阶段] S6 ipc 读循环进入 stop={self._stop.is_set()} 管道={self.masked_path}"
         )
         while not self._stop.is_set():
+            # 为什么先 Peek 再 Read：Windows 会把**同一管道实例**上的同步读写串行化。
+            # 只要本线程挂起在阻塞的 ReadFile 上，别的线程（send_event、应答写）的
+            # WriteFile 就会一直排队 —— 实测「核要向 GUI 推 ipc-closed」时直接卡死。
+            # 所以没有数据就先睡 5ms，绝不把句柄占在挂起的读上（GUI 侧 ipc.rs 同因同解）。
+            avail = wintypes.DWORD(0)
+            if not _kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None):
+                # 对端断开/句柄已关：与读失败同义，按读循环结束时留痕
+                logger.log_warning(
+                    f"[阶段] S6 ipc 读循环结束(管道已断) 本次字节=0 "
+                    f"累计字节={total} 管道={self.masked_path}"
+                )
+                return
+            if avail.value == 0:
+                time.sleep(0.005)
+                continue
             ok = _kernel32.ReadFile(handle, chunk, BUFFER_SIZE, ctypes.byref(read), None)
             if not ok or read.value == 0:
                 # 读侧必须留痕：否则「GUI 说发了、核说没收到」时无从判断
@@ -399,6 +445,16 @@ class IpcServer:
                 f"method={method or '?'} conclusion=disconnect"
             )
             return {"id": req_id, "ok": False, "error": "token 无效，连接被拒绝"}
+        # quit 是协议级保留方法（不属于业务方法表）：GUI 托盘「退出」时先发它，
+        # 核收尾后自己退出。应答仍照常回一条，GUI 不必等核死掉。
+        if method == "quit" and self.on_quit is not None:
+            logger.log_info("[阶段] S6 收到 GUI 退出请求 quit，核开始收尾")
+            try:
+                self.on_quit()
+            except Exception as e:  # 回调失败也要回 ok=false，界面侧才知道没生效
+                logger.log_warning(f"[阶段] S6 处理 GUI 退出请求异常: {e!r}")
+                return {"id": req_id, "ok": False, "error": f"核退出失败: {e}"}
+            return {"id": req_id, "ok": True, "result": {"bye": True}}
         handler = self._handlers.get(method)
         if handler is None:
             logger.log_trace(

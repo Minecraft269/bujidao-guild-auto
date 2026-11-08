@@ -313,6 +313,36 @@ fn win_set_close_policy(
     };
 }
 
+/// 退出前请核一起退出（R-45）：托盘「退出」原先只关界面，核作为残留进程继续跑。
+/// 界面既没有核的 pid，也不该去杀别的进程 —— 发一条 `quit` 请核自己收尾。
+fn shutdown_core(state: &AppState) {
+    let client = lock(&state.ipc).clone();
+    let Some(client) = client else {
+        logger::info("close", "退出时未连接核（或核已退出），无需通知");
+        return;
+    };
+    match client.call_with_timeout("quit", json!({}), Duration::from_millis(1200)) {
+        Ok(v) => {
+            // 应答可能是 ok=false（核版本没实现 quit / 回调没注册）：不能记成"已退出"，
+            // 那时候核只会因管道断开被动结束，可能残留 —— 必须留 WARNING。
+            if v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false) {
+                logger::info("close", "已请核退出（核在 1.5s 内自行结束）");
+            } else {
+                logger::warn(
+                    "close",
+                    &format!(
+                        "请核退出被拒，核只能等管道断开被动结束: {}",
+                        v.get("error")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("<无错误文本>")
+                    ),
+                );
+            }
+        }
+        Err(e) => logger::warn("close", &format!("请核退出失败（核可能已不在或正忙）: {e}")),
+    }
+}
+
 /// 点关闭按钮：按策略决定隐藏/退出/询问（§5）
 #[tauri::command]
 fn win_close(app: tauri::AppHandle, w: WebviewWindow, state: tauri::State<'_, AppState>) {
@@ -354,6 +384,7 @@ fn win_close(app: tauri::AppHandle, w: WebviewWindow, state: tauri::State<'_, Ap
             &format!("[main.win_close] EXIT hit={reason} conclusion=exit"),
         );
         save_geo(&app, &w);
+        shutdown_core(&state);
         app.exit(0);
     } else if p.action == "minimize" {
         logger::info("close", "关闭动作=隐藏(minimize)");
@@ -416,6 +447,7 @@ fn win_close_decision(
             ),
         );
         save_geo(&app, &w);
+        shutdown_core(&state);
         app.exit(0);
     }
 }
@@ -962,6 +994,7 @@ fn main() {
                         if let Some(w) = app.get_webview_window("main") {
                             save_geo(&app, &w);
                         }
+                        shutdown_core(&state);
                         app.exit(0);
                     } else if p.action == "minimize" {
                         logger::info("close", "关闭动作=隐藏(minimize)");
@@ -1066,6 +1099,8 @@ fn main() {
                     // 退出是真退出，不走 close_action（§5）
                     "quit" => {
                         logger::info("close", "关闭动作=退出 来源=托盘 quit");
+                        let state = app.state::<AppState>();
+                        shutdown_core(&state);
                         app.exit(0);
                     }
                     other => {
@@ -1109,6 +1144,27 @@ fn main() {
                             ),
                         );
                         let on_event = move |v: Value| {
+                            let method = v
+                                .get("method")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            // 核主动说「我要退出了」（R-46）：转给前端提示，1.5s 后界面自退。
+                            // 原先核退出只是关管道，界面一直停在「已连接核心」。
+                            if method == "ipc-closed" {
+                                logger::warn(
+                                    "ipc",
+                                    "收到核的 ipc-closed：提示前端，1.5s 后关闭界面",
+                                );
+                                let _ = handle_for_events.emit("ipc-closed", "核心已退出");
+                                let handle = handle_for_events.clone();
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(Duration::from_millis(1500));
+                                    logger::info("ipc", "核已退出，界面自行关闭");
+                                    handle.exit(0);
+                                });
+                                return;
+                            }
                             let _ = handle_for_events.emit("core-event", v);
                         };
                         match ipc::Ipc::connect(&pipe_name, &token_for_connect, on_event) {

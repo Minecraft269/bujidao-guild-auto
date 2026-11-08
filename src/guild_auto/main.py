@@ -11,6 +11,7 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 """
 
 import argparse
+import atexit
 import faulthandler
 import os
 import re
@@ -921,6 +922,43 @@ def _gui_pending(items):
     return _b.pending_rows(items)
 
 
+def _gui_notify_core_exit(server) -> None:
+    """核退出前推一条 ipc-closed（R-46）：界面没有别的途径知道核已经走了。
+
+    由 atexit 调用 —— 正常返回、sys.exit、未处理异常都会走到；
+    被强杀（TerminateProcess）时不会走到，那种情况界面只能等管道 EOF。
+    """
+    try:
+        server.send_event("ipc-closed", {"pid": os.getpid()})
+        # send_event 未连接时静默返回，别把「没发出去」记成「已通知」
+        if server.connected:
+            logger.log_info("[阶段] S6 已通知 GUI：核即将退出(ipc-closed)")
+    except Exception as e:  # atexit 里再抛只会污染退出码，留痕即可
+        logger.log_warning(f"[阶段] S6 通知 GUI 核退出失败: {e!r}")
+
+
+def _gui_quit_core() -> None:
+    """GUI 托盘「退出」→ 核自己收尾并退出（R-45）。
+
+    给主线程最多 1.5s 走 finally（未完成动作落待办），到点无论如何结束进程：
+    界面已经关了，核再留着就是本条要消灭的「后台残留」。
+    """
+    logger.log_warning("[阶段] S5 收到 GUI 托盘「退出」：核开始收尾，1.5s 后结束进程")
+    try:
+        # 先解暂停门，否则主线程卡在等待里永远走不到 finally
+        runtime_mod.set_paused(False)
+        runtime_mod.set_force_stop(True)
+    except Exception as e:
+        logger.log_warning(f"[阶段] S5 退出前复位运行状态失败(仍会退出): {e!r}")
+    threading.Timer(1.5, _gui_quit_hard).start()
+
+
+def _gui_quit_hard() -> None:
+    """宽限期到点硬退出：不走 Ctrl+C 菜单（那会再多等 5s，界面已经不在了）。"""
+    logger.log_info("[阶段] S5 退出宽限期到，强制结束核进程")
+    os._exit(0)
+
+
 def gate_on_failures(rt, label, count, halt_reason):
     """流程失败门(R-15):有失败项时必须给用户明确处置,不得静默继续。
 
@@ -997,6 +1035,13 @@ def main():
                 controller=ui_bridge_mod.RuntimeController(),
                 first_run=first_run,
             )
+            # R-45/R-46：两个方向都要有归宿 —— GUI 退出→核退出；核退出→GUI 提示并自退。
+            # 必须**在 launch() 之前**注册：用户可能一点「开始」都没点就从托盘退出，
+            # 那时也要走 quit 让核自己收尾（实测晚注册会回「未知方法: quit」）。
+            ipc_server = getattr(bridge, "server", None)
+            if ipc_server is not None:  # 没有管道就没有 IPC（测试替身 / 纯控制台桥）
+                ipc_server.on_quit = _gui_quit_core
+                atexit.register(_gui_notify_core_exit, ipc_server)
             # launch() 返回 True = 用户点了「开始」：重新读取刚保存的配置，
             # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
             watchdog.mark("S5/S6 GUI 拉起与 IPC 建立")
