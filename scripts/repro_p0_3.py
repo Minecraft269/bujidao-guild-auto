@@ -5,11 +5,15 @@
     python scripts/repro_p0_3.py
     GUILD_REAL_LOG_DIR=<真实日志目录> python scripts/repro_p0_3.py   # 追加真实样本回归
 
-每条独立断言,末尾打印 PASS/FAIL 汇总,任一失败退出码为 1。
+每条独立断言,末尾打印 PASS/FAIL/SKIPPED 汇总:
+  * 有 FAIL → 退出码 1
+  * 无 FAIL 但有 SKIPPED → 退出码 2(没验不能算过,协议 F.4)
+  * 全部 PASS → 退出码 0
 反转验证:切回修复前的 main(d048e9a),R-25/R-26/R-27/R-30 四条均 FAIL。
 
-真实样本目录走环境变量而不是写死本机路径(CLAUDE.md §6:不得上传本机绝对路径);
-未设置时该项 SKIP,不影响退出码。
+真实样本目录走环境变量而不是写死本机路径(CLAUDE.md §6:不得上传本机绝对路径)。
+P0-5 修:未设 GUILD_REAL_LOG_DIR 时该项输出独立 **SKIPPED**、**不计入 PASS 数**,
+且退出码非零 —— 旧版输出 "SKIP" 却计入 PASS 并 EXIT=0,等于"没验也算过"。
 """
 
 import glob
@@ -24,6 +28,17 @@ from guild_auto.infrastructure import logger  # noqa: E402
 from guild_auto.infrastructure.log_watcher import LogWatcher, detect_encoding  # noqa: E402
 
 RESULTS = []
+
+
+class Skipped:
+    """这一项没有可验的样本/环境 —— 既不算通过也不算失败。
+
+    必须与"通过"区分开:把没验的项记成 PASS 会让汇总行看起来全绿,
+    而实际上最关键的证据根本没取到。
+    """
+
+    def __init__(self, reason):
+        self.reason = reason
 
 
 def _silence_logger():
@@ -53,11 +68,16 @@ def check(name, fn):
     t0 = time.time()
     try:
         detail = fn()
-        RESULTS.append((name, True, f"{detail or ''} ({time.time() - t0:.1f}s)"))
     except AssertionError as e:
-        RESULTS.append((name, False, f"{e} ({time.time() - t0:.1f}s)"))
+        RESULTS.append((name, "fail", f"{e} ({time.time() - t0:.1f}s)"))
+        return
     except Exception as e:  # 缺属性/API 变化 = 修复前的旧代码
-        RESULTS.append((name, False, f"{type(e).__name__}: {e}"))
+        RESULTS.append((name, "fail", f"{type(e).__name__}: {e}"))
+        return
+    if isinstance(detail, Skipped):
+        RESULTS.append((name, "skip", f"{detail.reason} ({time.time() - t0:.1f}s)"))
+    else:
+        RESULTS.append((name, "pass", f"{detail or ''} ({time.time() - t0:.1f}s)"))
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +183,8 @@ def real_samples():
     root = os.environ.get("GUILD_REAL_LOG_DIR", "")
     files = sorted(glob.glob(os.path.join(root, "latest.log.*"))) if root else []
     if not files:
-        return "SKIP(未设置 GUILD_REAL_LOG_DIR)"
+        # 没有样本 = 这项没验,既不算通过也不算失败(见 Skipped 的说明)
+        return Skipped("未设置 GUILD_REAL_LOG_DIR 或目录下无 latest.log.*,本次未做真实样本回归")
     bad = []
     for p in files:
         enc = detect_encoding(p)
@@ -192,11 +213,19 @@ def main():
     check("真实样本 0 替换符", real_samples)
 
     print()
-    for name, ok, detail in RESULTS:
-        print(f"[{'PASS' if ok else 'FAIL'}] {name}: {detail}")
-    failed = [r for r in RESULTS if not r[1]]
-    print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} PASS")
-    return 1 if failed else 0
+    for name, status, detail in RESULTS:
+        print(f"[{status.upper()}] {name}: {detail}")
+    passed = sum(1 for r in RESULTS if r[1] == "pass")
+    failed = [r for r in RESULTS if r[1] == "fail"]
+    skipped = sum(1 for r in RESULTS if r[1] == "skip")
+    print(f"\n{passed} passed / {len(failed)} failed / {skipped} skipped")
+    if failed:
+        return 1
+    if skipped:
+        # 没验不能算过:把"缺样本"暴露成非零退出码,别让汇总行读成"全绿"
+        print("存在未验证项(SKIPPED):本次不算全过,退出码 2")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

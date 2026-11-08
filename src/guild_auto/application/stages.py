@@ -292,6 +292,16 @@ def stage_confirm_execution(rt, records, cfg):
         # 早先误用布尔化 ask()(只认 y/yes),导致"按提示输入 kick-confirm 反而跳过、
         # 凭习惯敲 y 反而真踢"——语义完全反转,是不可逆操作上的严重回归。
         expected = str(cfg.get("kick_confirm_text") or "").strip()
+        # R-32(并入 P0-1b 的发现):拿不到非空确认词 = **不放行**,与续做侧
+        # pending.py 同口径。启动校验已在 config/schema.py 拦住这几种配置,
+        # 这里是兜底 —— 校验被绕过时,空确认词会让 `"" == ""` 成立,
+        # 用户直接回车就真的把不可逆的踢出放行了。
+        if not expected:
+            logger.log_warning(
+                "配置缺少非空 kick_confirm_text,踢出二次确认无法成立,"
+                f"跳过全部踢出(players={len(pending_kicks)});与续做侧同口径"
+            )
+            console("配置缺少踢出确认词(kick_confirm_text),已跳过全部踢出")
         # kick 模态要显示玩家名+等级+周贡献，并要求逐字输入确认词（§3.4）
         rt.confirm_context = {
             "stage": "踢出二次确认",
@@ -305,14 +315,19 @@ def stage_confirm_execution(rt, records, cfg):
             ],
             "confirm_text": expected,
         }
-        ans = rt.ask_text(f"确认执行踢出?输入 {expected} 后回车执行,其他输入跳过踢出: ")
+        # 没有确认词时不提问:问"输入  后回车执行"毫无意义,直接走跳过分支
+        ans = (
+            rt.ask_text(f"确认执行踢出?输入 {expected} 后回车执行,其他输入跳过踢出: ")
+            if expected
+            else ""
+        )
         logger.trace_code_location(
             "stages.stage_confirm_execution.gate2",
             "kick confirm",
             items=len(pending_kicks),
-            match=ans == expected,
+            match=bool(expected) and ans == expected,
         )
-        if ans != expected:
+        if not expected or ans != expected:
             console("已跳过全部踢出(其他操作照常执行)")
             for r in pending_kicks:
                 # 只摘掉 kick,保留同一条记录里的升/降职 —— 整条标 executed
