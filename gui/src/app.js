@@ -1063,6 +1063,21 @@ function confirmStop() {
 async function askClosePolicy() {
   // §5：应用内模态（窗口内渲染），不新建窗口、不改窗口尺寸。
   // 小窗 360×150 用紧凑版：单行标题 + 两按钮各半 + 复选框折成 12px 小字。
+  //
+  // P0-4c：运行中关窗**先暂停再问**（复用既有 pause 通道，不新增状态机）。
+  // 不先停手就退出，正在发的指令会半途断掉；暂停是既有语义，不新增状态。
+  const running = S.state.state === "running";
+  const unfinished = S.pending.length;
+  if (running) {
+    glog("warning", `关窗请求：运行中，先暂停（未完成 ${unfinished} 个任务）`);
+    const res = await rpc("pause", {});
+    if (res && res.ok === false) {
+      glog("error", `关窗前暂停失败（仍会询问）：${res.error ?? "未知"}`);
+    } else {
+      glog("warning", `已暂停（未完成 ${unfinished} 个任务），等用户选择最小化/退出`);
+    }
+  }
+
   const layer = $("modal-layer");
   const modal = $("modal");
   const compact = S.compact;
@@ -1074,6 +1089,13 @@ async function askClosePolicy() {
 
   const b = document.createElement("div");
   b.className = "modal-body";
+  // 只在真有未完成任务时才报数：没有 N 就别吓人。
+  if (unfinished > 0) {
+    const warn = document.createElement("p");
+    warn.className = "muted";
+    warn.textContent = `还有 ${unfinished} 个任务未完成验证，退出将丢弃；建议先暂停或等完成。`;
+    b.append(warn);
+  }
   const remember = document.createElement("input");
   remember.type = "checkbox";
   const label = document.createElement("label");
@@ -1225,12 +1247,15 @@ async function boot() {
     glog("error", `IPC 连接异常：${e.payload}`);
     $("sb-conn").textContent = `连接异常：${e.payload}`;
   });
-  await api.event.listen("ipc-closed", () => {
-    // 不是死路：告诉用户该从哪里重新拉起（方案 B 落地后由核自动拉起界面）
-    glog("warning", "IPC 已关闭：核心已退出");
-    $("sb-conn").textContent = "核心已退出";
+  await api.event.listen("ipc-closed", (e) => {
+    // 两种来源（P0-4c）：
+    //   · 核主动推 ipc-closed —— 正常退出，Rust 侧 1.5s 后关界面；
+    //   · Rust 读线程看到管道 EOF 而核没推过 —— 核被强杀，界面保留可重新拉起。
+    const why = typeof e.payload === "string" && e.payload ? e.payload : "核心已退出";
+    glog("warning", `IPC 已关闭：${why}`);
+    $("sb-conn").textContent = why;
     $("st-dot").className = "dot danger";
-    $("ctl-hint").textContent = "核心已退出。请重新启动主程序（核会自动拉起界面）。";
+    $("ctl-hint").textContent = `${why}。请重新启动主程序以重新拉起核心与界面。`;
   });
   await api.event.listen("gui-close-request", () => void askClosePolicy());
   await api.event.listen("tray-command", (e) => handleTray(e.payload));
