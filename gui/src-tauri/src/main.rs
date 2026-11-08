@@ -339,10 +339,7 @@ fn shutdown_core(state: &AppState) {
                 );
             }
         }
-        Err(e) => logger::warn(
-            "close",
-            &format!("请核退出失败（核可能已不在或正忙）: {e}"),
-        ),
+        Err(e) => logger::warn("close", &format!("请核退出失败（核可能已不在或正忙）: {e}")),
     }
 }
 
