@@ -373,8 +373,8 @@ CONFIG_COMMENTS = {
     '大小写不敏感,match_wildcard=true 时支持 * 通配(如 ["测试*"])。优先级最高(仅次于功能开关)',
     "whitelist": "白名单:非空时**只有**名单内的玩家参与升降踢判定,其余玩家一律不处理。"
     "留空 [] 表示不启用该限制。可填玩家名或通配模式(需 match_wildcard=true)",
-    "whitelist_protected": "保护名单:名单内的玩家**免于降职与踢出**(升职仍然生效)。"
-    "适合保护新人或管理人小号。留空 [] 表示不启用",
+    "whitelist_protected": "保护名单:名单内的玩家**不会被踢出**(升职与降职照常生效,"
+    "与 blacklist 的『完全不处理』不同)。适合保护新人或管理人小号。留空 [] 表示不启用",
     "match_wildcard": "名字匹配是否启用通配符:true=支持 * 与 ? (如 '测试*' 匹配所有以'测试'开头的名字);"
     "false=只做精确匹配。两种情况都大小写不敏感",
     "blocked_name_policy": "屏蔽词玩家策略(名字被网易过滤成整串星号,身份不可读):"
@@ -436,8 +436,9 @@ CONFIG_COMMENTS = {
     "'highest_priority'=命中里 priority 最大者;'all'=应用全部命中的规则",
     "rules": "自定义规则列表(JSON 数组)。每条含 id/name/enabled/priority/stop/"
     "conditions/actions。条件字段可用:weekly_total(数值比较) rank(== != in not_in) "
-    "online(== !=) player(== != matches) joined_at/last_online(before after)。"
-    "动作可用:promote(times) demote(times) kick(reason) notify ignore",
+    "player(== != matches) joined_at/last_online(before after)。"
+    "动作可用:promote(times) demote(times) kick(reason) notify ignore。"
+    "注意:在线状态(online)条件**不支持** —— 解析层不产出该字段,校验会报『未知字段』",
     "ui.enabled": "是否启用图形界面入口:true=启动即拉起界面(找不到 Gui.exe 会明确报错并回落控制台);false=只走控制台流程。默认 true。"
     "无 --ui 参数时默认走控制台,向后兼容",
     "ui.start_mode": "窗口初始形态:'normal'=窗口化 600x400(默认);'compact'=小窗 200x150"

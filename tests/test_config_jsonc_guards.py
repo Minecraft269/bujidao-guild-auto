@@ -8,8 +8,10 @@ test_config_jsonc_guards.py —— 新增校验规则与 JSONC 解析的回归
     config.json 必然产生这些;解析器扛不住 = 配置直接读不出来,脚本无法启动。
   * 字符串字面量内的 '//' 不得被当注释(路径 C:\\...\\logs\\latest.log、
     文案里的 "若有异议//管理员")—— 正则式剥注释会截断整个配置。
-  * 阈值逻辑矛盾(entry_promote_1 < entry_kick):入门成员 exp 落在两个门槛
-    之间时 if/elif 链两边都不命中,该成员被静默跳过 —— 升职踢人都不执行。
+  * 阈值逻辑矛盾(entry_promote_1 > entry_kick —— R-32 的判据方向曾写反):入门成员
+    exp 落在 [entry_kick, entry_promote_1) 时 if/elif 链两边都不命中,该成员被静默跳过。
+  * kick_confirm_text 缺键/null/空串:运行期会被 `or ""` 变成空串,而主流程
+    `ans != expected` 在用户直接回车时 `"" == ""` 成立 → 直接放行不可逆的踢出。
   * 开关写成字符串 "false":JSON 里加个引号就永远为真,开关关不掉。
   * 必需键被整个删掉:静默回退默认值,用户以为自己改生效了其实没有。
 """
@@ -112,16 +114,54 @@ class TestJsoncParsing(_TmpMixin, unittest.TestCase):
 
 
 class TestThresholdContradictions(unittest.TestCase):
-    """阈值逻辑矛盾:门槛倒置会让成员被静默跳过,必须报错。"""
+    """阈值逻辑矛盾:门槛倒置会让成员被静默跳过,必须报错(每对关系一条用例)。
 
-    def test_entry_promote_1_below_kick_rejected(self):
+    R-32:entry_promote_1 与 entry_kick 的判据方向曾写反 ——
+    合法配置(P1 < kick)被拒、非法配置(P1 > kick)反而放过。
+    """
+
+    # (键A, 键B, 合法值对, 非法值对);非法值对只让这一对越界,避免互相干扰
+    PAIRS = (
+        # entry 判定先 >= entry_promote_1 升职、再 < entry_kick 踢出:
+        # 前者高于后者时 [kick, promote_1) 静默跳过
+        ("entry_promote_1", "entry_kick", (3500, 4000), (4000, 3500)),
+        ("entry_promote_1", "entry_promote_2", (3500, 10000), (20000, 10000)),
+        ("entry_promote_2", "entry_promote_3", (10000, 30000), (40000, 30000)),
+        ("low_promote_1", "low_promote_2", (10000, 30000), (40000, 30000)),
+    )
+
+    def test_default_config_has_no_contradiction(self):
+        """合法默认配置不得误报(entry_promote_1 == entry_kick == 3500 是合法边界)。"""
+        self.assertEqual(_errors(validate_config(_cfg())), [])
+
+    def test_each_pair_inverted_is_rejected(self):
+        for a, b, _legal, (va, vb) in self.PAIRS:
+            with self.subTest(pair=f"{a} vs {b}"):
+                c = _cfg()
+                c["thresholds"][a] = va
+                c["thresholds"][b] = vb
+                errs = _errors(validate_config(c))
+                self.assertTrue(
+                    any(a in m and b in m for m in errs),
+                    f"未拦下 {a}({va}) 高于 {b}({vb}): {errs}",
+                )
+
+    def test_each_pair_legal_is_accepted(self):
+        for a, b, (va, vb), _illegal in self.PAIRS:
+            with self.subTest(pair=f"{a} vs {b}"):
+                c = _cfg()
+                c["thresholds"][a] = va
+                c["thresholds"][b] = vb
+                errs = [m for m in _errors(validate_config(c)) if a in m and b in m]
+                self.assertEqual(errs, [], f"合法配置被误报: {errs}")
+
+    def test_error_names_the_exact_keys(self):
+        """验收要求:矛盾配置报错必须指出具体键名。"""
         c = _cfg()
-        c["thresholds"]["entry_promote_1"] = 100
-        errs = _errors(validate_config(c))
-        self.assertTrue(
-            any("entry_promote_1" in m and "entry_kick" in m for m in errs),
-            f"未拦下升职门槛低于踢出门槛: {errs}",
-        )
+        c["thresholds"]["entry_promote_1"] = 4000
+        joined = "\n".join(_errors(validate_config(c)))
+        self.assertIn("thresholds.entry_promote_1(4000)", joined)
+        self.assertIn("thresholds.entry_kick(3500)", joined)
 
     def test_entry_tiers_must_increase(self):
         """entry_promote_1 > entry_promote_2 即档位倒置。"""
@@ -138,6 +178,49 @@ class TestThresholdContradictions(unittest.TestCase):
         c = _cfg()
         c["thresholds"]["low_promote_1"] = 99999
         self.assertTrue(any("low_promote_1" in m for m in _errors(validate_config(c))))
+
+
+class TestKickConfirmTextMustBeNonEmpty(unittest.TestCase):
+    """R-32(并入 P0-1b 的发现):kick_confirm_text 缺键/null/空串四种形态都必须报错。
+
+    旧实现写的是 `if kick_text is not None and (...)`:显式配 null 时整段校验被跳过,
+    运行期 `cfg.get(...) or ""` 变成空串,主流程 `ans != expected` 在用户直接回车时
+    `"" == ""` 成立 → **放行不可逆的踢出**。所以这三种形态一律在启动阶段拦住。
+    """
+
+    def _validate_after(self, mutate):
+        c = _cfg()
+        mutate(c)
+        return _errors(validate_config(c))
+
+    def test_missing_key_rejected(self):
+        msgs = self._validate_after(lambda c: c.pop("kick_confirm_text"))
+        self.assertTrue(
+            any("缺少必需配置项 kick_confirm_text" in m for m in msgs), f"缺键未报错: {msgs}"
+        )
+
+    def test_none_rejected(self):
+        msgs = self._validate_after(lambda c: c.__setitem__("kick_confirm_text", None))
+        self.assertTrue(
+            any("kick_confirm_text" in m and "非空字符串" in m for m in msgs),
+            f"null 未报错(旧实现正是在这里跳过校验): {msgs}",
+        )
+
+    def test_empty_string_rejected(self):
+        msgs = self._validate_after(lambda c: c.__setitem__("kick_confirm_text", ""))
+        self.assertTrue(any("kick_confirm_text" in m for m in msgs), f"空串未报错: {msgs}")
+
+    def test_blank_string_rejected(self):
+        msgs = self._validate_after(lambda c: c.__setitem__("kick_confirm_text", "   "))
+        self.assertTrue(any("kick_confirm_text" in m for m in msgs), f"空白串未报错: {msgs}")
+
+    def test_non_string_rejected(self):
+        msgs = self._validate_after(lambda c: c.__setitem__("kick_confirm_text", 123))
+        self.assertTrue(any("kick_confirm_text" in m for m in msgs), f"非字符串未报错: {msgs}")
+
+    def test_valid_text_passes(self):
+        msgs = self._validate_after(lambda c: c.__setitem__("kick_confirm_text", "确认踢出"))
+        self.assertEqual([m for m in msgs if "kick_confirm_text" in m], [])
 
     def test_equal_thresholds_accepted(self):
         """相等不算矛盾:entry_promote_1 == entry_kick 时区间为空,语义仍确定。"""

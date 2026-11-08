@@ -144,9 +144,10 @@ def validate_config(cfg):
         (
             "entry_promote_1",
             "entry_kick",
-            lambda a, b: a < b,
-            "小于",
-            "入门成员 exp 落在两者之间时既不升职也不踢出,等于静默跳过",
+            lambda a, b: a > b,
+            "大于",
+            "entry 的判定顺序是「先 >= entry_promote_1 升职,再 < entry_kick 踢出」,"
+            "前者高于后者时 [entry_kick, entry_promote_1) 区间两个分支都不命中,成员被静默跳过",
         ),
         ("entry_promote_1", "entry_promote_2", lambda a, b: a > b, "大于", "升职档位应随门槛递增"),
         ("entry_promote_2", "entry_promote_3", lambda a, b: a > b, "大于", "升职档位应随门槛递增"),
@@ -326,9 +327,27 @@ def validate_config(cfg):
     if "rules" in cfg and not isinstance(cfg["rules"], list):
         issues.append(("error", f"配置项 rules 应为列表,当前: {cfg['rules']!r}"))
     check_bool(cfg, "kick_confirm", "")  # 顶层键:路径前缀为空
-    kick_text = cfg.get("kick_confirm_text")
-    if kick_text is not None and (not isinstance(kick_text, str) or not kick_text.strip()):
-        issues.append(("error", f"配置项 kick_confirm_text 必须是非空字符串,当前: {kick_text!r}"))
+    # kick_confirm_text 必须"存在 + 非空字符串":缺键 / null / "" / "   " 四种形态全部报错。
+    # R-32(并入 P0-1b 发现):旧实现写的是 `if kick_text is not None and (...)`,
+    # 于是显式配成 null 时**整段校验被跳过**;运行期又被 `or ""` 变成空串,
+    # 主流程 `if ans != expected` 在用户直接回车时 `"" == ""` 成立 → **放行踢出**。
+    # 不可逆操作上"拿不到非空确认词"必须等于"不放行",所以这里一律在启动阶段拦住。
+    if "kick_confirm_text" not in cfg:
+        issues.append(
+            (
+                "error",
+                "缺少必需配置项 kick_confirm_text(踢出二次确认词):不可为缺键,"
+                "缺确认词等于任何人都能凭回车真踢",
+            )
+        )
+    elif not isinstance(cfg["kick_confirm_text"], str) or not cfg["kick_confirm_text"].strip():
+        issues.append(
+            (
+                "error",
+                f"配置项 kick_confirm_text 必须是非空字符串(不可为 null/空串),"
+                f"当前: {cfg['kick_confirm_text']!r}",
+            )
+        )
     # ── 运行分析报告(第三份)──
     # 三个开关都必须是真布尔值:"false" 加引号会永远为真,与 switches 同一类坑。
     rep = section(cfg, "report")
