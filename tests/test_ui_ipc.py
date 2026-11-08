@@ -12,7 +12,7 @@ import os
 import threading
 import unittest
 
-from guild_auto.ui.ipc import IpcServer
+from guild_auto.ui.ipc import IpcError, IpcServer
 
 
 def _handlers(seen=None):
@@ -66,6 +66,55 @@ class TestProtocol(unittest.TestCase):
         reply = srv.handle_line(json.dumps({"id": 4, "method": "save_config", "token": srv.token}))
         self.assertFalse(reply["ok"])
         self.assertEqual(reply["error"], "配置校验失败: 字段 ui.theme 取值非法")
+
+
+class TestQuit(unittest.TestCase):
+    """quit 分支（R-45）：GUI 托盘「退出」→ 核自己收尾。
+
+    P0-4 自述靠仓库外脚本 + 实机取证，仓库内零覆盖 —— 这里补三种
+    GUI 侧真正会碰到的结果：正常退出 / 核已退出（回调不可用或收尾失败）/ 管道已断。
+    """
+
+    def test_quit_normal_calls_on_quit_and_answers_bye(self):
+        called = []
+        srv = IpcServer(_handlers())
+        srv.on_quit = lambda: called.append("quit")
+        reply = srv.handle_line(json.dumps({"id": 9, "method": "quit", "token": srv.token}))
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["id"], 9)
+        self.assertEqual(reply["result"], {"bye": True})
+        self.assertEqual(called, ["quit"], "quit 必须真的触发核侧收尾回调")
+
+    def test_quit_when_core_already_gone_answers_ok_false(self):
+        # (a) 收尾回调抛异常：核已进入退出流程 / 收尾失败 → 不能回 ok=true
+        def boom():
+            raise RuntimeError("核已在退出流程中")
+
+        srv = IpcServer(_handlers())
+        srv.on_quit = boom
+        reply = srv.handle_line(json.dumps({"id": 10, "method": "quit", "token": srv.token}))
+        self.assertFalse(reply["ok"])
+        self.assertIn("核退出失败", reply["error"])
+
+        # (b) 回调没注册（旧核 / 核已退出，入口来不及挂）：落到未知方法，同样不能假装成功
+        old = IpcServer(_handlers())
+        reply2 = old.handle_line(json.dumps({"id": 11, "method": "quit", "token": old.token}))
+        self.assertFalse(reply2["ok"])
+        self.assertIn("未知方法", reply2["error"])
+
+    def test_quit_reply_over_broken_pipe_raises(self):
+        # 核已收尾，但 GUI 那边先没了：写应答必须抛错，不能静默丢
+        srv = IpcServer(_handlers())
+        srv.on_quit = lambda: None
+        reply = srv.handle_line(json.dumps({"id": 12, "method": "quit", "token": srv.token}))
+        self.assertTrue(reply["ok"])
+        # 从未连上（_handle=None）与句柄已失效（管道断了）都必须抛错，不能静默丢
+        with self.assertRaises(IpcError):
+            srv._write_line(reply)
+        if os.name == "nt":
+            srv._handle = 0  # 已断开的句柄：WriteFile 失败 → IpcError
+            with self.assertRaises(IpcError):
+                srv._write_line(reply)
 
 
 @unittest.skipUnless(os.name == "nt", "命名管道仅 Windows")

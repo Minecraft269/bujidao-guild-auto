@@ -135,9 +135,14 @@ pub struct Ipc {
 
 impl Ipc {
     /// 连接管道并起读线程；`on_event` 收核推送的 `{method, params}`。
-    pub fn connect<F>(pipe: &str, token: &str, on_event: F) -> Result<Self, String>
+    ///
+    /// `on_eof`：读线程因管道 EOF / 读错误退出时回调一次。核被强杀
+    /// （TerminateProcess）时不走 atexit，推不出 `ipc-closed`，这是界面唯一
+    /// 能感知「核已经走了」的途径（R-46 的 GUI 半边）。是否据此提示由调用方决定。
+    pub fn connect<F, G>(pipe: &str, token: &str, on_event: F, on_eof: G) -> Result<Self, String>
     where
         F: Fn(Value) + Send + 'static,
+        G: Fn() + Send + 'static,
     {
         let pipe_log = masked_pipe(pipe, token);
         logger::trace(
@@ -339,6 +344,10 @@ impl Ipc {
                         "[ipc.reader_loop] EXIT thread=ipc-reader lines={lines_read} reply={replies} event={events} skip={skips}"
                     ),
                 );
+                // 读线程退出 = 管道已断（EOF 或读错误）。核正常退出时会先推 ipc-closed，
+                // 那条路已由 on_event 处理；调用方按「是否收到过 ipc-closed」决定要不要
+                // 把这次 EOF 报成「未收到正常关闭」。
+                on_eof();
             });
         if let Err(e) = reader {
             logger::error("ipc", &format!("读线程创建失败: {e}"));

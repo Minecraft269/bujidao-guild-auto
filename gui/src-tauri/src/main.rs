@@ -13,6 +13,7 @@ mod ipc;
 mod logger;
 mod protocol;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -1143,6 +1144,11 @@ fn main() {
                                 masked_pipe(&pipe_name, &token_for_connect)
                             ),
                         );
+                        // 核是否已经「正常说过再见」（推过 ipc-closed）。读线程随之会看到
+                        // EOF，那条 EOF 不能再报成「未收到正常关闭」。
+                        let normal_close = std::sync::Arc::new(AtomicBool::new(false));
+                        let normal_close_for_event = normal_close.clone();
+                        let handle_for_eof = handle_for_events.clone();
                         let on_event = move |v: Value| {
                             let method = v
                                 .get("method")
@@ -1152,6 +1158,7 @@ fn main() {
                             // 核主动说「我要退出了」（R-46）：转给前端提示，1.5s 后界面自退。
                             // 原先核退出只是关管道，界面一直停在「已连接核心」。
                             if method == "ipc-closed" {
+                                normal_close_for_event.store(true, Ordering::SeqCst);
                                 logger::warn(
                                     "ipc",
                                     "收到核的 ipc-closed：提示前端，1.5s 后关闭界面",
@@ -1167,7 +1174,25 @@ fn main() {
                             }
                             let _ = handle_for_events.emit("core-event", v);
                         };
-                        match ipc::Ipc::connect(&pipe_name, &token_for_connect, on_event) {
+                        // 管道 EOF 但核没推过 ipc-closed = 核被强杀（TerminateProcess 不跑
+                        // atexit）。只提示、不自退：界面留着，用户才能重新启动主程序拉起来。
+                        let on_eof = move || {
+                            if normal_close.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            logger::warn(
+                                "ipc",
+                                "管道 EOF 且未收到 ipc-closed（核可能被强杀）：提示前端，界面保留",
+                            );
+                            let _ = handle_for_eof
+                                .emit("ipc-closed", "核心已退出（未收到正常关闭）");
+                        };
+                        match ipc::Ipc::connect(
+                            &pipe_name,
+                            &token_for_connect,
+                            on_event,
+                            on_eof,
+                        ) {
                             Ok(client) => {
                                 // 握手：把核下发的变体/能力存快照并推给前端
                                 let hello_started = Instant::now();
