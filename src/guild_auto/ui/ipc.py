@@ -325,9 +325,7 @@ class IpcServer:
             # WriteFile 就会一直排队 —— 实测「核要向 GUI 推 ipc-closed」时直接卡死。
             # 所以没有数据就先睡 5ms，绝不把句柄占在挂起的读上（GUI 侧 ipc.rs 同因同解）。
             avail = wintypes.DWORD(0)
-            if not _kernel32.PeekNamedPipe(
-                handle, None, 0, None, ctypes.byref(avail), None
-            ):
+            if not _kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None):
                 # 对端断开/句柄已关：与读失败同义，按读循环结束时留痕
                 logger.log_warning(
                     f"[阶段] S6 ipc 读循环结束(管道已断) 本次字节=0 "
