@@ -70,8 +70,12 @@ class TestE2EOnRealLog(unittest.TestCase):
         cls.lines = cls.raw.splitlines()
 
     def test_detect_encoding_resolves_gbk(self):
-        """真实网易版日志编码必须是 gbk 系列。"""
-        self.assertIn(self.enc, ("gbk", "gb2312"))
+        """真实网易版日志编码必须是 gbk 家族。
+
+        gb18030 是 gbk 的超集:真实样本里有 GBK 未分配到的字节(映射到 PUA),
+        gbk 严格解码会失败,落到 gb18030 才不留 '�'(P0-3 / R-25)。
+        """
+        self.assertIn(self.enc, ("gbk", "gb2312", "gb18030"))
 
     def test_real_log_has_at_least_one_guild_list_block(self):
         """/guild list 块起始(--------------------公会---------------------)

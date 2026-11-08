@@ -210,15 +210,46 @@ class TestEncodingDetection(_Base):
         self.assertIn(detect_encoding(self.path), ("gbk", "gb2312"))
 
     def test_all_candidates_fail_fallback_gbk(self):
-        """0xFF/0xFE 非任何候选编码的合法序列:utf-8/gbk/gb2312 全部严格解码失败
+        """0xFF/0xFE 非任何候选编码的合法序列:utf-8/gbk/gb2312/gb18030 全部严格解码失败
         → 走最后一行 `return "gbk"` 回退(errors=replace 尽力解码中文)。"""
         write(self.path, b"\xff\xfe" * 100 + b"plain ascii" * 100)
-        for enc in ("utf-8", "gbk", "gb2312"):
+        for enc in ("utf-8", "gbk", "gb2312", "gb18030"):
             with self.assertRaises(
                 UnicodeDecodeError, msg=f"{enc} 竟能解码 0xFF/0xFE,测试前提失效"
             ):
                 (b"\xff\xfe" * 100 + b"plain ascii" * 100).decode(enc)
         self.assertEqual(detect_encoding(self.path), "gbk")
+
+    def test_utf8_not_misdetected_when_sample_starts_mid_char(self):
+        """R-25:采样点落在汉字中间(样本首字节是 UTF-8 续字节)时,合法 UTF-8 曾被误判 gbk。
+
+        旧实现直接 seek+read,5 处采样里只要有一处错位,utf-8 严格解码就失败,
+        而 gbk 几乎能吃下任意字节 → 整份日志按 gbk 解成乱码。
+        """
+        line = ("公会面板中文内容" * 100).encode("utf-8") + b"\n"  # 多行日志:每行 2401B
+        data = b""
+        for pad in range(8):
+            data = b"[" + b"x" * pad + line * 200
+            size = len(data)
+            positions = sorted({0, size // 4, size // 2, size * 3 // 4, max(0, size - 65536)})
+            if any(pos and 0x80 <= data[pos] <= 0xBF for pos in positions):
+                break
+        else:
+            self.fail("构造不出错位采样点,测试前提失效")
+        data.decode("utf-8")  # 前提:整份文件是合法 UTF-8
+        write(self.path, data)
+        self.assertEqual(detect_encoding(self.path), "utf-8")
+
+    def test_gbk_unassigned_bytes_fall_to_gb18030_without_replacement(self):
+        """真实网易版日志含 GBK 未分配字节(如 \\xac\\xdf 映射到 PUA):gbk 严格解码
+        失败 → gb18030 兜底,整份日志不得出现 '�'。"""
+        data = ("公会面板中文".encode("gbk") + b"\xac\xdf" + "成员贡献\n".encode("gbk")) * 200
+        with self.assertRaises(UnicodeDecodeError, msg="前提失效:\\xac\\xdf 竟能被 gbk 解码"):
+            data.decode("gbk")
+        write(self.path, data)
+        enc = detect_encoding(self.path)
+        self.assertEqual(enc, "gb18030", f"应回落到 gb18030,实际 {enc}")
+        self.assertNotIn("�", data.decode(enc, errors="replace"))
 
     def test_multi_sample_catches_chinese_after_long_ascii_head(self):
         """业务坑:开头 200KB 纯 ASCII、中文只出现在尾部 64KB。
@@ -230,6 +261,11 @@ class TestEncodingDetection(_Base):
         self.assertEqual(detect_encoding(self.path), "gbk")
 
     def test_empty_file_detects_utf8(self):
+        """空文件没有任何编码依据:detect_encoding 只返回占位 utf-8。
+
+        注意这只是占位 —— LogWatcher 不会据此锁定编码(R-26,见
+        TestEncodingAndRotationRegressions.test_empty_file_does_not_lock_encoding)。
+        """
         write(self.path, b"")
         self.assertEqual(detect_encoding(self.path), "utf-8")
 
@@ -801,6 +837,59 @@ class TestRotationWindowRetry(unittest.TestCase):
                     "轮询循环遇到瞬时文件缺失本该重试而非崩掉"
                 )
         self.assertIsInstance(lines, list)
+
+
+class TestEncodingAndRotationRegressions(_Base):
+    """P0-3 的四个回归点:R-26(空文件锁编码)、R-27(轮转窗口吞 timeout)、R-30(原地重写)。"""
+
+    def test_empty_file_does_not_lock_encoding(self):
+        """R-26:空日志 open() 时不得锁定 utf-8,否则之后写入的 GBK 全变 '�'。"""
+        write(self.path, b"")
+        w = self.watcher(encoding="auto")
+        w.open()
+        self.assertEqual(w.encoding, "auto", "空文件没有编码依据,不得锁定")
+        append(self.path, "公会面板中文匹配\n".encode("gbk"))
+        self.assertEqual(w.read_new_lines(block=False), ["公会面板中文匹配"])
+        self.assertEqual(w.encoding, "gbk", "读到首个非 ASCII 内容后才锁定 gbk")
+
+    def test_ascii_prefix_then_gbk_still_detects(self):
+        """R-26 续:先来一段纯 ASCII 再出现 GBK 中文,仍要判 gbk(ASCII 不抢先锁定)。"""
+        write(self.path, b"")
+        w = self.watcher(encoding="auto")
+        w.open()
+        append(self.path, b"[01 Jan 2026] [main/INFO] plain ascii\n")
+        self.assertEqual(w.read_new_lines(block=False), ["[01 Jan 2026] [main/INFO] plain ascii"])
+        self.assertEqual(w.encoding, "auto", "纯 ASCII 在 utf-8/gbk 下等价,不足以判定")
+        append(self.path, "公会面板中文匹配\n".encode("gbk"))
+        self.assertEqual(w.read_new_lines(block=False), ["公会面板中文匹配"])
+
+    def test_rotation_window_respects_read_until_timeout(self):
+        """R-27:轮转窗口(文件暂缺)内 read_until(timeout) 必须自己到点返回。
+
+        旧实现死等 _open_existing 默认的 30s:`read_until(timeout=2)` 实测 30.3s。
+        """
+        write(self.path, b"x\n")
+        w = self.watcher()
+        w.open()
+        w.close()
+        os.remove(self.path)  # 旧文件已删、新的还没建
+        with fake_force_stop(False):
+            out = w.read_until(timeout=2.0)
+        self.assertEqual(out, [])
+        elapsed = self.clock.now - self.t0
+        self.assertLessEqual(elapsed, 2.5, f"read_until(timeout=2.0) 用了 {elapsed:.1f}s")
+
+    def test_in_place_rewrite_growing_is_detected(self):
+        """R-30:同 inode 原地重写且变大,旧实现从旧偏移续读 → 首行被切坏。"""
+        write(self.path, "旧文件第一行\n旧文件第二行\n")
+        w = self.watcher()
+        w.open()
+        write(self.path, "新文件第一行\n新文件第二行\n新文件第三行\n")
+        self.assertEqual(
+            w.read_new_lines(block=False),
+            ["新文件第一行", "新文件第二行", "新文件第三行"],
+            "原地重写变大后必须从头重读,不能接着旧偏移读",
+        )
 
 
 class TestPartialLineBuffering(_Base):

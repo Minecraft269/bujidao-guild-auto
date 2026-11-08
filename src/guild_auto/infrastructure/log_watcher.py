@@ -3,12 +3,13 @@
 log_watcher.py —— 日志钩子模块
 ===============================
 职责:增量监控游戏日志文件(latest.log,类 tail -f),提供
-  * 编码自动检测(utf-8 → gbk → gb2312,兼容网易版客户端)
+  * 编码自动检测(utf-8 → gbk → gb2312 → gb18030,兼容网易版客户端)
   * 新行读取(含文件轮转处理)
   * "发命令→等待响应块→超时" 原语(块 = 两条分隔线之间)
 """
 
 from guild_auto.infrastructure import logger
+import codecs
 import collections
 import os
 import re
@@ -39,10 +40,25 @@ def _force_stop():
 # ---------------------------------------------------------------------------
 # 编码检测
 # ---------------------------------------------------------------------------
-_ENCODING_CANDIDATES = ("utf-8", "gbk", "gb2312")
+_ENCODING_CANDIDATES = ("utf-8", "gbk", "gb2312", "gb18030")
+# 全部候选都解不动时的兜底(尽力解中文)。gb18030 特意排在 gbk/gb2312 之后:
+# 它是 gbk 的超集(还能解 0x80 这类单字节杂散字节),只在 gbk 族严格解码失败时
+# 才出手 —— 真实网易版 latest.log.* 里就有这种字节,用 gbk + errors="replace"
+# 解码会在日志里留下 '�'(R-25 的真实样本半边)。
+_ENCODING_FALLBACK = "gbk"
 # 末行缓冲上界(1 MiB):游戏日志单行实测最长 ~2KB,正常永远到不了这个量级;
 # 到不了说明对端一直不写换行,此时丢弃前半段比把内存吃满更安全。
 _MAX_TAIL_BYTES = 1 << 20
+# 编码采样:单个样本块大小 + "跳过所在半行"的单行上限。日志单行实测最长 ~2KB,
+# 64 KiB 足够跨过一行;真遇到不写换行的巨无霸,readline 也在上限处停下,
+# 不会把整份文件读进内存。
+_SAMPLE_CHUNK = 1 << 16
+_MAX_SKIP_LINE = 1 << 16
+# 轮转指纹:记录游标前 32 字节,用来发现"原地重写但文件没变小"(R-30)。
+_ANCHOR_BYTES = 32
+# 编码未定时累计的判定样本上限。纯 ASCII 前缀攒到这么多还没出现非 ASCII 字节,
+# 说明这份日志确实是纯 ASCII,按 utf-8 走不会有歧义。
+_PROBE_MAX = 1 << 16
 # TRACE 原始行回放:每秒最多 5 条完整原文(按秒限流),单条 400 字符内(铁律)
 _TRACE_LINES_PER_SEC = 5
 _TRACE_LINE_MAX = 400
@@ -51,33 +67,107 @@ _PARSE_CTX_LINES = 5
 _PARSE_BLOCK_MAX = 40
 
 
+def _drop_leading_continuation(buf):
+    """丢掉开头的 UTF-8 续字节(0b10xxxxxx):说明这段是从字符中间切下来的。"""
+    i = 0
+    while i < len(buf) and 0x80 <= buf[i] <= 0xBF:
+        i += 1
+    return buf[i:]
+
+
+def _aligned_window(f, pos):
+    """从 pos 读一块样本,返回 (bytes, 头部是否被切在字符中间)。
+
+    R-25 根因:旧实现直接 `seek(pos); read(65536)`,pos 落在 UTF-8 多字节字符
+    中间时样本首字节是续字节 → 合法 UTF-8 日志严格解码失败 → 落到 gbk;而 gbk
+    几乎能吃下任意字节,于是"成功"并按乱码返回。(核对表实测:100 个纯 UTF-8
+    文件 71 个误判 gbk;样本 ≥1500 字节时 10/10。)
+
+    UTF-8 与 GBK 都是 ASCII 兼容编码,`\\n` 绝不会出现在多字节序列内部,所以
+    "从行首开始、到行尾结束"的样本天然是字符对齐的。只有对端写超长单行
+    (readline 撞到上限)时头部才真的被切开,此时才允许解码端容忍头部位移。
+    """
+    f.seek(pos)
+    head_cut = False
+    if pos:
+        head = f.readline(_MAX_SKIP_LINE)  # 先丢掉所在的半行
+        head_cut = not head.endswith(b"\n")
+    buf = f.read(_SAMPLE_CHUNK)
+    cut = buf.rfind(b"\n")
+    if cut >= 0:
+        return buf[: cut + 1], False  # 截到行尾:两端都对齐,不容忍任何位移
+    return buf, head_cut  # 超长单行:头部可能被切,尾部可能欠一个字符
+
+
+def _sample_chunks(path):
+    """在 头部/1/4/1/2/3/4/尾部 多处取样,防"开头长段纯 ASCII、中文在后"被误判 utf-8。"""
+    size = os.path.getsize(path)
+    positions = sorted({0, size // 4, size // 2, size * 3 // 4, max(0, size - _SAMPLE_CHUNK)})
+    with open(path, "rb") as f:
+        return [_aligned_window(f, pos) for pos in positions]
+
+
+def _decodes_clean(chunk, enc, head_cut=False):
+    """单块能否被 enc 干净解码。
+
+    * 尾部:增量解码器 final=False —— 半个字符留在解码器缓冲里,不算错
+      (对端正写到一半时就是这样,不能据此判死刑)。
+    * 头部:只有 head_cut(超长单行被迫从字符中间开始)才容忍位移 —— utf-8 丢掉
+      开头续字节,gbk 族最多丢 1~3 个前缀字节。**文件开头(pos=0)或行对齐的窗口
+      一律不容忍**:否则 `b"\\x80\\x80"` 这种真坏字节会被当成干净的 utf-8。
+    每次新建解码器 —— 复用会把上一块的尾巴和下一块的头拼成假字符。
+    """
+    if not head_cut:
+        heads = (chunk,)
+    elif enc == "utf-8":
+        heads = (chunk, _drop_leading_continuation(chunk))
+    else:
+        heads = (chunk, chunk[1:], chunk[2:], chunk[3:])
+    for head in heads:
+        try:
+            codecs.getincrementaldecoder(enc)().decode(head)
+            return True
+        except UnicodeDecodeError:
+            continue
+    return False
+
+
+def _pick_encoding(chunks):
+    """第一个能吃下**所有**样本块的编码;空样本返回 None(无依据,交调用方决定)。"""
+    chunks = [c for c in chunks if c[0]]
+    if not chunks:
+        return None
+    for enc in _ENCODING_CANDIDATES:
+        if all(_decodes_clean(chunk, enc, head_cut) for chunk, head_cut in chunks):
+            return enc
+    return _ENCODING_FALLBACK
+
+
 def detect_encoding(path, preferred="auto"):
     """检测日志文件编码。
     - preferred 非 auto 时直接使用(不检测);
-    - auto:在文件 头部/1/4/1/2/3/4/尾部 多处采样拼接,依次尝试 utf-8/gbk/gb2312 严格解码,
-      第一个成功者胜;全部失败则回退 gbk + errors=replace(尽力解码中文)。
-    多处采样防止"开头长段纯 ASCII、中文在后"的文件被误判为 utf-8。
+    - auto:在文件 头部/1/4/1/2/3/4/尾部 多处按行对齐取样,依次尝试
+      utf-8/gbk/gb2312/gb18030 严格解码,第一个全部样本都能解的胜;
+      空样本返回 utf-8 仅作占位 —— LogWatcher 不会据此锁定编码(见 R-26),
+      否则空日志起步后写入的 GBK 内容会全部乱码;
+      全部失败回退 gbk + errors=replace(尽力解码中文)。
     """
     if preferred != "auto":
         return preferred
     try:
-        size = os.path.getsize(path)
-        positions = sorted({0, size // 4, size // 2, size * 3 // 4, max(0, size - 65536)})
-        chunks = []
-        for pos in positions:
-            with open(path, "rb") as f:
-                f.seek(pos)
-                chunks.append(f.read(65536))
-        sample = b"".join(chunks)
+        chunks = _sample_chunks(path)
     except OSError:
-        return "gbk"
-    for enc in _ENCODING_CANDIDATES:
-        try:
-            sample.decode(enc)
-            return enc
-        except UnicodeDecodeError:
-            continue
-    return "gbk"
+        return _ENCODING_FALLBACK
+    return _pick_encoding(chunks) or "utf-8"
+
+
+def _file_id(path):
+    """文件身份 (dev, ino)。rename 出来的新文件在这里必然不同(见 R-30)。"""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +184,8 @@ class LogWatcher:
     def __init__(self, path, encoding="auto", poll_interval_ms=300):
         self.path = path
         self.encoding = encoding
+        # 用户/配置显式给定的编码;只有 "auto" 才允许运行期重新判定(R-26)
+        self._preferred = encoding
         self.poll = poll_interval_ms / 1000.0
         self._fh = None
         self._size = 0
@@ -101,6 +193,11 @@ class LogWatcher:
         # 否则游戏分两次写入同一物理行时,会把一行拆成两条;更糟的是多字节字符
         # 被切在两次读取之间,前半截已经 decode 成替换符,丢字无法挽回。
         self._tail = b""
+        # 编码未定时(空日志起步)累计的判定样本,见 R-26
+        self._probe = b""
+        # 轮转指纹:文件身份 + 游标前 _ANCHOR_BYTES 字节,见 R-30
+        self._file_id = None
+        self._anchor = b""
         self._skip_until_ts = 0  # first_command 等新回显时设 = time.time() + 1.0,读到的旧行跳
         # ---- TRACE 诊断状态(只写日志,不参与任何判定) ----
         # 最近读到的原始行(ParseError 时回放上下文);按秒限流的桶与丢弃计数。
@@ -133,14 +230,21 @@ class LogWatcher:
                     f"游戏日志不存在: {self.path}\n请确认游戏已启动且路径配置正确(--log 或 config.json 的 game_log)。"
                 )
             time.sleep(1.0)
-        self.encoding = detect_encoding(self.path, self.encoding)
+        self.encoding = detect_encoding(self.path, self._preferred)
         self._fh = open(self.path, "rb")
         self._tail = b""
+        self._probe = b""
         self._recent_lines.clear()
         self._last_block = None
         # 跳到末尾:只关心本次运行之后的新日志
         self._fh.seek(0, os.SEEK_END)
         self._size = self._fh.tell()
+        self._file_id = _file_id(self.path)
+        self._anchor = self._read_anchor()
+        if self._size == 0:
+            # 空文件没有任何编码依据:detect_encoding 返回的 utf-8 只是占位,
+            # 不能据此锁定(R-26)——否则之后写入的 GBK 内容会全部乱码。
+            self.encoding = "auto"
         logger.trace_file_read(logger.sanitize_text(self.path), size=self._size)
         logger.log_trace(
             f"[TRACE][log_watcher.open] wait_s={wait_seconds:.1f}"
@@ -161,23 +265,49 @@ class LogWatcher:
                 logger.log_debug(f"关闭日志文件句柄失败: {e!r}")
             self._fh = None
 
-    def _open_existing(self, wait_seconds=30.0):
+    def _read_anchor(self):
+        """读游标前的 _ANCHOR_BYTES 字节,作为"文件没被原地重写"的指纹(R-30)。
+
+        必须严格只读游标**之前**的字节:多读一个字节就会把"游标之后新追加的
+        内容"算进指纹,下一轮必然误判成原地重写。
+        """
+        if not self._size:
+            return b""
+        start = max(0, self._size - _ANCHOR_BYTES)
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(start)
+                return f.read(self._size - start)
+        except OSError:
+            return b""
+
+    def _open_existing(self, wait_seconds=30.0, deadline=None, stop_check=None):
         """打开日志文件,轮转窗口期(文件暂缺)等待后重试。
 
-        返回 True 表示已打开(self._fh 可用);False 表示等了 wait_seconds
-        仍未出现 —— 此时 read_new_lines 返回已读到的行,不抛异常。
+        返回 True 表示已打开(self._fh 可用);False 表示等待结束仍未出现 ——
+        此时 read_new_lines 返回已读到的行,不抛异常。
 
         为什么需要:轮转时旧 latest.log 被删、新的还没建,裸 open() 会抛
         FileNotFoundError。read_new_lines 是 while True 轮询循环,
         遇到瞬时文件缺失本该重试而不是崩掉(独立审查指出)。
+
+        R-27:调用方带了 deadline(timeout)/stop_check 时必须让它们生效 ——
+        旧实现固定死等 30s,`read_until(timeout=2)` 实测要 30.3s 才返回。
         """
-        deadline = time.time() + wait_seconds
+        hard_deadline = time.time() + wait_seconds
+        if deadline is not None:
+            hard_deadline = min(hard_deadline, deadline)
         while True:
             try:
                 self._fh = open(self.path, "rb")
+                self._file_id = _file_id(self.path)
                 return True
             except FileNotFoundError:
-                if time.time() >= deadline:
+                if (
+                    time.time() >= hard_deadline
+                    or _force_stop()
+                    or (stop_check is not None and stop_check())
+                ):
                     logger.log_warning(
                         f"日志文件 {wait_seconds:.0f} 秒内未重新出现(可能仍在轮转): {self.path}"
                     )
@@ -204,11 +334,15 @@ class LogWatcher:
             # discard 是"从现在开始只看新内容"的语义,缓冲里若还留着旧的半行,
             # 会被拼到 discard 之后的首批新日志前面,造成串行污染。
             self._tail = b""
+            self._probe = b""
             if os.path.getsize(self.path) > 0:
                 self._fh.seek(0, 2)  # SEEK_END
                 self._size = self._fh.tell()
             else:
                 self._size = 0
+            # 游标搬了,轮转指纹要跟着搬,否则下一轮会被误判成"原地重写"
+            self._file_id = _file_id(self.path)
+            self._anchor = self._read_anchor()
             logger.log_debug(
                 f"[log_watcher] discard_buffer:size {size_before}→{self._size} "
                 f"(跳过了 launch 前 {self._size - size_before} 字节 = "
@@ -219,23 +353,40 @@ class LogWatcher:
             self._size = 0
 
     def _reopen_if_rotated(self):
-        """检测轮转(latest.log 被改名/重建):文件不存在或变小 → 重新打开。"""
+        """检测轮转(latest.log 被改名/删除/原地重写):需要重开时返回 True。"""
         if not os.path.exists(self.path):
             self.close()
             return True
-        size_now = os.path.getsize(self.path)
+        try:
+            size_now = os.path.getsize(self.path)
+        except OSError:
+            return False
+        if _file_id(self.path) != self._file_id:
+            # 换了 inode = 被 rename 成新文件:哪怕比旧文件大也是新内容(R-30)
+            self.close()
+            self._size = 0
+            return True
         if size_now < self._size:
             # 文件被截断/轮转:关闭句柄(read_new_lines 会统一重新打开并读全部)
             self.close()
             self._size = 0
             return True
+        if self._size and self._anchor and self._read_anchor() != self._anchor:
+            # 大小没变小,但游标前的字节变了 = 原地重写(R-30):继续按旧偏移读
+            # 会把新文件首行切开,丢半行。
+            self.close()
+            self._size = 0
+            return True
         return False
 
-    def read_new_lines(self, block=True):
+    def read_new_lines(self, block=True, deadline=None, stop_check=None):
         """读取自上次以来的新行,返回行列表(自动按当前编码解码,忽略坏字节)。
         block=True:至少读到一行才返回(内部轮询等待)。
         first_command=True 启动时调 reader.discard_buffer() 丢弃 launch 前的
         "前次命令残留"日志,避免本轮第一次试探就读到旧回显。
+
+        deadline/stop_check:轮转窗口内等文件重现时,必须让调用方的 timeout
+        与暂停标志生效(R-27);不传则沿用 _open_existing 的默认上限。
         """
         out = []
         while True:
@@ -243,8 +394,8 @@ class LogWatcher:
                 # 轮转窗口期:旧 latest.log 已删、新的还没建 -> open 会抛
                 # FileNotFoundError。这是**瞬时状态**,轮询循环本就该重试,
                 # 不该把异常抛给调用方(独立审查指出)。等待后重试,
-                # 直到文件重新出现或超出等待上限。
-                if not self._open_existing():
+                # 直到文件重新出现、调用方 deadline 到点或用户请求中断。
+                if not self._open_existing(deadline=deadline, stop_check=stop_check):
                     return out
                 # 轮转/重开后从头读新文件(seek 0):
                 #  - 新文件是轮转后刚建的,通常很小,无内存尖峰;
@@ -254,6 +405,10 @@ class LogWatcher:
                 self._fh.seek(0)
                 self._size = 0
                 self._tail = b""
+                self._probe = b""
+                if self.encoding != self._preferred:
+                    # 新文件是新内容,编码可以重新判(R-26);显式配置的编码不动
+                    self.encoding = "auto"
             data = self._fh.read()
             self._size += len(data)
             if self._tail or data:
@@ -274,10 +429,14 @@ class LogWatcher:
                     logger.log_warning(
                         f"日志末行缓冲超过 {_MAX_TAIL_BYTES} 字节仍无换行,已截断丢弃前半段"
                     )
-                    tail = tail[-_MAX_TAIL_BYTES:]
+                    # 截断点可能落在多字节字符中间:丢掉开头续字节,否则下次
+                    # decode 会凭空吐一个 '�'
+                    tail = _drop_leading_continuation(tail[-_MAX_TAIL_BYTES:])
                 self._tail = tail
+                # buf 的末尾就是当前文件游标:留下它的尾巴当"没被原地重写"的指纹
+                self._anchor = buf[-_ANCHOR_BYTES:]
             if data:
-                text = data.decode(self.encoding, errors="replace")
+                text = self._decode_complete_lines(data)
                 new_lines = text.splitlines()
                 out.extend(new_lines)
                 self._recent_lines.extend(new_lines)
@@ -316,6 +475,27 @@ class LogWatcher:
             if out or not block:
                 return out
             time.sleep(self.poll)
+
+    def _decode_complete_lines(self, data):
+        """解码一段"只含完整行"的原始字节(data 必然以换行结尾,字符天然对齐)。
+
+        编码未锁定(encoding == "auto",只可能来自"空日志起步")时:纯 ASCII 内容
+        在 utf-8/gbk/gb18030 下解出来完全一致,先按 ascii 放出,同时把样本累计进
+        _probe;第一个非 ASCII 字节出现时再用累计样本判定。这就是 R-26 的修法 ——
+        旧实现在空文件上直接把 utf-8 当成结论锁定,之后写入的 GBK 内容全变 '�'。
+        """
+        if self.encoding == "auto":
+            if data.isascii():
+                if len(self._probe) < _PROBE_MAX:
+                    # 截到 _PROBE_MAX 可能切在字符中间,丢掉续字节
+                    self._probe = _drop_leading_continuation((self._probe + data)[-_PROBE_MAX:])
+                return data.decode("ascii")
+            enc = _pick_encoding([(self._probe + data, False)])
+            if enc:
+                logger.log_info(f"日志编码在读到首个非 ASCII 内容后锁定: {enc}")
+                self.encoding = enc
+            self._probe = b""
+        return data.decode(self.encoding, errors="replace")
 
     # ---- 等待响应块(消息级) ----
     def wait_for_chat_block(
@@ -364,7 +544,7 @@ class LogWatcher:
                         return None
                     time.sleep(0.05)
                     stable_ms += 50
-            for line in self.read_new_lines(block=False):
+            for line in self.read_new_lines(block=False, deadline=deadline, stop_check=stop_check):
                 pending.append(line)
                 logger.trace_code_location(
                     "log_watcher.wait_for_chat_block.got_lines", f"new_lines={len(pending)} total"
@@ -468,7 +648,7 @@ class LogWatcher:
             if _force_stop():
                 logger.log_debug("read_until 检测到 _force_stop,返回已收集")
                 break
-            new_lines = self.read_new_lines(block=False)
+            new_lines = self.read_new_lines(block=False, deadline=deadline)
             out.extend(new_lines)
             collected += len(new_lines)
             # 拆短 sleep + 复检 _force_stop(让 Ctrl+C 立即生效)
