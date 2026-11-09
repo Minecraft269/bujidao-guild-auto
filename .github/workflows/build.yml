@@ -106,7 +106,7 @@ jobs:
           "name=$name" >> $env:GITHUB_OUTPUT
 
       - name: Upload Gui.exe + MSI
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gui-bundle
           path: |
@@ -311,7 +311,7 @@ jobs:
           Get-ChildItem dist | ForEach-Object { "  {0}  {1} bytes" -f $_.Name, $_.Length }
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           # artifact 名含变体代号(+全能力变体的 -Full 后缀),8 个变体互不覆盖。
           name: dist-${{ matrix.variant }}${{ matrix.artifact_suffix }}-${{ github.run_number }}
