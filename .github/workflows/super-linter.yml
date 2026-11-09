@@ -33,7 +33,7 @@ jobs:
           fetch-depth: 0
       # 只校验非 Python 文件；Python 由 ruff/mypy/vulture 负责。
       - name: Super-Linter
-        uses: github/super-linter@v6
+        uses: github/super-linter@v7
         env:
           DEFAULT_BRANCH: main
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
