@@ -176,6 +176,21 @@ def validate_config(cfg):
             issues.append(("error", f"delays.{_lo} 不能大于 delays.{_hi}"))
             _delay_flips.append(f"{_lo}({d[_lo]})>{_hi}({d[_hi]})")
 
+    # P0-4f：布吉岛服务器**可能**限制公会发言间隔 3 秒（「有时候没有」，用户 2026-11-14 口径）。
+    # 只设下限 1.5 拦真正的过密配置，**不设 3.0 硬限**：间隔不足的后果是被吞后重试一次
+    # （兜底已在 P0-1 修好），不是数据错误。默认值保持 1.5，不动。
+    _floor = 1.5
+    _msi = d.get("min_send_interval")
+    if _is_num(_msi) and _msi < _floor:
+        issues.append(
+            (
+                "error",
+                f"delays.min_send_interval({_msi}) 不得小于 {_floor} 秒："
+                "布吉岛服务器可能限制公会发言间隔 3 秒，过密会让消息被吞并触发重试。"
+                "若日志频繁出现消息被吞/重试，把 min 调到 3.2 以上",
+            )
+        )
+
     t = section(cfg, "timeouts")
     for k in ("response_wait", "max_retries"):
         # check_num 已含"负数"判断(负值 < 0),无需再单独判 < 0
