@@ -855,6 +855,15 @@ fn arg_value(name: &str) -> Option<String> {
     None
 }
 
+/// 收到核的 `ipc-closed` 后，界面是否该在前端提示后自退（P0-4d）。
+///
+/// 只有 `start_timeout`（核等到上限也没人点「开始」）不该带走界面：那是
+/// **用户没操作**，不是核要退出，留着窗口用户才能重新启动主程序。
+/// 其余原因（正常跑完 / 用户关窗）保持原行为：提示后 1.5s 自退。
+fn auto_exit_on_core_exit(reason: &str) -> bool {
+    reason != "start_timeout"
+}
+
 fn main() {
     logger::init();
     // windows_subsystem="windows" 下 stderr 不可见：panic 必须落文件，含调用栈
@@ -1159,6 +1168,24 @@ fn main() {
                             // 原先核退出只是关管道，界面一直停在「已连接核心」。
                             if method == "ipc-closed" {
                                 normal_close_for_event.store(true, Ordering::SeqCst);
+                                // P0-4d：reason=start_timeout 是「核等到上限也没人点开始」，
+                                // 属用户没操作、不是核要退出 —— 界面必须留着，绝不 1.5s 自关。
+                                let reason = v
+                                    .get("params")
+                                    .and_then(|params| params.get("reason"))
+                                    .and_then(|r| r.as_str())
+                                    .unwrap_or("normal");
+                                if !auto_exit_on_core_exit(reason) {
+                                    logger::warn(
+                                        "ipc",
+                                        &format!(
+                                            "收到核的 ipc-closed reason={reason}：提示前端，界面保留"
+                                        ),
+                                    );
+                                    let _ = handle_for_events
+                                        .emit("ipc-closed", "核心已退出（未进入开始），可重新启动");
+                                    return;
+                                }
                                 logger::warn(
                                     "ipc",
                                     "收到核的 ipc-closed：提示前端，1.5s 后关闭界面",
@@ -1354,6 +1381,21 @@ fn main() {
         Err(e) => {
             logger::critical("main", &format!("致命：tauri 运行失败/进程异常退出: {e:?}"));
             std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_exit_keeps_gui_only_on_start_timeout() {
+        // 用户没操作（S5 等到上限）→ 界面必须留着，不能 1.5s 自关
+        assert!(!auto_exit_on_core_exit("start_timeout"));
+        // 其余原因（正常跑完 / 用户关窗 / 旧核不带 reason）保持原行为
+        for reason in ["normal", "gui_gone", ""] {
+            assert!(auto_exit_on_core_exit(reason), "reason={reason} 应当自退");
         }
     }
 }

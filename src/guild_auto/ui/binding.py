@@ -29,9 +29,10 @@ from guild_auto.domain import rules as rules_mod
 from guild_auto.infrastructure import logger
 from guild_auto.ui.ipc import IpcServer
 
-# S5：GUI 窗口拉起后等用户点「开始」的上限。24h 等同无超时，日志也无法解释卡点；
-# 这里给一个真实上限（15 分钟），超时会记 WARNING 并明确说明已等待多久。
-START_TIMEOUT = 900.0
+# S5：GUI 窗口拉起后等用户点「开始」的上限**只由 config 的 ui.start_timeout 决定**
+# （真源在 defaults.py，这里不兜底 —— 兜底会悄悄覆盖用户设置，见 CLAUDE.md §1）。
+# 首启（配置刚生成）不启动计时：那时标签是锁的、根本点不到「开始」，
+# 超时只会是必然的假失败，还会把界面一起带走（P0-4d）。
 # 确认模态：GUI 断开/不回车时不能永远挂住主流程（§6.2/§6.3）。
 CONFIRM_TIMEOUT = 600.0
 UPDATE_TIMEOUT = 8.0
@@ -132,6 +133,10 @@ class GuiBridge:
         self.cfg = cfg
         self.config_path = Path(config_path)
         self.first_run = bool(first_run)
+        # S5 等待结果（P0-4d）：`outcome` 是人读的原因，`exit_reason` 是给 GUI 的机器码。
+        # 核正常退出时会把它塞进 ipc-closed，界面据此决定「自退」还是「留着提示」。
+        self.outcome: str | None = None
+        self.exit_reason: str = "normal"
         # 重启实现可注入：测试里绝不能真的 execv（那会把测试进程替换掉）
         self._restart_impl = restart_impl or _default_restart_impl
         self.report_dir = Path(report_dir) if report_dir else None
@@ -169,11 +174,14 @@ class GuiBridge:
     def launch(self, *, timeout: float | None = None) -> bool:
         """起管道 + 拉 Gui，等用户点「开始」。True=开始，False=关窗/超时。"""
         started = time.monotonic()
-        # 超时优先用调用方参数，其次 config 的 ui.start_timeout（默认 120s，可配）
-        if timeout is None:
-            timeout = float(self.cfg.get("ui", {}).get("start_timeout", START_TIMEOUT))
+        # 调用方显式传 timeout 时以它为准（测试注入用）；否则首启不计时
+        # （配置写多小都不计时），其余一律读 config 的 ui.start_timeout。
+        # 缺键直接 KeyError，不在这里兜底（CLAUDE.md §1）。
+        if timeout is None and not self.first_run:
+            timeout = float(self.cfg["ui"]["start_timeout"])
+        timeout_label = "不限时(首次运行)" if timeout is None else f"{timeout:.1f}s"
         logger.log_trace(
-            f"[TRACE][binding.launch] phase=ENTER timeout={float(timeout):.1f}s "
+            f"[TRACE][binding.launch] phase=ENTER timeout={timeout_label} "
             f"first_run={self.first_run} pipe={self._launch_pipe_label}"
         )
         exe = gui_executable()
@@ -187,7 +195,7 @@ class GuiBridge:
             )
         logger.log_info(
             f"[阶段][ENTER] S5 GuiBridge.launch exe={exe} "
-            f"等待用户点「开始」超时={timeout:.0f}s 管道={self._launch_pipe_label}"
+            f"等待用户点「开始」超时={timeout_label} 管道={self._launch_pipe_label}"
         )
         pipe_started = time.monotonic()
         self.server.create()
@@ -206,10 +214,11 @@ class GuiBridge:
         wait_started = time.monotonic()
         outcome = "超时"
         while not self._started.is_set():
-            remaining = timeout - (time.monotonic() - wait_started)
-            if remaining <= 0:
-                outcome = "超时"
-                break
+            if timeout is not None:
+                remaining = timeout - (time.monotonic() - wait_started)
+                if remaining <= 0:
+                    outcome = "超时"
+                    break
             if self._proc.poll() is not None:
                 outcome = f"进程已退出 code={self._proc.returncode}"
                 break
@@ -218,8 +227,15 @@ class GuiBridge:
             if self.server.ever_connected and not self.server.connected:
                 outcome = "GUI 已断开（用户关闭或崩溃）"
                 break
-            # 分片等待：这样进程崩溃时能立即发现，而不是睡满整个超时
-            self._started.wait(min(remaining, 1.0))
+            # 分片等待：这样进程崩溃时能立即发现，而不是睡满整个超时。
+            # 不计时（首启）时就一直等，直到用户点开始或关界面。
+            self._started.wait(1.0 if timeout is None else min(remaining, 1.0))
+        self.outcome = "started" if self._started.is_set() else outcome
+        # P0-4d：超时属「用户没操作」，不是「核要退出」—— 界面必须留着并提示。
+        if self._started.is_set():
+            self.exit_reason = "normal"
+        else:
+            self.exit_reason = "start_timeout" if outcome == "超时" else "gui_gone"
         elapsed = time.monotonic() - started
         logger.log_trace(
             f"[TRACE][binding.launch] phase=DECIDE started={self._started.is_set()} "
@@ -229,10 +245,18 @@ class GuiBridge:
             waited = time.monotonic() - wait_started
             logger.log_warning(
                 f"[阶段] S5 等待 GUI「开始」失败: {outcome} 已等待={waited:.1f}s "
-                f"超时={timeout:.0f}s pid={self._proc.pid if self._proc else '?'} "
+                f"超时={timeout_label} pid={self._proc.pid if self._proc else '?'} "
                 f"管道={self._launch_pipe_label}"
             )
-            self.stop()
+            if outcome == "超时":
+                # P0-4d：超时是「用户没操作」，不是「核要退出」。
+                # 不杀界面、不关管道 —— 让 atexit 的 ipc-closed(reason=start_timeout)
+                # 正常送到，界面留着提示「可重新启动」，用户才不至于看着窗口凭空消失。
+                logger.log_info(
+                    "[阶段] S5 超时：界面保留（不终止进程、不合并 gui.log，界面自己还在写）"
+                )
+            else:
+                self.stop()
             console_safe(
                 f"[阶段][EXIT ] S5 GuiBridge.launch 耗时={elapsed:.2f}s 结果=未开始({outcome})"
             )

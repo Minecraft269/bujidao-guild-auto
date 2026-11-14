@@ -257,6 +257,18 @@ def validate_config(cfg):
 
             _enum(ui, "theme", ("auto", "dark", "light"), "ui.theme")
             _bool(ui, "custom_titlebar", "ui.custom_titlebar")
+            # S5 等待「开始」的上限（P0-4d）：10–3600 的整数秒。
+            # 太小会让正常读界面的人也来不及点，太大等于没有上限、日志也解释不了卡点。
+            st = ui.get("start_timeout")
+            if st is not None and (
+                not isinstance(st, int) or isinstance(st, bool) or not 10 <= st <= 3600
+            ):
+                issues.append(
+                    (
+                        "error",
+                        f"配置项 ui.start_timeout 必须是 10–3600 的整数(秒),当前: {st!r}",
+                    )
+                )
             for sub, fields in (
                 ("window", ("width", "height")),
                 ("tray", ("enabled", "ask_on_close")),

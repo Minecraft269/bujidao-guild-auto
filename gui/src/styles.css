@@ -209,6 +209,28 @@ main {
   display: flex;
 }
 
+/* 首启横幅（P0-4d）：必须是**看得见**的块级提示，承担「为什么标签点不了」的说明。
+   左边加粗竖条 + warn 描边，和普通卡片区分开；深浅两套主题都走 token。 */
+.banner {
+  padding: var(--sp-3);
+  border: 1px solid var(--warn);
+  border-left-width: 4px;
+  border-radius: var(--radius-card);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+}
+
+.banner strong {
+  color: var(--warn);
+  margin-right: var(--sp-1);
+}
+
+.banner[hidden] {
+  display: none;
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);

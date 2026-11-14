@@ -1331,10 +1331,12 @@ function switchTab(name) {
 function lockTabsToConfig() {
   for (const t of document.querySelectorAll(".tab")) {
     if (t.dataset.tab !== "config") {
+      // 不设 title：Chromium 对 disabled 控件不显示 tooltip，
+      // 写了也等于没有。提示改由配置页顶部的可见横幅承担（P0-4d）。
       t.disabled = true;
-      t.title = "首次运行：请先保存配置";
     }
   }
+  $("first-run-banner").hidden = false;
   switchTab("config");
   $("sb-dirty").textContent = "首次运行：请先核对并保存配置";
 }
@@ -1344,6 +1346,7 @@ function unlockTabs() {
     t.disabled = false;
     t.title = "";
   }
+  $("first-run-banner").hidden = true;
   $("sb-dirty").textContent = "";
 }
 
