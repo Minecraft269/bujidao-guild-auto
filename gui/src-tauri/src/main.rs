@@ -663,6 +663,21 @@ fn apply_tray_gate(app: &tauri::AppHandle, reason: &str) {
     }
 }
 
+/// 闪烁用的「透明帧」RGBA，与 logo 同尺寸，纯代码生成、不落盘。
+///
+/// **alpha 必须是 1，不能是 0**：全 0 alpha 时 Windows 认为这张图没有 alpha 通道，
+/// 退回用 AND 掩码；而 tray-icon 的掩码是每像素 1 字节（1bpp 应每像素 1 bit），
+/// CreateIcon 按 4 字节行宽读，全 1 的掩码被解成「透明-黑×7-透明-黑×7」，
+/// 托盘里看到的就是两根黑竖条（被当成暂停键）。有像素 alpha>0 时 Windows 走
+/// per-pixel alpha，整张图才真的不可见。实测对照见 P0-4b 的复现图。
+fn blank_frame_rgba(size: u32) -> Vec<u8> {
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    for alpha in rgba.iter_mut().skip(3).step_by(4) {
+        *alpha = 1;
+    }
+    rgba
+}
+
 /// 常驻闪烁驱动：**一个**线程、500ms 一拍、只读共享快照。
 ///
 /// 不用 `tokio::time::interval` 的原因：tokio 不是本 crate 的直接依赖，
@@ -687,8 +702,8 @@ fn spawn_tray_blinker(app: tauri::AppHandle) {
             let tray = lock(&state.tray).clone();
             let Some(tray) = tray else { continue };
             let img = if transparent {
-                // 透明帧代码生成、不落盘：全零 RGBA 与 logo 同尺寸
-                tauri::image::Image::new_owned(vec![0u8; (size * size * 4) as usize], size, size)
+                let blank = blank_frame_rgba(size);
+                tauri::image::Image::new_owned(blank, size, size)
             } else {
                 match lock(&state.tray_gate).logo.clone() {
                     Some(img) => img,
@@ -1675,6 +1690,20 @@ mod tests {
         assert_eq!(tray_icon_size(9.0), 48);
         assert_eq!(tray_icon_size(0.0), 16);
         assert_eq!(tray_icon_size(f64::NAN), 16);
+    }
+
+    #[test]
+    fn blank_frame_is_invisible_but_has_alpha() {
+        // 全 0 alpha 会被 Windows 当成「没有 alpha 通道」，退回 AND 掩码后画成两根黑竖条
+        // （实测复现）。所以每一帧的 alpha 必须是 1：既不可见，又让 Windows 走 per-pixel alpha。
+        for size in TRAY_SIZES {
+            let rgba = blank_frame_rgba(size);
+            assert_eq!(rgba.len(), (size * size * 4) as usize);
+            assert!(
+                rgba.as_chunks::<4>().0.iter().all(|p| *p == [0, 0, 0, 1]),
+                "size={size} 必须每个像素都是 rgb=0 / alpha=1"
+            );
+        }
     }
 
     #[test]
