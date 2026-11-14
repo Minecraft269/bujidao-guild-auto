@@ -90,6 +90,8 @@ const S = {
   startModeApplied: false,
   // 首次运行门禁（§3.5）：配置刚生成时必须先保存才放行其它页签
   firstRun: false,
+  // 核已经没了（收到 ipc-closed / 管道 EOF）：一切依赖核的动作立刻中止（P0-4e）
+  coreGone: false,
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1032,21 +1034,43 @@ async function openConfirmFromCore(p) {
   }
 }
 
+/** 3 秒倒数。返回 false = 中途发现核已退出，调用方不得再发 start（P0-4e）。 */
 async function startupCountdown() {
   const layer = $("modal-layer");
   const modal = $("modal");
   layer.dataset.open = "true";
-  for (let n = 3; n > 0; n--) {
-    modal.replaceChildren();
-    const h = document.createElement("h3");
-    h.textContent = "即将开始";
-    const b = document.createElement("div");
-    b.className = "modal-body";
-    b.innerHTML = `<div class="countdown">${n}</div><p class="muted">请不要操作键盘和鼠标。</p>`;
-    modal.append(h, b);
-    await sleep(1000);
+  glog("info", "「即将开始」倒数开始");
+  try {
+    for (let n = 3; n > 0; n--) {
+      // 每格都查连接：核在倒数途中被杀时必须立刻停，不能继续数到 1（P0-4e）
+      if (S.coreGone || !api?.core?.invoke) {
+        glog("warning", "「即将开始」倒数中止：核心已退出");
+        $("ctl-hint").textContent = "核心已退出，已中止「即将开始」倒数。请重新启动主程序。";
+        return false;
+      }
+      modal.replaceChildren();
+      const h = document.createElement("h3");
+      h.textContent = "即将开始";
+      const b = document.createElement("div");
+      b.className = "modal-body";
+      b.innerHTML = `<div class="countdown">${n}</div><p class="muted">请不要操作键盘和鼠标。</p>`;
+      modal.append(h, b);
+      await sleep(1000);
+    }
+    // 最后一个 sleep 期间核可能刚走：这里再判一次
+    return !S.coreGone;
+  } finally {
+    layer.dataset.open = "false";
   }
-  layer.dataset.open = "false";
+}
+
+/** 核没了：把所有依赖核的界面动作立刻收掉（P0-4e）。 */
+function abortCoreDependentUi(why) {
+  const layer = $("modal-layer");
+  // 倒计时/关窗模态一律关掉，不能留在屏幕上继续倒数
+  if (layer && layer.dataset.open === "true") layer.dataset.open = "false";
+  for (const id of ["btn-start", "btn-pause", "btn-resume", "btn-stop"]) $(id).disabled = true;
+  glog("warning", `界面动作已中止（${why}）`);
 }
 
 function confirmStop() {
@@ -1065,18 +1089,10 @@ async function askClosePolicy() {
   // 小窗 360×150 用紧凑版：单行标题 + 两按钮各半 + 复选框折成 12px 小字。
   //
   // P0-4c：运行中关窗**先暂停再问**（复用既有 pause 通道，不新增状态机）。
-  // 不先停手就退出，正在发的指令会半途断掉；暂停是既有语义，不新增状态。
+  // P0-4e：但模态**先渲染**、pause 在后台跑。以前 `await rpc("pause")` 之后才建模态，
+  // 核没应答时第一次点 × 什么都不发生（实机等满 15s 超时），点第二次才弹。
   const running = S.state.state === "running";
   const unfinished = S.pending.length;
-  if (running) {
-    glog("warning", `关窗请求：运行中，先暂停（未完成 ${unfinished} 个任务）`);
-    const res = await rpc("pause", {});
-    if (res && res.ok === false) {
-      glog("error", `关窗前暂停失败（仍会询问）：${res.error ?? "未知"}`);
-    } else {
-      glog("warning", `已暂停（未完成 ${unfinished} 个任务），等用户选择最小化/退出`);
-    }
-  }
 
   const layer = $("modal-layer");
   const modal = $("modal");
@@ -1095,6 +1111,14 @@ async function askClosePolicy() {
     warn.className = "muted";
     warn.textContent = `还有 ${unfinished} 个任务未完成验证，退出将丢弃；建议先暂停或等完成。`;
     b.append(warn);
+  }
+  // 暂停状态行（P0-4e）：模态不等 RPC，先把「正在暂停」摆出来，结果回来再改文案
+  let pauseNote = null;
+  if (running) {
+    pauseNote = document.createElement("p");
+    pauseNote.className = "muted";
+    pauseNote.textContent = "正在暂停运行中的任务…";
+    b.append(pauseNote);
   }
   const remember = document.createElement("input");
   remember.type = "checkbox";
@@ -1168,6 +1192,25 @@ async function askClosePolicy() {
   modal.append(h, b, row);
   layer.dataset.open = "true";
   min.focus();
+
+  // 模态已经在屏幕上了，pause 才在后台发出去（P0-4e：界面不等 RPC）
+  if (running) {
+    glog("warning", `关窗请求：运行中，先暂停（未完成 ${unfinished} 个任务）`);
+    rpc("pause", {})
+      .then((res) => {
+        if (res && res.ok === false) {
+          glog("error", `关窗前暂停失败（仍会询问）：${res.error ?? "未知"}`);
+          if (pauseNote) pauseNote.textContent = `暂停失败：${res.error ?? "未知"}（仍可选择退出）`;
+        } else {
+          glog("warning", `已暂停（未完成 ${unfinished} 个任务），等用户选择最小化/退出`);
+          if (pauseNote) pauseNote.textContent = `已暂停（未完成 ${unfinished} 个任务）`;
+        }
+      })
+      .catch((e) => {
+        glog("error", `关窗前暂停异常（仍会询问）：${e}`);
+        if (pauseNote) pauseNote.textContent = "暂停异常（仍可选择退出）";
+      });
+  }
 }
 
 // ── 引导 ───────────────────────────────────────────────────────────────
@@ -1188,6 +1231,8 @@ function setHandshake(payload) {
   }
   const r = msg.result || msg;
   S.hello = r;
+  // 握手成功 = 核在（P0-4e 的反向开关，和 ipc-closed 置位配对）
+  S.coreGone = false;
   // 启动形态随握手一起到达：hello 是唯一稳定可用的通道
   // （前端发起的 config RPC 会挂住，见 US-R2-14），
   // 窗口形态必须在这里定，否则小窗重开会退回大窗内容。
@@ -1252,6 +1297,10 @@ async function boot() {
     //   · 核主动推 ipc-closed —— 正常退出，Rust 侧 1.5s 后关界面；
     //   · Rust 读线程看到管道 EOF 而核没推过 —— 核被强杀，界面保留可重新拉起。
     const why = typeof e.payload === "string" && e.payload ? e.payload : "核心已退出";
+    // P0-4e：核没了就先掐掉所有依赖它的界面动作（倒计时 / 关窗模态 / 运行控制），
+    // 再谈提示。以前这里只改文案，倒数会继续数到 1。
+    S.coreGone = true;
+    abortCoreDependentUi(why);
     glog("warning", `IPC 已关闭：${why}`);
     $("sb-conn").textContent = why;
     $("st-dot").className = "dot danger";
@@ -1387,8 +1436,25 @@ function bind() {
   $("compact").ondblclick = toggleCompact;
 
   $("btn-start").onclick = async () => {
-    await startupCountdown();
-    await rpc("start", {});
+    if (S.coreGone) {
+      $("ctl-hint").textContent = "核心已退出，无法开始。请重新启动主程序。";
+      return;
+    }
+    // P0-4e：点击反馈**先出**，RPC 在后台跑。以前是 `await rpc("start")` 之后才动界面，
+    // 核没应答时用户看到的就是「点了没反应」（第一次白点，第二次才有反应）。
+    $("btn-start").disabled = true;
+    $("ctl-hint").textContent = "已收到「开始」，倒计时 3 秒…";
+    if (!(await startupCountdown())) {
+      $("btn-start").disabled = false;
+      return;
+    }
+    $("ctl-hint").textContent = "正在通知核心开始…";
+    glog("info", "倒计时结束，发送 start");
+    const res = await rpc("start", {});
+    if (res && res.ok === false) {
+      $("ctl-hint").textContent = `「开始」失败：${res.error ?? "未知"}`;
+      $("btn-start").disabled = false;
+    }
   };
   $("btn-pause").onclick = () => rpc("pause", {});
   $("btn-resume").onclick = () => rpc("resume", {});
