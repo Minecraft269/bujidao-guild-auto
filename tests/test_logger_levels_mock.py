@@ -596,13 +596,24 @@ class TestTraceQueue(LoggerTempCase):
         super().setUp()
         self.init_logger(level=6)
 
+    def _queue_lines(self):
+        """只取本类关心的 TRACE_QUEUE 行。
+
+        与 TestTraceVerifyStage._verify_lines 同一个原因：前面的异步用例可能遗留
+        后台验证线程（存活时长由 task_timeout 决定），它会在本测试的断言窗口里
+        往**同一个**日志文件写 `[异步-验证中] ...` 时序行。那是噪声，不是
+        trace_queue 的输出；CI 慢机器上必现（2026-11-14 main 的 Tests & Coverage
+        就因为 test_zero_depth_is_printed 断言了整个文件而红）。
+        """
+        return [m for m in self.messages() if m.startswith("TRACE_QUEUE ")]
+
     def test_name_and_event(self):
         logger.trace_queue("put", name="tasks")
-        self.assertEqual(self.messages(), ["TRACE_QUEUE tasks.put"])
+        self.assertEqual(self._queue_lines(), ["TRACE_QUEUE tasks.put"])
 
     def test_without_name(self):
         logger.trace_queue("get")
-        self.assertEqual(self.messages(), ["TRACE_QUEUE get"])
+        self.assertEqual(self._queue_lines(), ["TRACE_QUEUE get"])
 
     def test_depth_from_queue_object(self):
         import queue as _q
@@ -611,7 +622,7 @@ class TestTraceQueue(LoggerTempCase):
         q.put("T1")
         q.put("T2")
         logger.trace_queue("put", name="tasks", queue=q)
-        self.assertEqual(self.messages(), ["TRACE_QUEUE tasks.put | depth=2"])
+        self.assertEqual(self._queue_lines(), ["TRACE_QUEUE tasks.put | depth=2"])
 
     def test_explicit_depth_wins_over_queue(self):
         import queue as _q
@@ -619,7 +630,7 @@ class TestTraceQueue(LoggerTempCase):
         q = _q.Queue()
         q.put("T1")
         logger.trace_queue("get", name="tasks", queue=q, depth=99)
-        self.assertEqual(self.messages(), ["TRACE_QUEUE tasks.get | depth=99"])
+        self.assertEqual(self._queue_lines(), ["TRACE_QUEUE tasks.get | depth=99"])
 
     def test_broken_queue_reports_question_mark(self):
         class BadQueue:
@@ -627,17 +638,17 @@ class TestTraceQueue(LoggerTempCase):
                 raise NotImplementedError("没有 qsize")
 
         logger.trace_queue("put", name="tasks", queue=BadQueue())
-        self.assertEqual(self.messages(), ["TRACE_QUEUE tasks.put | depth=?"])
+        self.assertEqual(self._queue_lines(), ["TRACE_QUEUE tasks.put | depth=?"])
 
     def test_zero_depth_is_printed(self):
         import queue as _q
 
         logger.trace_queue("get", name="tasks", queue=_q.Queue())
-        self.assertEqual(self.messages(), ["TRACE_QUEUE tasks.get | depth=0"])
+        self.assertEqual(self._queue_lines(), ["TRACE_QUEUE tasks.get | depth=0"])
 
     def test_fields_appended(self):
         logger.trace_queue("task_done", name="tasks", depth=0, task="T1")
-        self.assertEqual(self.messages(), ["TRACE_QUEUE tasks.task_done | depth=0 | task=T1"])
+        self.assertEqual(self._queue_lines(), ["TRACE_QUEUE tasks.task_done | depth=0 | task=T1"])
 
     def test_queue_operations_are_log_only(self):
         """埋点只记日志,绝不真的动队列。"""
