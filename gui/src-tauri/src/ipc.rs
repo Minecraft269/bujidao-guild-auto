@@ -8,7 +8,7 @@
 //! 与耗时、超时告警都必须留痕；管道名内嵌 token，日志一律脱敏。
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -21,21 +21,23 @@ use crate::protocol::{build_request, classify_line, strip_id, Classified};
 
 const CALL_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// ERROR_NO_DATA：PIPE_NOWAIT 下"暂时没有数据"的返回值（不是错误）。
+/// ERROR_NO_DATA：句柄处于非阻塞模式且暂无数据时的返回值（不是错误）。
 const ERROR_NO_DATA: i32 = 232;
 
-/// 把读句柄切到 PIPE_NOWAIT（轮询读）。
+/// 管道里**待读字节数**（PeekNamedPipe：不阻塞、不占住文件对象）。
+/// None = 管道已断（对端关闭/句柄失效），调用方按 EOF 处理。
 ///
-/// 为什么必须这么做（本轮根因）：Windows 上**同步句柄在同一文件对象上的 I/O 会被串行化**。
-/// 读线程一旦挂起阻塞的 ReadFile，同进程另一句柄的 WriteFile 就永远不返回 ——
-/// 实测表现为 `[ENTER] RPC method=config` 之后再无 `[EXIT]`、核侧也收不到这一帧，
-/// 而 hello 能成是因为它恰好抢在阻塞读之前写出。改成轮询后读不再长期占住对象。
+/// 为什么改成返回字节数（P0-4e 根因）：旧实现只回答「有没有数据」，然后调
+/// `BufReader::read_line`。那是个**阻塞**读：只来了半行（还没有 `\n`）时它会一直
+/// 挂住同一个文件对象，而 Windows 会把同一文件对象上的同步 I/O 串行化 ——
+/// 于是随后所有 `WriteFile` 都排队，表现为「冷启动第一次点任何按钮都要等满 15s」。
+/// 现在的做法是只按 Peek 报的字节数读，读多少算多少，绝不发起会挂起的读。
 ///
-/// 代价：轮询间隔 5ms（空闲时极低开销），换来写入不再被读阻塞。
+/// 这也顺带否掉了 `SetNamedPipeHandleState(PIPE_NOWAIT)`：它在真机实测会被拒
+/// （os error 231 = ERROR_PIPE_BUSY），而一旦被拒就退回阻塞读 —— 正是上面那条死路。
+/// 既然读已经不会再阻塞，就没必要再设 NOWAIT，那条失败日志也一并消失。
 #[cfg(windows)]
-/// 管道里有没有待读数据（PeekNamedPipe：不阻塞、不占住文件对象）。
-#[cfg(windows)]
-fn pipe_has_data(file: &std::fs::File) -> Option<bool> {
+fn pipe_avail(file: &std::fs::File) -> Option<u32> {
     use std::os::windows::io::AsRawHandle;
 
     extern "system" {
@@ -60,49 +62,10 @@ fn pipe_has_data(file: &std::fs::File) -> Option<bool> {
         )
     } != 0;
     if ok {
-        Some(avail > 0)
+        Some(avail)
     } else {
-        None // 断开等：交给调用方按读取错误处理
+        None // 断开等：交给调用方按 EOF 处理
     }
-}
-
-fn set_pipe_nowait(file: &std::fs::File) -> bool {
-    use std::os::windows::io::AsRawHandle;
-
-    const PIPE_NOWAIT: u32 = 0x0000_0001;
-    extern "system" {
-        fn SetNamedPipeHandleState(
-            handle: *mut core::ffi::c_void,
-            mode: *mut u32,
-            max_collection_count: *mut u32,
-            collect_data_timeout: *mut u32,
-        ) -> i32;
-    }
-    let mut mode = PIPE_NOWAIT;
-    let ok = unsafe {
-        SetNamedPipeHandleState(
-            file.as_raw_handle().cast(),
-            &mut mode,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    } != 0;
-    if ok {
-        logger::info(
-            "ipc",
-            "[S6] 读句柄已设为 PIPE_NOWAIT（轮询读，不与写串行化）",
-        );
-    } else {
-        // 设置失败不能静默：退回阻塞读会让 RPC 再次卡死
-        logger::warn(
-            "ipc",
-            &format!(
-                "[S6] 设置 PIPE_NOWAIT 失败（os error {:?}），退回阻塞读：RPC 写入可能被读阻塞",
-                std::io::Error::last_os_error()
-            ),
-        );
-    }
-    ok
 }
 
 /// 核未就绪时不能一次失败就永久放弃：45 × 200ms ≈ 9s，与前端轮询上限对齐。
@@ -247,23 +210,18 @@ impl Ipc {
                     "ipc",
                     "[ipc.reader_loop] ENTER thread=ipc-reader poll_ms=5",
                 );
-                // 读句柄切轮询：见 set_pipe_nowait() 的说明（本轮 RPC 卡死的根因）
-                set_pipe_nowait(&file);
-                // NOWAIT 设置可能被系统拒绝（实测 os error 231），所以再用 Peek 兜底：
-                // 只有确认有数据才 ReadFile，保证读不会长期占住文件对象、把写卡死。
-                let peek_handle = file.try_clone().ok();
-                let mut reader = BufReader::new(file);
-                let mut line = String::new();
+                // P0-4e：读循环**永不发起阻塞读**。
+                // 只按 Peek 报的可读字节数 Read 一次，读多少算多少，剩下的半行留在 buf 里。
+                // 旧实现用 BufReader::read_line —— 只来了半行（还没有 \n）时它会挂住同一
+                // 文件对象，而 Windows 把同一文件对象的同步 I/O 串行化，随后所有 WriteFile
+                // 排队，表现为「冷启动第一次点任何按钮都要等满 15s RPC 超时」。
+                let mut reader_file = file;
+                let mut buf: Vec<u8> = Vec::new();
+                let mut chunk = vec![0u8; 64 * 1024];
                 loop {
-                    // 有数据才读：避免阻塞读长期占住文件对象（写会被它卡住）
-                    if let Some(h) = &peek_handle {
-                        if pipe_has_data(h) == Some(false) {
-                            std::thread::sleep(Duration::from_millis(5));
-                            continue;
-                        }
-                    }
-                    match reader.read_line(&mut line) {
-                        Ok(0) => {
+                    let avail = match pipe_avail(&reader_file) {
+                        Some(n) => n,
+                        None => {
                             logger::warn(
                                 "ipc",
                                 &format!(
@@ -272,8 +230,25 @@ impl Ipc {
                             );
                             break;
                         }
-                        Ok(_) => {}
-                        // PIPE_NOWAIT 下"暂无数据"不是错误；已读到的半行留在 line 里
+                    };
+                    if avail == 0 {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    let want = (avail as usize).min(chunk.len());
+                    let mut gone = false;
+                    match reader_file.read(&mut chunk[..want]) {
+                        Ok(0) => {
+                            logger::warn(
+                                "ipc",
+                                &format!(
+                                    "读线程退出（管道 EOF/已关闭）已读行数={lines_read} 事件数={events}"
+                                ),
+                            );
+                            gone = true;
+                        }
+                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        // 非阻塞模式下"暂无数据"不是错误
                         Err(e) if e.raw_os_error() == Some(ERROR_NO_DATA) => {
                             std::thread::sleep(Duration::from_millis(5));
                             continue;
@@ -285,12 +260,20 @@ impl Ipc {
                                     "读线程退出（读取错误）: {e} 已读行数={lines_read} 事件数={events}"
                                 ),
                             );
-                            break;
+                            gone = true;
                         }
                     }
-                    lines_read += 1;
-                    let text = line.trim_end_matches(['\r', '\n']).to_string();
-                    match classify_line(&text) {
+                    if gone {
+                        break;
+                    }
+                    // 把 buf 里成行的部分逐条处理（半行留在 buf，等下一轮补全）
+                    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                        let raw: Vec<u8> = buf.drain(..=pos).collect();
+                        let text = String::from_utf8_lossy(&raw)
+                            .trim_end_matches(['\r', '\n'])
+                            .to_string();
+                        lines_read += 1;
+                        match classify_line(&text) {
                         Classified::Reply { id, text } => {
                             replies += 1;
                             logger::debug(
@@ -334,8 +317,8 @@ impl Ipc {
                                 ),
                             );
                         }
+                        }
                     }
-                    line.clear();
                 }
                 // 循环内不逐行打点（量控）：退出时只落一条聚合行
                 logger::trace(
