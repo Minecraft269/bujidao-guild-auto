@@ -171,6 +171,13 @@
 
       <!-- ── 配置页（§3.3） ──────────────────────────────────────── -->
       <section class="page" data-page="config">
+        <!-- 首启横幅（P0-4d）：标签被锁时必须有一条**看得见**的解释。
+             不能只靠 title（Chromium 对 disabled 控件不显示 tooltip）
+             或状态栏小字来承担这个提示。 -->
+        <div class="banner" id="first-run-banner" hidden>
+          <strong>首次运行：核对并保存配置后才能开始。</strong>
+          上方其它页签（运行 / 规则 / 日志 / 关于）在保存前不可用，保存成功后自动解锁。
+        </div>
         <div class="card">
           <div class="card-head">
             <h2>配置（与 config_panel 一一对应）</h2>

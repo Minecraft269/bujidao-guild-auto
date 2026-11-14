@@ -922,17 +922,21 @@ def _gui_pending(items):
     return _b.pending_rows(items)
 
 
-def _gui_notify_core_exit(server) -> None:
+def _gui_notify_core_exit(server, bridge=None) -> None:
     """核退出前推一条 ipc-closed（R-46）：界面没有别的途径知道核已经走了。
 
     由 atexit 调用 —— 正常返回、sys.exit、未处理异常都会走到；
     被强杀（TerminateProcess）时不会走到，那种情况界面只能等管道 EOF。
+
+    `reason`（P0-4d）区分「核要退出」与「用户没操作」：
+    `start_timeout` = S5 等到上限也没人点「开始」，界面必须留着，不能 1.5s 自关。
     """
+    reason = getattr(bridge, "exit_reason", "normal") if bridge is not None else "normal"
     try:
-        server.send_event("ipc-closed", {"pid": os.getpid()})
+        server.send_event("ipc-closed", {"pid": os.getpid(), "reason": reason})
         # send_event 未连接时静默返回，别把「没发出去」记成「已通知」
         if server.connected:
-            logger.log_info("[阶段] S6 已通知 GUI：核即将退出(ipc-closed)")
+            logger.log_info(f"[阶段] S6 已通知 GUI：核即将退出(ipc-closed) reason={reason}")
     except Exception as e:  # atexit 里再抛只会污染退出码，留痕即可
         logger.log_warning(f"[阶段] S6 通知 GUI 核退出失败: {e!r}")
 
@@ -1041,13 +1045,19 @@ def main():
             ipc_server = getattr(bridge, "server", None)
             if ipc_server is not None:  # 没有管道就没有 IPC（测试替身 / 纯控制台桥）
                 ipc_server.on_quit = _gui_quit_core
-                atexit.register(_gui_notify_core_exit, ipc_server)
+                # P0-4d：把 bridge 一起带上 —— 退出原因要随 ipc-closed 告诉界面
+                # （start_timeout 时界面不能自关）。
+                atexit.register(_gui_notify_core_exit, ipc_server, bridge)
             # launch() 返回 True = 用户点了「开始」：重新读取刚保存的配置，
             # 继续走与控制台完全相同的流程；False = 用户关窗，正常退出。
             watchdog.mark("S5/S6 GUI 拉起与 IPC 建立")
             if not bridge.launch():
                 # 关窗/超时都是正常退出：必须落日志，才能回答「为什么没弹出界面/为什么退出」
-                logger.log_info("[阶段] S4 GUI 未进入开始状态(用户关窗或等待超时)，正常退出")
+                logger.log_info(
+                    f"[阶段] S4 GUI 未进入开始状态(用户关窗或等待超时)"
+                    f" 原因={getattr(bridge, 'outcome', '未知')}"
+                    f" 界面处置={getattr(bridge, 'exit_reason', 'normal')}，正常退出"
+                )
                 watchdog.reach_s9()
                 return 0
             ui_bridge_mod.set_active(bridge)
