@@ -74,12 +74,112 @@ def _find_window(title_part: str) -> int:
     return found.value or 0
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+def _find_render_host(hwnd: int) -> int:
+    """WebView2 里真正吃鼠标的是 Chrome_RenderWidgetHostHWND 子窗口。"""
+    user32 = ctypes.windll.user32
+    found = ctypes.c_void_p(0)
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def _cb(h, _lparam):
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(h, buf, 256)
+        if "Chrome_RenderWidgetHost" in buf.value:
+            found.value = h
+            return False
+        return True
+
+    user32.EnumChildWindows(ctypes.c_void_p(hwnd), _cb, 0)
+    return found.value or 0
+
+
+def _post_click(hwnd: int, fx: float, fy: float) -> tuple[int, int]:
+    """把一次左键点击**投递**给渲染子窗口。
+
+    用 PostMessage 而不是 SetCursorPos + mouse_event：后者会移动用户的真实光标、
+    抢前台，实测还会因为窗口没激活而点空（用户当场指出不符合规范）。
+    窗口消息只进这个进程的消息队列，不碰输入设备、不改焦点。
+    """
+    user32 = ctypes.windll.user32
+    r = _RECT()
+    user32.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(r))
+    sx = r.left + int((r.right - r.left) * fx)
+    sy = r.top + int((r.bottom - r.top) * fy)
+    host = _find_render_host(hwnd) or hwnd
+    pt = _POINT(sx, sy)
+    user32.ScreenToClient(ctypes.c_void_p(host), ctypes.byref(pt))
+    lp = (pt.y << 16) | (pt.x & 0xFFFF)
+    # 先移动再按下：Chromium 对没有 MOUSEMOVE 的新坐标有时不认
+    user32.PostMessageW(ctypes.c_void_p(host), 0x0200, 0, lp)  # WM_MOUSEMOVE
+    time.sleep(0.05)
+    user32.PostMessageW(ctypes.c_void_p(host), 0x0201, 1, lp)  # WM_LBUTTONDOWN
+    time.sleep(0.08)
+    user32.PostMessageW(ctypes.c_void_p(host), 0x0202, 0, lp)  # WM_LBUTTONUP
+    return sx, sy
+
+
+def _countdown_check(srv: IpcServer, gui_log: Path, hwnd: int) -> bool:
+    """点「开始」→ 倒数途中让核退出 → 倒数必须立刻停（P0-4e 验收 3）。"""
+    # 「开始」按钮在 1016x689 窗口里的相对位置（取自 GUI 截图实测）
+    sx, sy = _post_click(hwnd, 0.808, 0.213)
+    print(f"[repro] 已投递「开始」点击 screen=({sx},{sy})", flush=True)
+
+    started = None
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        hit = [ln for ln in _read(gui_log).splitlines() if "倒数开始" in ln]
+        if hit:
+            started = _ts(hit[-1])
+            break
+        time.sleep(0.05)
+    if started is None:
+        print("[repro] 没能点中「开始」：日志里没有「倒数开始」", flush=True)
+        return False
+    print(f"[repro] 倒数已开始 t={started}s", flush=True)
+
+    time.sleep(0.9)  # 停在倒数中途
+    print("[repro] 倒数途中模拟核退出：推 ipc-closed", flush=True)
+    srv.send_event("ipc-closed", {"pid": 0, "reason": "normal"})
+
+    abort_ts = None
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        hit = [ln for ln in _read(gui_log).splitlines() if "倒数中止" in ln]
+        if hit:
+            abort_ts = _ts(hit[-1])
+            break
+        time.sleep(0.05)
+    delta = round(abort_ts - started, 3) if (abort_ts and started) else None
+    print(f"[repro] 「倒数中止」t={abort_ts}s（距倒数开始 {delta}s）", flush=True)
+    for ln in _read(gui_log).splitlines():
+        if any(k in ln for k in ("倒数开始", "倒数中止", "界面动作已中止", "即将开始")):
+            print("  " + ln.strip(), flush=True)
+    return abort_ts is not None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="P0-4e：RPC 阻塞与核无响应时的界面反馈")
     ap.add_argument(
         "--abort-only",
         action="store_true",
         help="只验「核退出 → 前端立刻收掉依赖核的界面动作」（不需要 state=running）",
+    )
+    ap.add_argument(
+        "--countdown",
+        action="store_true",
+        help="验收 3：PostMessage 点「开始」→ 倒数途中核退出 → 倒数必须立刻停",
     )
     args = ap.parse_args()
 
@@ -147,6 +247,12 @@ def main() -> int:
             if not hwnd:
                 print("[repro] 找不到 Gui 窗口", flush=True)
                 return 1
+
+            if args.countdown:
+                print("[repro] 模式=倒数中止（PostMessage 点击，不动光标/不抢前台）", flush=True)
+                ok = _countdown_check(srv, gui_log, hwnd)
+                print(f"\n[repro] 结论: 倒数中止 → {'通过' if ok else '失败'}", flush=True)
+                return 0 if ok else 1
 
             if args.abort_only:
                 # 核退出 → 前端必须立刻收掉依赖核的界面动作（P0-4e 目标 3 的界面半边）
