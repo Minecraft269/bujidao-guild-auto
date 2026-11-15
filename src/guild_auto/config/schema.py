@@ -94,8 +94,14 @@ def _issue_keys(issues):
     return keys
 
 
-def validate_config(cfg):
-    """校验配置,返回问题列表(每条为 (级别, 消息);级别: error/warning)。"""
+def validate_config(cfg, *, allow_placeholder_game_log=False):
+    """校验配置,返回问题列表(每条为 (级别, 消息);级别: error/warning)。
+
+    allow_placeholder_game_log(P0-9b):**仅首启使用** —— 本次刚生成默认配置时,
+    game_log 占位符降级成 warning(日志与控制台仍可见),放行进入 GUI 配置页;
+    判定规则仍是同一份 `_looks_like_placeholder`,不复制第二套。
+    非首启一律用默认值(error),P0-9 的口径不变。
+    """
     t0 = time.monotonic()
     key_count = len(cfg) if isinstance(cfg, dict) else 0
     _log(
@@ -646,12 +652,20 @@ def validate_config(cfg):
     gl = str(cfg.get("game_log") or "")
     if gl:
         if _looks_like_placeholder(gl):
+            # P0-9b:首启(本次刚生成默认配置)降级为 warning,放行进 GUI 配置页;
+            # 判定仍是同一份 _looks_like_placeholder —— 只降级别,不复制规则。
+            level = "warning" if allow_placeholder_game_log else "error"
             issues.append(
                 (
-                    "error",
+                    level,
                     f"game_log 仍是模板占位符: {gl} 。请改成游戏客户端真实的 "
                     f"latest.log 路径(键名: game_log;网易版通常在 "
-                    f"…\\logs\\latest.log)。改好后重启即可,程序不会在占位符上等待。",
+                    f"…\\logs\\latest.log)。"
+                    + (
+                        "首次运行已放行到配置页:保存真实路径后才能开始运行。"
+                        if level == "warning"
+                        else "改好后重启即可,程序不会在占位符上等待。"
+                    ),
                 )
             )
         else:
