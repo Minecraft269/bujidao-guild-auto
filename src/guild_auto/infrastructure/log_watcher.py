@@ -83,6 +83,41 @@ class LogWaitInterrupted(Exception):
         super().__init__(f"等待游戏日志被用户停止(已等 {waited_s:.1f}s): {path}")
 
 
+# ---------------------------------------------------------------------------
+# 「正在等日志出现」的进程级快照(P0-9)
+# ---------------------------------------------------------------------------
+# 让启动看门狗知道这是一段**阶段自己声明的预期最长等待**(wait_seconds),不是卡住:
+# 旧实现靠固定 30s 猜,而 S8 设计等 60s —— 30 < 60,必然误报「启动卡在 S7」并
+# 转储线程栈(实机日志 11:18:28/11:18:38)。主线程写、看门狗线程读;CPython 里
+# 整体替换一个模块级引用是原子的,不需要加锁。
+_waiting = None
+
+
+def wait_state():
+    """正在等游戏日志时返回 {path, expected_s, elapsed_s},否则 None(P0-9)。"""
+    st = _waiting
+    if not st:
+        return None
+    return {
+        "path": st["path"],
+        "expected_s": st["expected_s"],
+        "elapsed_s": time.time() - st["started_at"],
+    }
+
+
+def _set_waiting(path, expected_s=0.0):
+    """登记/清除「正在等日志」状态(只由 LogWatcher.open 调用)。"""
+    global _waiting
+    if path is None:
+        _waiting = None
+        return
+    _waiting = {
+        "path": str(path),
+        "expected_s": float(expected_s),
+        "started_at": time.time(),
+    }
+
+
 def _drop_leading_continuation(buf):
     """丢掉开头的 UTF-8 续字节(0b10xxxxxx):说明这段是从字符中间切下来的。"""
     i = 0
@@ -241,33 +276,39 @@ class LogWatcher:
         # 预算计时用 time.time():与本模块既有等待(wait_for_chat_block 的 deadline)
         # 同一时间源,测试注入的假时钟也只实现了 time()/sleep()。
         last = t0
-        while not os.path.exists(self.path):
-            now = time.time()
-            paused = bool(stop_check and stop_check())
-            if not paused:
-                remaining -= now - last  # 暂停期间不消耗超时预算
-            last = now
-            if _force_stop():
-                waited_s = time.time() - t0
-                logger.log_warning(
-                    f"S8 等待游戏日志被用户停止 | waited_s={waited_s:.1f}"
-                    f" | path={self.path} | 剩余预算={max(remaining, 0.0):.1f}s 未消耗"
-                )
-                raise LogWaitInterrupted(self.path, waited_s)
-            if remaining <= 0 and not paused:
-                waited_s = time.time() - t0
-                logger.log_trace(
-                    f"[TRACE][log_watcher.open] timeout=true waited_s={waited_s:.1f}"
-                    f" path={logger.sanitize_text(self.path)}"
-                )
-                logger.log_warning(
-                    f"S8 等待游戏日志超时 | waited_s={waited_s:.1f} | path={self.path}"
-                    f" | rotation_reopen=False"
-                )
-                raise FileNotFoundError(
-                    f"游戏日志不存在: {self.path}\n请确认游戏已启动且路径配置正确(--log 或 config.json 的 game_log)。"
-                )
-            time.sleep(_WAIT_SLICE_S)
+        # P0-9:把"正在等"登记到进程级状态,看门狗据此按 wait_seconds 判、不再误报;
+        # 无论成功/超时/被停止,finally 都会清掉。
+        _set_waiting(self.path, wait_seconds)
+        try:
+            while not os.path.exists(self.path):
+                now = time.time()
+                paused = bool(stop_check and stop_check())
+                if not paused:
+                    remaining -= now - last  # 暂停期间不消耗超时预算
+                last = now
+                if _force_stop():
+                    waited_s = time.time() - t0
+                    logger.log_warning(
+                        f"S8 等待游戏日志被用户停止 | waited_s={waited_s:.1f}"
+                        f" | path={self.path} | 剩余预算={max(remaining, 0.0):.1f}s 未消耗"
+                    )
+                    raise LogWaitInterrupted(self.path, waited_s)
+                if remaining <= 0 and not paused:
+                    waited_s = time.time() - t0
+                    logger.log_trace(
+                        f"[TRACE][log_watcher.open] timeout=true waited_s={waited_s:.1f}"
+                        f" path={logger.sanitize_text(self.path)}"
+                    )
+                    logger.log_warning(
+                        f"S8 等待游戏日志超时 | waited_s={waited_s:.1f} | path={self.path}"
+                        f" | rotation_reopen=False"
+                    )
+                    raise FileNotFoundError(
+                        f"游戏日志不存在: {self.path}\n请确认游戏已启动且路径配置正确(--log 或 config.json 的 game_log)。"
+                    )
+                time.sleep(_WAIT_SLICE_S)
+        finally:
+            _set_waiting(None)
         self.encoding = detect_encoding(self.path, self._preferred)
         self._fh = open(self.path, "rb")
         self._tail = b""

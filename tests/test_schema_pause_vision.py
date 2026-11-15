@@ -12,10 +12,11 @@ import unittest
 from unittest import mock
 
 from guild_auto.config import DEFAULT_CONFIG, validate_config
+from tests.support_cfg import default_cfg
 
 
 def _cfg():
-    return json.loads(json.dumps(DEFAULT_CONFIG))
+    return default_cfg()
 
 
 def _errors(cfg):

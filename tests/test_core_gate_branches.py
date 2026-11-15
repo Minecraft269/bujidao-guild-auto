@@ -28,6 +28,7 @@ from io import StringIO
 from unittest import mock
 
 from guild_auto.config import DEFAULT_CONFIG, validate_config
+from tests.support_cfg import default_cfg
 from guild_auto.config.loader import _dump_jsonc, _strip_jsonc, console
 from guild_auto.config.ui_binding import FieldSpec, _coerce, apply_edits
 from guild_auto.domain import rules as R
@@ -35,7 +36,7 @@ from guild_auto.domain.parsers import ParseError, _join_truncated_names, _to_int
 
 
 def _cfg():
-    return json.loads(json.dumps(DEFAULT_CONFIG))
+    return default_cfg()
 
 
 def _errors(cfg):

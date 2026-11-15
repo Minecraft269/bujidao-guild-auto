@@ -33,10 +33,12 @@ from guild_auto.config import (  # noqa: E402
     validate_config,
 )
 
+from tests.support_cfg import default_cfg  # noqa: E402
+
 
 def _cfg():
-    """深拷贝默认配置,避免测试间互相污染。"""
-    return copy.deepcopy(DEFAULT_CONFIG)
+    """默认配置的深拷贝 + 可用的 game_log(P0-9:占位符现在是校验 error)。"""
+    return default_cfg()
 
 
 def _errors(issues):

@@ -169,6 +169,10 @@ function applyEnvelope(payload) {
 function applyState(p) {
   Object.assign(S.state, p || {});
   renderState();
+  // P0-9：等游戏日志是"正在做合法的事"，不是卡住 —— 把状态文案同步到操作区提示，
+  // 让用户知道要等多久、以及点「停止」可以取消（复用 state 事件，不新增协议）。
+  const stage = String(S.state.stage || "");
+  if (stage.includes("等待游戏日志")) $("ctl-hint").textContent = `${stage}。`;
 }
 
 function applyAction(p) {

@@ -27,6 +27,7 @@ import unittest
 
 
 from guild_auto.infrastructure import logger  # noqa: E402
+from tests.support_cfg import default_cfg, valid_game_log  # noqa: E402
 import guild_auto.config as config_mod  # noqa: E402
 from guild_auto.config import (  # noqa: E402
     DEFAULT_CONFIG,
@@ -53,8 +54,8 @@ for _n in (
 
 
 def _cfg():
-    """深拷贝默认配置,避免测试间互相污染。"""
-    return copy.deepcopy(DEFAULT_CONFIG)
+    """默认配置的深拷贝 + 可用的 game_log(P0-9:占位符现在是校验 error)。"""
+    return default_cfg()
 
 
 def _errors(issues):
@@ -206,11 +207,15 @@ class TestEnsureDefaultConfig(unittest.TestCase):
 
 
 class TestValidateDefaultsPass(unittest.TestCase):
-    """默认配置必须零 error(否则用户开箱即报错)。"""
+    """默认配置是**模板**:除 game_log 占位符外必须零 error(否则用户开箱即被别的错拦住)。"""
 
-    def test_default_config_has_no_errors(self):
-        issues = validate_config(_cfg())
-        self.assertEqual(_errors(issues), [], f"默认配置存在校验错误: {_errors(issues)}")
+    def test_default_config_only_flags_game_log_placeholder(self):
+        """P0-9:默认值 game_log 就是占位符,必须被拦下,且错误只此一条。"""
+        issues = validate_config(copy.deepcopy(DEFAULT_CONFIG))
+        errors = _errors(issues)
+        self.assertEqual(len(errors), 1, f"默认配置错误数应为 1(仅占位符): {errors}")
+        self.assertIn("game_log", errors[0])
+        self.assertIn("占位符", errors[0])
 
 
 class TestValidateNumericFields(unittest.TestCase):
@@ -500,10 +505,38 @@ class TestValidateGameLogSafety(unittest.TestCase):
         self.assertTrue(any("game_log" in m for m in _errors(validate_config(c))))
 
     def test_normal_game_log_accepted(self):
-        """正常游戏日志路径必须被接受。"""
+        """真实路径(父目录存在)必须被接受;模板占位符必须被拒(P0-9)。"""
         c = _cfg()
         c["log"] = {"dir": "logs", "level": 4, "enabled": True}
+        c["game_log"] = valid_game_log()
+        self.assertFalse(any("game_log" in m for m in _errors(validate_config(c))))
+
+    def test_placeholder_game_log_rejected(self):
+        """模板占位符:启动即 error,并在消息里点出键名。"""
+        c = _cfg()
         c["game_log"] = r"C:\Path\To\Minecraft\logs\latest.log"
+        errs = [m for m in _errors(validate_config(c)) if "game_log" in m]
+        self.assertTrue(errs, "占位符未被拦下 —— 会放行到 S8 干等 60 秒")
+        self.assertIn("占位符", errs[0])
+
+    def test_game_log_missing_parent_dir_rejected(self):
+        """父目录不存在 → error(与"文件暂缺但父目录在"区分开)。"""
+        c = _cfg()
+        c["game_log"] = os.path.join(tempfile.gettempdir(), "no_such_dir_p09", "latest.log")
+        errs = [m for m in _errors(validate_config(c)) if "game_log" in m]
+        self.assertTrue(errs, "父目录不存在却没报错")
+        self.assertIn("父目录", errs[0])
+
+    def test_unc_path_parent_check_skipped(self):
+        """UNC 路径不查父目录:服务器未挂载时 isdir 会按 SMB 超时卡住校验(P0-9)。"""
+        c = _cfg()
+        c["game_log"] = "\\\\server\\share\\logs\\latest.log"
+        self.assertFalse(any("父目录" in m for m in _errors(validate_config(c))))
+
+    def test_game_log_file_missing_but_parent_exists_accepted(self):
+        """文件暂缺但父目录存在 → 允许(先开脚本后开游戏是合法用法)。"""
+        c = _cfg()
+        c["game_log"] = valid_game_log()  # 该文件本身不存在
         self.assertFalse(any("game_log" in m for m in _errors(validate_config(c))))
 
     def test_empty_game_log_skips_check(self):
