@@ -10,19 +10,20 @@ import pytest
 
 from guild_auto.config import load_config, save_config
 from guild_auto.config.defaults import DEFAULT_CONFIG
+from tests.support_cfg import default_cfg
 from guild_auto.ui import binding as B
 
 
 @pytest.fixture()
 def bridge(tmp_path):
     path = tmp_path / "config.json"
-    save_config(path, json.loads(json.dumps(DEFAULT_CONFIG)))
+    save_config(path, default_cfg())
     return B.GuiBridge(load_config(path), path, report_dir=tmp_path, log_dir=tmp_path)
 
 
 def test_hello_reports_first_run(tmp_path):
     path = tmp_path / "config.json"
-    save_config(path, json.loads(json.dumps(DEFAULT_CONFIG)))
+    save_config(path, default_cfg())
     first = B.GuiBridge(load_config(path), path, first_run=True)
     again = B.GuiBridge(load_config(path), path)
     assert first._hello()["first_run"] is True
@@ -68,7 +69,7 @@ def test_save_config_reports_restart_required_only_for_restart_paths(bridge):
 def test_restart_app_replies_then_calls_injected_restart(tmp_path):
     """立即重启：回包必须先到，替换进程在后台线程里做（这里注入假实现，绝不真 execv）。"""
     path = tmp_path / "config.json"
-    save_config(path, json.loads(json.dumps(DEFAULT_CONFIG)))
+    save_config(path, default_cfg())
     called = []
     br = B.GuiBridge(
         load_config(path),

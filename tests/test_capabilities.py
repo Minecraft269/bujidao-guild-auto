@@ -28,6 +28,7 @@ from unittest import mock
 
 from guild_auto import capabilities as cap_mod
 from guild_auto.config import DEFAULT_CONFIG
+from tests.support_cfg import default_cfg
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "build-variants.py"
@@ -58,7 +59,7 @@ def caps_env(value):
 
 
 def _cfg():
-    return json.loads(json.dumps(DEFAULT_CONFIG))
+    return default_cfg()
 
 
 class TestVariantNames(unittest.TestCase):

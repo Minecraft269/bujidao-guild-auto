@@ -12,6 +12,7 @@ import copy
 import pytest
 
 from guild_auto.config.defaults import DEFAULT_CONFIG
+from tests.support_cfg import default_cfg
 from guild_auto.config.schema import validate_config
 from guild_auto.domain import rules as rules_mod
 
@@ -30,7 +31,7 @@ def test_chat_key_open_key_is_accepted():
 
 
 def _cfg(**over):
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg = default_cfg()
     cfg.update(over)
     return cfg
 

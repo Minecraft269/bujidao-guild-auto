@@ -606,19 +606,38 @@ class _StartupWatchdog:
 
     覆盖 S0→S9：同一阶段持续超过阈值记 WARNING 并转储线程栈；
     启动 30s 仍未进入 S9 记 ERROR 并同步提示控制台。
+
+    P0-9：阈值不再纯靠固定 30s 猜。S8 等游戏日志是一段**阶段自己声明的预期最长
+    等待**（`log_watcher.wait_state()` 报出 wait_seconds），旧实现 30s < 60s 必然
+    误报「启动卡在 S7」并转储线程栈。现在等待期间：判卡住的阈值 = 声明值 + 余量，
+    不转储线程栈、不报 Error，且该时长不计入「启动 30s 未进 S9」的总预算。
     """
 
-    def __init__(self, log_path, *, interval=10.0, stall_seconds=30.0, start_seconds=30.0):
+    def __init__(
+        self,
+        log_path,
+        *,
+        interval=10.0,
+        stall_seconds=30.0,
+        start_seconds=30.0,
+        wait_margin=10.0,
+    ):
         self.log_path = log_path
         self.interval = float(interval)
         self.stall_seconds = float(stall_seconds)
         self.start_seconds = float(start_seconds)
+        # 声明等待之外的余量（一个巡检周期量级）：覆盖「等待刚结束、状态还没清」的边界
+        self.wait_margin = float(wait_margin)
         self._stage = "S0 进程启动"
         self._since = time.monotonic()
         self._started_at = time.monotonic()
         self._reached_s9 = False
         self._reported_stage = None
         self._reported_slow_start = False
+        self._in_declared_wait = False
+        self._last_wait_elapsed = 0.0
+        self._waited_total = 0.0
+        self._wait_reported = False
         self._stop_event = threading.Event()
         self._dump_fh = None
         self._dump_scheduled = False
@@ -648,10 +667,57 @@ class _StartupWatchdog:
             except Exception as e:  # 取消失败不影响退出，但要留痕
                 logger.log_warning(f"[看门狗] 取消线程栈转储失败: {e!r}")
 
+    def _log_wait(self):
+        """当前是否在等游戏日志（阶段声明的预期等待，P0-9）。取不到就当作没有。"""
+        try:
+            from guild_auto.infrastructure import log_watcher as _log_watcher
+
+            return _log_watcher.wait_state()
+        except Exception:  # 状态查询失败不该炸掉巡检，也不该向上抛
+            return None
+
+    def _report_waiting(self, wait):
+        """把「正在等游戏日志」推给界面（复用既有 state 事件，不新增协议）。"""
+        if self._wait_reported:
+            return
+        self._wait_reported = True
+        text = (
+            f"等待游戏日志: {wait['path']}"
+            f"（最长 {float(wait['expected_s']):.0f}s，点「停止」可取消）"
+        )
+        # 前缀刻意不用「看门狗」:等待是阶段声明的预期行为,不是看门狗告警;
+        # 验收口径要求「等待期间 grep 看门狗 为空」,别自己把 grep 污染了。
+        logger.log_info(text)
+        try:
+            from guild_auto.ui import binding as _ui_binding  # noqa: PLC0415
+
+            bridge = _ui_binding.active()
+            if bridge is not None:
+                bridge.push_state(stage=text)
+        except Exception as e:  # 界面推送失败只留痕，不影响主流程
+            logger.log_debug(f"[看门狗] 等待态推送界面失败: {e!r}")
+
     def _run(self):
         try:
             while not self._stop_event.wait(self.interval):
                 now = time.monotonic()
+                wait = self._log_wait()
+                if wait is not None:
+                    # 阶段声明的预期最长等待：阈值 = 声明值 + 余量；期间不转储线程栈、
+                    # 不报 Error（旧实现固定 30s 而 S8 设计等 60s，必然误报，P0-9）
+                    self._in_declared_wait = True
+                    self._last_wait_elapsed = float(wait["elapsed_s"])
+                    self._report_waiting(wait)
+                    if self._last_wait_elapsed < float(wait["expected_s"]) + self.wait_margin:
+                        continue
+                elif self._in_declared_wait:
+                    # 等待结束（成功/超时/停止）本身就是进展：重置阶段计时，并把等待时长
+                    # 从「启动总预算」里扣掉 —— 否则 60s 等待刚结束就会立刻被判卡住/启动超时
+                    self._in_declared_wait = False
+                    self._wait_reported = False
+                    self._waited_total += self._last_wait_elapsed
+                    self._since = now
+                    self._reported_stage = None
                 stage = self._stage
                 held = now - self._since
                 if held >= self.stall_seconds and self._reported_stage != stage:
@@ -663,7 +729,7 @@ class _StartupWatchdog:
                     self._dump_thread_stack()
                 if (
                     not self._reached_s9
-                    and now - self._started_at >= self.start_seconds
+                    and now - self._started_at - self._waited_total >= self.start_seconds
                     and not self._reported_slow_start
                 ):
                     self._reported_slow_start = True

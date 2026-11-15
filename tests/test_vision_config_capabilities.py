@@ -20,10 +20,11 @@ import unittest
 from unittest import mock
 
 from guild_auto.config import CONFIG_COMMENTS, DEFAULT_CONFIG, validate_config
+from tests.support_cfg import default_cfg
 
 
 def _cfg():
-    return copy.deepcopy(DEFAULT_CONFIG)
+    return default_cfg()
 
 
 def _errors(issues):

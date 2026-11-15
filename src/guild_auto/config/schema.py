@@ -25,6 +25,24 @@ VISION_MIN_STAY_MS = 120
 
 
 # ---------------------------------------------------------------------------
+# game_log 模板占位符(P0-9)
+# ---------------------------------------------------------------------------
+# 默认配置里 game_log 写的就是 `C:\Path\To\Minecraft\logs\latest.log`;用户没改成
+# 真实路径就启动时,旧实现放行到 S8 干等 60 秒才报「游戏日志不存在」(实机日志
+# 2026-11-15 11:17–11:19)。这里在启动校验阶段直接拦下,不进等待、不询问。
+# 片段一律小写比较(大小写不敏感);`<`/`>` 在 Windows 路径里非法,同样按占位符处理。
+_PLACEHOLDER_FRAGMENTS = ("path\\to", "path/to", "your_", "your-", "路径\\到", "路径/到")
+
+
+def _looks_like_placeholder(path):
+    """该路径是否还是模板占位符(用户没改默认值)。"""
+    low = str(path).lower()
+    if any(frag in low for frag in _PLACEHOLDER_FRAGMENTS):
+        return True
+    return "<" in str(path) or ">" in str(path)
+
+
+# ---------------------------------------------------------------------------
 
 
 # 配置架构版本：GUI 握手时下发，用来判断界面与核是否配套（GUI设计规范 §2.2）
@@ -601,46 +619,74 @@ def validate_config(cfg):
     ):
         issues.append(("error", "async.max_queue_size 应为 >=1 的整数"))
 
-    # game_log 防呆:不得指向脚本自身的日志目录(读自己写的日志 → 解析器被脚本输出污染、
-    # 归档互相触发,形成自读自写死循环)
+    # game_log 防呆(P0-9 三类各自的口径):
+    #   1) 模板占位符 → error:用户没把默认值改成真实路径,不该放行到 S8 干等 60 秒
+    #   2) 父目录不存在 → error:路径拼错/盘符不可用。**文件**暂缺不报错 ——
+    #      "先开脚本、后开游戏"是合法用法,允许等待(等待可取消,见 P0-8)
+    #   3) 不得指向脚本自身的日志目录(读自己写的日志 → 解析器被脚本输出污染、
+    #      归档互相触发,形成自读自写死循环)
     gl = str(cfg.get("game_log") or "")
     if gl:
-        log_dir_cfg = str(section(cfg, "log").get("dir", "logs"))
-        try:
-            gl_abs = os.path.abspath(gl)
-            own_logs_abs = os.path.abspath(log_dir_cfg)
-            if os.path.normcase(gl_abs).startswith(
-                os.path.normcase(own_logs_abs) + os.sep
-            ) or os.path.normcase(gl_abs) == os.path.normcase(own_logs_abs):
-                issues.append(
-                    (
-                        "error",
-                        f"game_log 指向了脚本自身的日志目录({log_dir_cfg}),"
-                        f"会导致脚本读取自己产生的日志。请改为游戏客户端的 latest.log 路径",
-                    )
+        if _looks_like_placeholder(gl):
+            issues.append(
+                (
+                    "error",
+                    f"game_log 仍是模板占位符: {gl} 。请改成游戏客户端真实的 "
+                    f"latest.log 路径(键名: game_log;网易版通常在 "
+                    f"…\\logs\\latest.log)。改好后重启即可,程序不会在占位符上等待。",
                 )
-            else:
-                # 同文件精确比对兜底(处理相对/绝对路径写法不同但指向同一文件的情况):
-                # 脚本运行目录下的 logs/latest.log
-                script_latest = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), log_dir_cfg, "latest.log"
-                )
-                if os.path.normcase(gl_abs) == os.path.normcase(script_latest):
+            )
+        else:
+            log_dir_cfg = str(section(cfg, "log").get("dir", "logs"))
+            try:
+                gl_abs = os.path.abspath(gl)
+                own_logs_abs = os.path.abspath(log_dir_cfg)
+                if os.path.normcase(gl_abs).startswith(
+                    os.path.normcase(own_logs_abs) + os.sep
+                ) or os.path.normcase(gl_abs) == os.path.normcase(own_logs_abs):
                     issues.append(
                         (
                             "error",
-                            "game_log 指向了脚本自己的 logs/latest.log,"
-                            "请改为游戏客户端日志路径"
-                            "(如 C:\\Path\\To\\Minecraft\\logs\\latest.log)",
+                            f"game_log 指向了脚本自身的日志目录({log_dir_cfg}),"
+                            f"会导致脚本读取自己产生的日志。请改为游戏客户端的 latest.log 路径",
                         )
                     )
-        except (OSError, ValueError) as exc:
-            # 路径解析失败不阻塞校验(后续打开日志时会自然报错)。
-            # 延迟 import 同层 console:它既打印控制台也写日志文件,替代原先只写
-            # sys.stderr 的做法(后者不进日志文件,事后无从追溯)。
-            from guild_auto.config.loader import console
+                else:
+                    # 同文件精确比对兜底(处理相对/绝对路径写法不同但指向同一文件的情况):
+                    # 脚本运行目录下的 logs/latest.log
+                    script_latest = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)), log_dir_cfg, "latest.log"
+                    )
+                    if os.path.normcase(gl_abs) == os.path.normcase(script_latest):
+                        issues.append(
+                            (
+                                "error",
+                                "game_log 指向了脚本自己的 logs/latest.log,"
+                                "请改为游戏客户端日志路径"
+                                "(如 C:\\Path\\To\\Minecraft\\logs\\latest.log)",
+                            )
+                        )
+                    else:
+                        # 父目录必须存在:不存在说明路径本身有问题(拼写/盘符/网盘未挂载),
+                        # 与"文件暂缺"不是一回事 —— 后者允许等待。
+                        parent = os.path.dirname(gl_abs)
+                        if parent and not os.path.isdir(parent):
+                            issues.append(
+                                (
+                                    "error",
+                                    f"game_log 的父目录不存在: {parent} 。"
+                                    f"请检查路径拼写、盘符或网络位置是否可用"
+                                    f"(键名: game_log)。若只是日志文件还没生成,"
+                                    f"父目录应当是存在的,程序会自动等待该文件出现。",
+                                )
+                            )
+            except (OSError, ValueError) as exc:
+                # 路径解析失败不阻塞校验(后续打开日志时会自然报错)。
+                # 延迟 import 同层 console:它既打印控制台也写日志文件,替代原先只写
+                # sys.stderr 的做法(后者不进日志文件,事后无从追溯)。
+                from guild_auto.config.loader import console
 
-            console(f"[schema] 配置/校验: game_log 路径解析失败: {exc!r}", level="warning")
+                console(f"[schema] 配置/校验: game_log 路径解析失败: {exc!r}", level="warning")
 
     error_count = sum(1 for level, _msg in issues if level == "error")
     warning_count = len(issues) - error_count

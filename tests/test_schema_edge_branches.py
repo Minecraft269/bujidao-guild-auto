@@ -20,10 +20,11 @@ import os
 import unittest
 
 from guild_auto.config import DEFAULT_CONFIG, validate_config
+from tests.support_cfg import default_cfg, valid_game_log
 
 
 def _cfg():
-    return json.loads(json.dumps(DEFAULT_CONFIG))
+    return default_cfg()
 
 
 def _errors(cfg):
@@ -139,8 +140,9 @@ class TestGameLogSelfReadGuard(unittest.TestCase):
         self.assertTrue(any("game_log" in e for e in errs), f"指向自身 latest.log 未被拒绝: {errs}")
 
     def test_normal_external_path_accepted(self):
+        """真实路径(父目录存在)+ 其余默认键 → 零 error(P0-9:占位符本身已不再是"正常")。"""
         cfg = _cfg()
-        cfg["game_log"] = r"C:\Path\To\Minecraft\logs\latest.log"
+        cfg["game_log"] = valid_game_log()
         self.assertEqual(_errors(cfg), [])
 
 
@@ -152,10 +154,9 @@ class TestUiAndRulesValidation(unittest.TestCase):
     """ui 段与 rules 的配置校验（缺了就会 AttributeError 或静默放行）。"""
 
     def _cfg(self):
-        import json as _json
-        from guild_auto.config import DEFAULT_CONFIG
+        from tests.support_cfg import default_cfg
 
-        return _json.loads(_json.dumps(DEFAULT_CONFIG))
+        return default_cfg()
 
     def test_ui_must_be_dict(self):
         cfg = self._cfg()

@@ -14,13 +14,14 @@ import pytest
 
 from guild_auto.config import load_config, save_config
 from guild_auto.config.defaults import DEFAULT_CONFIG
+from tests.support_cfg import default_cfg
 from guild_auto.ui import binding as B
 
 
 @pytest.fixture()
 def bridge(tmp_path):
     path = tmp_path / "config.json"
-    save_config(path, json.loads(json.dumps(DEFAULT_CONFIG)))
+    save_config(path, default_cfg())
     cfg = load_config(path)
     return B.GuiBridge(cfg, path, report_dir=tmp_path, log_dir=tmp_path)
 
@@ -155,7 +156,7 @@ class _FakeController:
 
 def test_control_methods_delegate_to_controller(tmp_path):
     path = tmp_path / "config.json"
-    save_config(path, json.loads(json.dumps(DEFAULT_CONFIG)))
+    save_config(path, default_cfg())
     ctrl = _FakeController()
     br = B.GuiBridge(load_config(path), path, controller=ctrl)
     for method in ("pause", "resume", "stop"):

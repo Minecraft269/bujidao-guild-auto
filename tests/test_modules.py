@@ -287,13 +287,19 @@ class TestConfigContract(unittest.TestCase):
         self.assertTrue(any("query_scope" in m for m in msgs))
         self.assertTrue(any("log.level" in m for m in msgs))
 
-    def test_validate_accepts_default(self):
-        errors = [
-            lvl
-            for lvl, _ in validate_config(json.loads(json.dumps(DEFAULT_CONFIG)))
+    def test_validate_accepts_default_except_placeholder(self):
+        """P0-9:出厂默认是**模板**,唯一的 error 是 game_log 占位符本身。
+
+        以前这里断言"零 error",等于把"模板可以当真实配置跑"写成了契约 ——
+        实机就是靠这条放行、在 S8 干等 60 秒。
+        """
+        msgs = [
+            m
+            for lvl, m in validate_config(json.loads(json.dumps(DEFAULT_CONFIG)))
             if lvl == "error"
         ]
-        self.assertEqual(errors, [])
+        self.assertEqual(len(msgs), 1, f"默认配置应只有 1 条 error(占位符): {msgs}")
+        self.assertIn("game_log", msgs[0])
 
 
 class TestSecurityHardening(unittest.TestCase):

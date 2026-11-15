@@ -22,10 +22,11 @@ from guild_auto.config.ui_binding import (
     flatten_config,
     render_field_value,
 )
+from tests.support_cfg import default_cfg
 
 
 def _cfg():
-    return json.loads(json.dumps(DEFAULT_CONFIG))
+    return default_cfg()
 
 
 class TestFlatten(unittest.TestCase):
@@ -254,11 +255,17 @@ class TestNumericListFloatAndRulesGate(unittest.TestCase):
 
 
 class TestDiffAgainstDefault(unittest.TestCase):
+    """与**出厂默认值**比对:基线必须是 DEFAULT_CONFIG 本身,不能用 default_cfg()
+    (后者把 game_log 换成了可用路径,P0-9)。"""
+
+    def _factory_cfg(self):
+        return json.loads(json.dumps(DEFAULT_CONFIG))
+
     def test_default_cfg_has_no_diff(self):
-        self.assertEqual(diff_against_default(_cfg()), [])
+        self.assertEqual(diff_against_default(self._factory_cfg()), [])
 
     def test_changed_field_detected(self):
-        cfg = _cfg()
+        cfg = self._factory_cfg()
         cfg["admin"] = "X"
         self.assertEqual(diff_against_default(cfg), ["admin"])
 
