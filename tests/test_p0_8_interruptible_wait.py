@@ -16,7 +16,6 @@ FileNotFoundError 崩溃，且 ipc-closed 的 reason 竟然是 normal。
 import json
 import os
 import tempfile
-import threading
 import time
 import unittest
 from unittest import mock
@@ -31,51 +30,67 @@ def _missing_path():
 
 
 class TestOpenIsInterruptible(unittest.TestCase):
+    """三条时序用例都由 open() 的 stop_check 回调**自己**驱动,不用定时器线程。
+
+    教训（PR #47 的 py3.10 CI 实红）:用 `threading.Timer(0.3, set_force_stop)` 时,
+    慢机上线程晚到会把 force_stop 漏进下一例 —— 本课第二例当场抛 LogWaitInterrupted、
+    第一例却先超时成 FileNotFoundError。改成"第 N 次检查时发信号"后完全确定。
+    """
+
     def setUp(self):
+        runtime_mod.reset_state()  # 先清:上一例可能留下 force_stop
         self.addCleanup(runtime_mod.reset_state)
 
     def test_stop_interrupts_wait_within_one_second(self):
         path = _missing_path()
-        threading.Timer(0.3, lambda: runtime_mod.set_force_stop(True)).start()
+        seen = {}
+
+        def stop_at_second_check():
+            seen["n"] = seen.get("n", 0) + 1
+            if seen["n"] >= 2:  # 第一次检查后 0.1s 发「停止」
+                runtime_mod.set_force_stop(True)
+            return False
+
         t0 = time.monotonic()
         with self.assertRaises(LogWaitInterrupted):
-            LogWatcher(path).open(wait_seconds=30)
+            LogWatcher(path).open(wait_seconds=30, stop_check=stop_at_second_check)
         took = time.monotonic() - t0
-        self.assertLess(took, 1.3, f"停止后 {took:.2f}s 才退出等待（要求 ≤1s 级）")
-        self.assertGreaterEqual(took, 0.2, f"停止信号在 0.3s 才发出，却在 {took:.2f}s 退出")
+        self.assertLess(took, 1.0, f"停止后 {took:.2f}s 才退出等待（要求 ≤1s）")
+        self.assertGreaterEqual(took, 0.05, f"停止信号在第二次检查才发，却 {took:.2f}s 就退出")
 
     def test_pause_suspends_budget_and_is_not_stop(self):
-        """暂停 1.5s 期间不消耗 1.0s 预算:总耗时 ≈ 2.5s,且结局是超时而非 user_stop。"""
+        """先暂停 15 次检查(1.5s)，再放开 1.0s 预算：暂停期间绝不能超时消耗预算。"""
         path = _missing_path()
-        start = time.monotonic()
-        paused_until = start + 1.5
+        seen = {}
 
-        def paused():
-            return time.monotonic() < paused_until
+        def paused_for_first_15():
+            seen["n"] = seen.get("n", 0) + 1
+            return seen["n"] <= 15
 
         t0 = time.monotonic()
         with self.assertRaises(FileNotFoundError) as ctx:
-            LogWatcher(path).open(wait_seconds=1.0, stop_check=paused)
+            LogWatcher(path).open(wait_seconds=1.0, stop_check=paused_for_first_15)
         took = time.monotonic() - t0
         self.assertIn("游戏日志不存在", str(ctx.exception))
-        self.assertGreaterEqual(took, 2.4, f"{took:.2f}s 就超时了 —— 暂停消耗了预算")
-        self.assertLess(took, 4.5, f"{took:.2f}s 远超 1.0s 预算 + 1.5s 暂停")
+        self.assertGreaterEqual(
+            seen["n"], 25, f"只检查了 {seen['n']} 次 —— 暂停期间预算被消耗/提前超时"
+        )
+        self.assertGreaterEqual(took, 2.0, f"{took:.2f}s 就超时了 —— 暂停消耗了预算")
 
     def test_pause_alone_never_times_out(self):
-        """一直暂停 = 一直等（不因预算耗尽退出），且不抛 user_stop。"""
+        """预算 0.1s + 一直暂停：只要还有暂停，就永远不超时；停止仍能打断。"""
         path = _missing_path()
-        stop_at = time.monotonic() + 0.6
+        seen = {}
 
-        def _stop_later():
-            time.sleep(0.6)
-            runtime_mod.set_force_stop(True)
+        def always_paused_stop_after_10():
+            seen["n"] = seen.get("n", 0) + 1
+            if seen["n"] >= 10:  # 预算(0.1s)早该耗尽,但一直暂停 → 不许超时
+                runtime_mod.set_force_stop(True)
+            return True
 
-        threading.Thread(target=_stop_later, daemon=True).start()
-        t0 = time.monotonic()
         with self.assertRaises(LogWaitInterrupted):
-            LogWatcher(path).open(wait_seconds=0.1, stop_check=lambda: time.monotonic() < stop_at)
-        took = time.monotonic() - t0
-        self.assertLess(took, 1.3, f"暂停中停止没生效，耗时 {took:.2f}s")
+            LogWatcher(path).open(wait_seconds=0.1, stop_check=always_paused_stop_after_10)
+        self.assertGreaterEqual(seen["n"], 10, "暂停期间因预算耗尽提前退出（暂停被当成了超时）")
 
     def test_timeout_keeps_original_error(self):
         path = _missing_path()
