@@ -527,6 +527,12 @@ class TestValidateGameLogSafety(unittest.TestCase):
         self.assertTrue(errs, "父目录不存在却没报错")
         self.assertIn("父目录", errs[0])
 
+    def test_unc_path_parent_check_skipped(self):
+        """UNC 路径不查父目录:服务器未挂载时 isdir 会按 SMB 超时卡住校验(P0-9)。"""
+        c = _cfg()
+        c["game_log"] = "\\\\server\\share\\logs\\latest.log"
+        self.assertFalse(any("父目录" in m for m in _errors(validate_config(c))))
+
     def test_game_log_file_missing_but_parent_exists_accepted(self):
         """文件暂缺但父目录存在 → 允许(先开脚本后开游戏是合法用法)。"""
         c = _cfg()

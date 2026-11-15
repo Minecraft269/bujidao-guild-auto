@@ -669,8 +669,15 @@ def validate_config(cfg):
                     else:
                         # 父目录必须存在:不存在说明路径本身有问题(拼写/盘符/网盘未挂载),
                         # 与"文件暂缺"不是一回事 —— 后者允许等待。
+                        # UNC(\\server\share\...)跳过:服务器没挂载时 os.path.isdir
+                        # 会按 SMB 超时阻塞几十秒,校验不能变成新的启动卡点;这类路径
+                        # 交给后续"允许等待"处理。
                         parent = os.path.dirname(gl_abs)
-                        if parent and not os.path.isdir(parent):
+                        if (
+                            parent
+                            and not gl.lstrip().startswith("\\\\")
+                            and not os.path.isdir(parent)
+                        ):
                             issues.append(
                                 (
                                     "error",
