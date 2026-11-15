@@ -527,6 +527,29 @@ class TestValidateGameLogSafety(unittest.TestCase):
         self.assertTrue(errs, "父目录不存在却没报错")
         self.assertIn("父目录", errs[0])
 
+    def test_placeholder_matches_components_not_substrings(self):
+        """按路径组件判占位符:`mypath\tools` / `your_world` 这类合法路径不得误拦(复审)。"""
+        from guild_auto.config.schema import _looks_like_placeholder
+
+        for ok in (
+            r"C:\Minecraft\mypath	ools\latest.log",
+            r"D:ackup\your_world\logs\latest.log",
+            r"E:\games\YourWorld\latest.log",
+        ):
+            self.assertFalse(_looks_like_placeholder(ok), f"合法路径被误判成占位符: {ok}")
+        for bad in (
+            r"C:\Path\To\Minecraft\logs\latest.log",
+            r"C:\Games\YOUR_QQ_GROUP\latest.log",
+            "<插入路径>",
+        ):
+            self.assertTrue(_looks_like_placeholder(bad), f"占位符没被识别: {bad}")
+
+    def test_forward_slash_unc_parent_check_skipped(self):
+        """`//server/share/...` 写法也要跳过父目录检查(abspath 会规范化成 UNC)。"""
+        c = _cfg()
+        c["game_log"] = "//server/share/logs/latest.log"
+        self.assertFalse(any("父目录" in m for m in _errors(validate_config(c))))
+
     def test_unc_path_parent_check_skipped(self):
         """UNC 路径不查父目录:服务器未挂载时 isdir 会按 SMB 超时卡住校验(P0-9)。"""
         c = _cfg()

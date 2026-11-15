@@ -103,6 +103,56 @@ class TestWatchdogDeclaredWait(unittest.TestCase):
         self.assertAlmostEqual(wd._waited_total, 47.0, places=3, msg="等待时长没计入抵扣")
         self.assertFalse(err.called, "等待时长没从启动预算里扣掉 —— 等待刚结束就报「启动卡在…」")
 
+    def test_paused_wait_past_declared_window_never_falls_back(self):
+        """暂停会让墙钟 elapsed 越过「声明值+余量」—— 仍不得落回卡住判定(复审)。
+
+        P0-8 的暂停不消耗 open() 的预算,但 wait_state 的 elapsed 是墙钟;
+        拿 elapsed 越线就回退,会把「已持续 Ns 无进展」+ 线程栈转储原样搬回来。
+        """
+        wait = {"path": "C:/x/latest.log", "expected_s": 60.0, "elapsed_s": 600.0}
+        with (
+            mock.patch.object(lw, "wait_state", return_value=wait),
+            mock.patch.object(main_mod._StartupWatchdog, "_dump_thread_stack") as dump,
+            mock.patch.object(main_mod.logger, "log_error") as err,
+            mock.patch.object(main_mod.logger, "log_warning") as warn,
+            mock.patch.object(main_mod.logger, "log_info"),
+        ):
+            wd = main_mod._StartupWatchdog(
+                "x.log", interval=0.05, stall_seconds=0.05, start_seconds=0.05
+            )
+            self._run_ticks(wd, 0.4)
+        self.assertFalse(dump.called, "暂停中的等待仍被判卡住并转储了线程栈")
+        self.assertFalse(err.called, "暂停中的等待仍报了 Error")
+        self.assertFalse([c for c in warn.call_args_list if "无进展" in str(c)])
+
+    def test_wait_end_clears_waiting_text(self):
+        """等待结束后要把状态栏那句「等待游戏日志…」换回真实阶段(复审)。"""
+        bridge = mock.Mock()
+        bridge._state = {"stage": "等待游戏日志: C:/x/latest.log（最长 60s…）"}
+        with (
+            mock.patch("guild_auto.ui.binding.active", return_value=bridge),
+            mock.patch.object(lw, "wait_state", return_value=None),
+            mock.patch.object(main_mod.logger, "log_error"),
+            mock.patch.object(main_mod.logger, "log_warning"),
+            mock.patch.object(main_mod.logger, "log_debug"),
+        ):
+            wd = main_mod._StartupWatchdog(
+                "x.log", interval=0.05, stall_seconds=10, start_seconds=10
+            )
+            wd._in_declared_wait = True
+            wd._since = time.monotonic()
+            self._run_ticks(wd, 0.12)
+        bridge.push_state.assert_called_with(stage=wd._stage)
+
+    def test_report_waiting_does_not_overwrite_stopped(self):
+        """用户刚点「停止」时,等待文案不得盖掉「已停止」。"""
+        bridge = mock.Mock()
+        bridge._state = {"stage": "已停止"}
+        with mock.patch("guild_auto.ui.binding.active", return_value=bridge):
+            wd = main_mod._StartupWatchdog("x.log")
+            wd._report_waiting({"path": "C:/x/latest.log", "expected_s": 60.0, "elapsed_s": 1.0})
+        bridge.push_state.assert_not_called()
+
     def test_control_without_declared_wait_still_reports(self):
         """对照:没有声明等待时,看门狗必须照旧报卡住(证明上面的断言不是假绿)。"""
         with (
