@@ -906,7 +906,10 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     elif not cfg.get("admin"):
         console_fn("⚠ 未识别到管理员名(配置 admin 留空且日志无 --username 行),公告联系人将不完整")
 
-    issues = config_mod.validate_config(cfg)
+    # P0-9b:首启(本次刚生成默认配置)把 game_log 占位符降级为 warning —— 否则默认值
+    # 本身就是占位符,首次运行永远进不了 GUI 配置页,P0-4d 的首启引导被作废。
+    # 只在 created 这一次放行;点「开始」后还要按"非首启"再校一次(见 UI 分支)。
+    issues = config_mod.validate_config(cfg, allow_placeholder_game_log=created)
     errors = [m for lvl, m in issues if lvl == "error"]
     for lvl, m in issues:
         console_fn(
@@ -1289,6 +1292,36 @@ def main():
                 return 0
             ui_bridge_mod.set_active(bridge)
             cfg = config_mod.load_config(args.config)
+            # P0-9b：首启放行只到配置页为止 —— 用户点「开始」说明真要跑，此时必须按
+            # "非首启"再校一次：占位符仍是 error 就拒绝启动，绝不进 S8 等待
+            # （P0-9 的原始目标一分不打折）。
+            _prestart = config_mod.validate_config(cfg)
+            _prestart_errors = [m for lvl, m in _prestart if lvl == "error"]
+            if _prestart_errors:
+                for _msg in _prestart_errors:
+                    console(f"  [错误] {_msg}", level="error")
+                console(
+                    "配置仍未修正，已拒绝启动：请在配置页填写真实 game_log 后再点「开始」。",
+                    level="error",
+                )
+                logger.log_error(
+                    f"[阶段] S4 开始前复校失败，拒绝启动 errors={len(_prestart_errors)}"
+                )
+                try:
+                    bridge.push_state(stage="game_log 仍是占位符：请在配置页填写真实路径后重试")
+                except Exception as e:  # 界面推送失败不影响"拒绝启动"本身
+                    logger.log_debug(f"[阶段] S4 拒绝启动提示推送失败: {e!r}")
+                watchdog.reach_s9()
+                raise SystemExit(1)
+            # 首启放行进来的这一轮：把「game_log 待填」写进配置页横幅（复用 state 通道）
+            _prestart_notes = [m for lvl, m in _prestart if lvl == "warning" and "占位符" in m]
+            if _prestart_notes:
+                try:
+                    bridge.push_state(
+                        config_note="game_log 仍是模板占位符：请在本页填写真实路径后保存。"
+                    )
+                except Exception as e:
+                    logger.log_debug(f"[阶段] S4 占位符提示推送失败: {e!r}")
     else:
         logger.log_info("[阶段] S4 决定=控制台模式 原因=未指定 --ui 且 ui.enabled=false")
     # 功能开关的本地别名。此前 main() 里直接引用 `sw` 却从未定义 —— 查询阶段的

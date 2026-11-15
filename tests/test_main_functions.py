@@ -360,22 +360,23 @@ class TestPrepareConfig(_Base):
         exit_fn.assert_not_called()
         self.assertEqual(cfg["guild_qq"], DEFAULT_CONFIG["guild_qq"])
 
-    def test_missing_config_with_ui_stops_at_placeholder_check(self):
-        """P0-9 口径变更：首启生成的配置带占位符 game_log，校验在**拉起界面之前**就拦下。
+    def test_missing_config_with_ui_keeps_running_past_placeholder(self):
+        """首启 + UI：占位符降级为 warning，**不退出**，继续进配置页（P0-4d 恢复）。
 
-        旧契约是"首启 + UI → 不退出，直接进配置页"(P0-4d)。P0-9 明确要求
-        模板占位符"启动即 error，不进入等待、不询问"，两者不可兼得；本条按 P0-9 走，
-        用户改好 config.json 的 game_log 后重启即可正常进入配置页。
+        P0-9 曾把占位符定成启动 error，导致首启永远进不了配置页（P0-9b 回修）：
+        只有 created=True 的这一次降级放行，点「开始」后还会按非首启再校一次。
         """
         path = os.path.join(self.tmp, "brand_new.json")
         exit_fn = mock.Mock()
         console_fn = mock.Mock()
         main_mod.prepare_config(self._args(path), console_fn=console_fn, exit_fn=exit_fn)
-        exit_fn.assert_called_once_with(1)
-        self.assertTrue(os.path.exists(path), "首次运行仍必须生成配置文件")
+        exit_fn.assert_not_called()
+        self.assertTrue(os.path.exists(path), "首次运行必须生成配置文件")
         printed = " ".join(str(c.args[0]) for c in console_fn.call_args_list if c.args)
         self.assertIn("game_log", printed)
         self.assertIn("占位符", printed)
+        self.assertIn("[警告]", printed)
+        self.assertIn("配置页", printed)
 
     def test_missing_config_console_mode_exits(self):
         """纯控制台模式（ui.enabled=false）：生成配置后仍按原契约退出。"""

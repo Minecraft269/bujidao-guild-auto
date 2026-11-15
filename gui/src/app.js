@@ -281,6 +281,19 @@ function renderState() {
   $("btn-resume").disabled = s.state !== "paused";
   $("btn-stop").disabled = s.state === "idle";
   syncTray();
+  // P0-9b：首启放行时核会推 config_note（game_log 仍是占位符），写进首启横幅，
+  // 用户一进配置页就知道要先填哪一项。
+  const banner = $("first-run-banner");
+  if (!banner.hidden) {
+    let noteEl = banner.querySelector(".first-run-note");
+    if (noteEl === null) {
+      noteEl = document.createElement("span");
+      noteEl.className = "first-run-note";
+      banner.append(noteEl);
+    }
+    const note = S.state.config_note || "";
+    noteEl.textContent = note ? ` ${note}` : "";
+  }
 }
 
 function renderPlayers() {
