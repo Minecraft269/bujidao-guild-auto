@@ -922,6 +922,70 @@ def _gui_pending(items):
     return _b.pending_rows(items)
 
 
+# ---------------------------------------------------------------------------
+# 退出原因（P0-8）：ipc-closed 的 reason 必须说真话
+# ---------------------------------------------------------------------------
+# 旧行为：任何未处理异常都推 reason=normal，同一秒日志里却写着
+# [Critical] 脚本意外关闭(非用户手动) —— 界面看到的和日志里记的是两件事，
+# 真因（游戏日志不存在 = 配置错误）被两边一起掩盖。
+# 现在只有「正常跑完 / 用户关窗」是 normal，其余按下面的分类发出。
+EXIT_REASON_NORMAL = "normal"
+EXIT_REASON_USER_STOP = "user_stop"
+EXIT_REASON_CONFIG_ERROR = "config_error"
+EXIT_REASON_CRASH = "crash"
+
+# 面向用户的原因文案（系统提示语，不是业务文案；业务文案在 config.json）
+_EXIT_REASON_TEXT = {
+    EXIT_REASON_NORMAL: "正常退出",
+    EXIT_REASON_USER_STOP: "用户手动停止",
+    EXIT_REASON_CONFIG_ERROR: "配置或运行环境错误(如游戏日志不存在、聊天键不可用)",
+    EXIT_REASON_CRASH: "脚本内部错误，意外关闭",
+}
+
+
+def _classify_exit(exc) -> tuple:
+    """把退出异常归类成 (reason, 人读文案)。
+
+    * user_stop     —— 用户「停止」打断等待(LogWaitInterrupted)或 Ctrl+C；
+      **不是**崩溃，退出码 0。
+    * config_error  —— 等满等待仍没有游戏日志(FileNotFoundError)、非零 SystemExit
+      (配置校验失败 / 聊天键不可用)等启动前置条件不满足。
+    * crash         —— 其余未预期异常。
+    """
+    from guild_auto.infrastructure.log_watcher import LogWaitInterrupted
+
+    if isinstance(exc, (LogWaitInterrupted, KeyboardInterrupt)):
+        return EXIT_REASON_USER_STOP, _EXIT_REASON_TEXT[EXIT_REASON_USER_STOP]
+    if isinstance(exc, SystemExit):
+        code = exc.code
+        if code in (None, 0):
+            return EXIT_REASON_NORMAL, _EXIT_REASON_TEXT[EXIT_REASON_NORMAL]
+        return EXIT_REASON_CONFIG_ERROR, _EXIT_REASON_TEXT[EXIT_REASON_CONFIG_ERROR]
+    if isinstance(exc, FileNotFoundError) and "游戏日志不存在" in str(exc):
+        return EXIT_REASON_CONFIG_ERROR, _EXIT_REASON_TEXT[EXIT_REASON_CONFIG_ERROR]
+    return EXIT_REASON_CRASH, _EXIT_REASON_TEXT[EXIT_REASON_CRASH]
+
+
+def _stamp_exit_reason(reason, text) -> str:
+    """记录本次退出原因，并在界面在线时下发给界面。
+
+    两处都要写：
+      * `bridge.exit_reason` —— atexit 的 ipc-closed 读它（P0-4d 既有机制）；
+      * `bridge.push_state(exit_reason/exit_note)` —— 界面据此显示真实原因，
+        而不是千篇一律的「核心已退出」（P0-8）。
+    下发失败绝不影响退出本身（界面可能已经关了）。
+    """
+    bridge = _gui_bridge()
+    if bridge is not None:
+        bridge.exit_reason = reason
+        try:
+            bridge.push_state(exit_reason=reason, exit_note=text)
+        except Exception as e:
+            logger.log_debug(f"[阶段] S6 退出原因下发界面失败: {e!r}")
+    logger.log_info(f"[阶段] S6 退出原因 reason={reason} 说明={text}")
+    return reason
+
+
 def _gui_notify_core_exit(server, bridge=None) -> None:
     """核退出前推一条 ipc-closed（R-46）：界面没有别的途径知道核已经走了。
 
@@ -1837,12 +1901,28 @@ def run_cli():
                 continue  # 重新完整启动:配置/窗口/异步执行器全部重建,
                 # 上次已完成的操作由 pending_actions.json 断点续做机制保证不重复
             console("\n再见")
+            _stamp_exit_reason(EXIT_REASON_USER_STOP, _EXIT_REASON_TEXT[EXIT_REASON_USER_STOP])
             logger.log_info("用户手动中断(Ctrl+C),确认退出")
             break
+        except SystemExit as e:
+            # 非零 SystemExit(配置校验失败/聊天键不可用)之前会让 atexit 的
+            # ipc-closed 落回默认 reason=normal(P0-8)；先归类再原样抛。
+            _stamp_exit_reason(*_classify_exit(e))
+            raise
         except Exception as e:
+            reason, text = _classify_exit(e)
+            _stamp_exit_reason(reason, text)
+            if reason == EXIT_REASON_USER_STOP:
+                # 用户在启动等待里点了「停止」：正常收尾，不是崩溃，退出码 0
+                console("\n已停止")
+                logger.log_info(f"用户手动停止，本次未进入主流程(不做崩溃归类): {e}")
+                sys.exit(0)
             console(f"\n错误: {e}")
-            # 意外关闭(非用户手动):记录致命级日志(级别1也可见)
-            logger.log_exception(f"脚本意外关闭(非用户手动): {e}", e)
+            if reason == EXIT_REASON_CONFIG_ERROR:
+                # 配置/环境错误不是「脚本意外关闭」(P0-8)：真因写清楚，别误分类
+                logger.log_exception(f"启动失败(配置错误): {e}", e)
+            else:
+                logger.log_exception(f"脚本意外关闭(非用户手动): {e}", e)
             sys.exit(1)
 
 

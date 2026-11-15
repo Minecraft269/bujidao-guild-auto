@@ -1297,14 +1297,27 @@ async function boot() {
     //   · 核主动推 ipc-closed —— 正常退出，Rust 侧 1.5s 后关界面；
     //   · Rust 读线程看到管道 EOF 而核没推过 —— 核被强杀，界面保留可重新拉起。
     const why = typeof e.payload === "string" && e.payload ? e.payload : "核心已退出";
+    // P0-8：Rust 侧这条文案是固定的「核心已退出」，分不出「用户停止」和
+    // 「配置错误」。核在退出前会把真实原因写进 state(exit_reason/exit_note)，
+    // 这里按 reason 换成人话，别让三种完全不同的结局显示成同一句话。
+    const st = S.state || {};
+    const reasonText =
+      {
+        user_stop: "用户手动停止",
+        config_error: "配置错误：游戏日志不存在或启动参数不可用（详见日志）",
+        crash: "脚本内部错误意外关闭（详见日志）",
+      }[st.exit_reason] ||
+      st.exit_note ||
+      "";
+    const whyText = reasonText ? `${why}（${reasonText}）` : why;
     // P0-4e：核没了就先掐掉所有依赖它的界面动作（倒计时 / 关窗模态 / 运行控制），
     // 再谈提示。以前这里只改文案，倒数会继续数到 1。
     S.coreGone = true;
-    abortCoreDependentUi(why);
-    glog("warning", `IPC 已关闭：${why}`);
-    $("sb-conn").textContent = why;
+    abortCoreDependentUi(whyText);
+    glog("warning", `IPC 已关闭：${whyText}`);
+    $("sb-conn").textContent = whyText;
     $("st-dot").className = "dot danger";
-    $("ctl-hint").textContent = `${why}。请重新启动主程序以重新拉起核心与界面。`;
+    $("ctl-hint").textContent = `${whyText}。请重新启动主程序以重新拉起核心与界面。`;
   });
   await api.event.listen("gui-close-request", () => void askClosePolicy());
   await api.event.listen("tray-command", (e) => handleTray(e.payload));

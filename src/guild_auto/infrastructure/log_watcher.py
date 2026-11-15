@@ -65,6 +65,22 @@ _TRACE_LINE_MAX = 400
 # ParseError 诊断:回放响应块(上限 40 行)+ 最近上下文行数
 _PARSE_CTX_LINES = 5
 _PARSE_BLOCK_MAX = 40
+# 等待文件出现时的检查切片(P0-8)。旧实现是 1.0s 硬睡,按下「停止」要等满
+# 剩余等待才响应;0.1s 让停止信号在 ≤0.1s 内被看到(query 代价可忽略)。
+_WAIT_SLICE_S = 0.1
+
+
+class LogWaitInterrupted(Exception):
+    """等日志文件时被用户「停止」打断(P0-8)。
+
+    与 FileNotFoundError(等满 wait_seconds 仍不存在 = 配置/环境错误)严格区分:
+    这是**用户主动停止**,调用方必须按 user_stop 退出,不得当成崩溃。
+    """
+
+    def __init__(self, path, waited_s):
+        self.path = path
+        self.waited_s = waited_s
+        super().__init__(f"等待游戏日志被用户停止(已等 {waited_s:.1f}s): {path}")
 
 
 def _drop_leading_continuation(buf):
@@ -208,15 +224,37 @@ class LogWatcher:
         self._last_block = None  # 最近一次返回的响应块(供 report_parse_error 回放)
 
     # ---- 打开 ----
-    def open(self, wait_seconds=60):
-        """打开日志文件;若文件不存在则轮询等待(wait_seconds 内)。"""
+    def open(self, wait_seconds=60, stop_check=None):
+        """打开日志文件;若文件不存在则轮询等待(wait_seconds 内)。
+
+        P0-8:等待可中断(旧实现是 `while not exists(): sleep(1.0)`,不读任何标志,
+        「停止」只能等满 wait_seconds —— 实机 60s 无响应):
+          * 停止(`runtime.is_force_stop`,与轮转重开同一口径)→ 抛 LogWaitInterrupted;
+          * 暂停(stop_check,P0-3 建立的透传口径,语义 = runtime.is_paused)
+            → 挂起等待、**不计入超时预算**,恢复后继续等;暂停不是停止。
+        """
         t0 = time.time()
         logger.log_info(
             f"S8 日志等待打开 ENTER | path={self.path} | wait_seconds={wait_seconds:.1f}"
         )
-        deadline = t0 + wait_seconds
+        remaining = float(wait_seconds)
+        # 预算计时用 time.time():与本模块既有等待(wait_for_chat_block 的 deadline)
+        # 同一时间源,测试注入的假时钟也只实现了 time()/sleep()。
+        last = t0
         while not os.path.exists(self.path):
-            if time.time() > deadline:
+            now = time.time()
+            paused = bool(stop_check and stop_check())
+            if not paused:
+                remaining -= now - last  # 暂停期间不消耗超时预算
+            last = now
+            if _force_stop():
+                waited_s = time.time() - t0
+                logger.log_warning(
+                    f"S8 等待游戏日志被用户停止 | waited_s={waited_s:.1f}"
+                    f" | path={self.path} | 剩余预算={max(remaining, 0.0):.1f}s 未消耗"
+                )
+                raise LogWaitInterrupted(self.path, waited_s)
+            if remaining <= 0 and not paused:
                 waited_s = time.time() - t0
                 logger.log_trace(
                     f"[TRACE][log_watcher.open] timeout=true waited_s={waited_s:.1f}"
@@ -229,7 +267,7 @@ class LogWatcher:
                 raise FileNotFoundError(
                     f"游戏日志不存在: {self.path}\n请确认游戏已启动且路径配置正确(--log 或 config.json 的 game_log)。"
                 )
-            time.sleep(1.0)
+            time.sleep(_WAIT_SLICE_S)
         self.encoding = detect_encoding(self.path, self._preferred)
         self._fh = open(self.path, "rb")
         self._tail = b""
