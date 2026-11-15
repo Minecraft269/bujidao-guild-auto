@@ -103,10 +103,10 @@ class TestOpenIsInterruptible(unittest.TestCase):
 
 class TestExitReasonIsHonest(unittest.TestCase):
     def setUp(self):
-        # 模块级 _session_bridge 会被别的用例(驱动 main() 的 UI 路径)留下残余,
-        # 这里先清空,避免本类断言打到别人那座桥上。
-        main_mod._set_session_bridge(None)
-        self.addCleanup(main_mod._set_session_bridge, None)
+        # 模块级 _session_bridge / _pinned_exit 会被别的用例(驱动 main() 的 UI 路径)
+        # 留下残余，这里先清空，避免本类断言打到别人那座桥/那个原因上。
+        main_mod._reset_exit_state()
+        self.addCleanup(main_mod._reset_exit_state)
 
     def test_classification(self):
         cls = main_mod._classify_exit
@@ -193,6 +193,53 @@ class TestExitReasonIsHonest(unittest.TestCase):
                 main_mod.run_cli()
         self.assertEqual(ctx.exception.code, 1)
         self.assertIn("意外关闭", log_exc.call_args[0][0])
+
+    def test_gui_stop_skips_console_ctrlc_menu(self):
+        """GUI 会话里的「停止」= wait_if_paused 抛 KeyboardInterrupt：不许进 5 秒控制台菜单。
+
+        独立复查：旧实现会调 _ctrlc_pause_menu()（msvcrt.kbhit 轮询满 5s），
+        停止→退出要等 5 秒；控制台有残留按键时还可能被误判「c 继续」整套重启。
+        """
+        bridge = mock.Mock()
+        bridge.exit_reason = "normal"
+        main_mod._set_session_bridge(bridge)
+        with (
+            mock.patch.object(main_mod, "main", side_effect=KeyboardInterrupt()),
+            mock.patch.object(main_mod, "_ctrlc_pause_menu") as menu,
+            mock.patch.object(main_mod.logger, "log_exception") as log_exc,
+            mock.patch.object(main_mod, "console"),
+        ):
+            main_mod.run_cli()
+        menu.assert_not_called()
+        log_exc.assert_not_called()
+        self.assertEqual(bridge.exit_reason, "user_stop")
+
+    def test_console_ctrlc_still_shows_menu(self):
+        """控制台模式（没有桥）保持原行为：仍要进「回车退出 / c 继续」菜单。"""
+        with (
+            mock.patch.object(main_mod, "main", side_effect=KeyboardInterrupt()),
+            mock.patch.object(main_mod, "_gui_bridge", return_value=None),
+            mock.patch.object(main_mod, "_ctrlc_pause_menu", return_value=False) as menu,
+            mock.patch.object(main_mod, "console"),
+        ):
+            main_mod.run_cli()
+        menu.assert_called_once()
+
+    def test_pinned_reason_survives_zero_system_exit(self):
+        """S8 未找到窗口、用户选 q：退出码 0，但 reason 必须是钉住的 config_error。"""
+        bridge = mock.Mock()
+        bridge.exit_reason = "normal"
+        main_mod._set_session_bridge(bridge)
+        main_mod._pin_exit_reason("config_error", "未找到游戏窗口，用户选择退出（配置/环境问题）")
+        with (
+            mock.patch.object(main_mod, "main", side_effect=SystemExit(0)),
+            mock.patch.object(main_mod, "console"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                main_mod.run_cli()
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(bridge.exit_reason, "config_error")
+        self.assertEqual(main_mod._classify_exit(SystemExit(0))[0], "normal", "钉住只生效一次")
 
     def test_nonzero_system_exit_is_config_error_not_normal(self):
         """聊天键不可用等 SystemExit(2) 路径:原样抛出,但 reason 必须是 config_error。"""
