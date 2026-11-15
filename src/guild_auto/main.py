@@ -601,6 +601,14 @@ def _latest_log_path(cfg):
     return os.path.abspath(os.path.join(log_dir, "latest.log"))
 
 
+def _bridge_stage(bridge) -> str:
+    """界面上当前的 stage 文案（测试替身没有 _state 时返回空串）。"""
+    state = getattr(bridge, "_state", None)
+    if isinstance(state, dict):
+        return str(state.get("stage") or "")
+    return ""
+
+
 class _StartupWatchdog:
     """启动看门狗（§6.3）：阶段共享变量 + 10s 巡检，自身异常绝不外抛。
 
@@ -638,6 +646,7 @@ class _StartupWatchdog:
         self._last_wait_elapsed = 0.0
         self._waited_total = 0.0
         self._wait_reported = False
+        self._wait_overrun_reported = False
         self._stop_event = threading.Event()
         self._dump_fh = None
         self._dump_scheduled = False
@@ -692,10 +701,26 @@ class _StartupWatchdog:
             from guild_auto.ui import binding as _ui_binding  # noqa: PLC0415
 
             bridge = _ui_binding.active()
-            if bridge is not None:
+            # 用户刚点了「停止」时不要用等待文案盖掉「已停止」（复审核出的窄竞态）
+            if bridge is not None and _bridge_stage(bridge) != "已停止":
                 bridge.push_state(stage=text)
         except Exception as e:  # 界面推送失败只留痕，不影响主流程
             logger.log_debug(f"[看门狗] 等待态推送界面失败: {e!r}")
+
+    def _clear_waiting_text(self):
+        """等待结束：把状态栏那句「等待游戏日志…」换回真实阶段。
+
+        `push_state` 是 merge 语义，不撤回的话这句会一直挂在状态栏直到本轮结束
+        （复审指出）。
+        """
+        try:
+            from guild_auto.ui import binding as _ui_binding  # noqa: PLC0415
+
+            bridge = _ui_binding.active()
+            if bridge is not None and _bridge_stage(bridge) != "已停止":
+                bridge.push_state(stage=self._stage)
+        except Exception as e:  # 撤回失败只留痕
+            logger.log_debug(f"[看门狗] 等待态撤回失败: {e!r}")
 
     def _run(self):
         try:
@@ -703,21 +728,32 @@ class _StartupWatchdog:
                 now = time.monotonic()
                 wait = self._log_wait()
                 if wait is not None:
-                    # 阶段声明的预期最长等待：阈值 = 声明值 + 余量；期间不转储线程栈、
-                    # 不报 Error（旧实现固定 30s 而 S8 设计等 60s，必然误报，P0-9）
+                    # 只要还在等就**绝不**落入卡住/启动超时判定：等待自身的超时由
+                    # open() 抛 FileNotFoundError 上报，看门狗不需要再判一次。
+                    # 不能用 elapsed 越线回退 —— P0-8 的暂停不消耗 open() 的预算，
+                    # 但 elapsed 是墙钟，暂停久了必然越过「声明值+余量」，一回落就把
+                    # 「已持续 Ns 无进展」+ 线程栈转储原样搬回来（复审指出）。
                     self._in_declared_wait = True
                     self._last_wait_elapsed = float(wait["elapsed_s"])
                     self._report_waiting(wait)
-                    if self._last_wait_elapsed < float(wait["expected_s"]) + self.wait_margin:
-                        continue
+                    over = self._last_wait_elapsed - float(wait["expected_s"])
+                    if over >= self.wait_margin and not self._wait_overrun_reported:
+                        self._wait_overrun_reported = True
+                        logger.log_info(
+                            f"仍在等待游戏日志（已 {self._last_wait_elapsed:.0f}s，超过声明的 "
+                            f"{float(wait['expected_s']):.0f}s —— 可能正处暂停）；不判卡住、不转储"
+                        )
+                    continue
                 elif self._in_declared_wait:
                     # 等待结束（成功/超时/停止）本身就是进展：重置阶段计时，并把等待时长
                     # 从「启动总预算」里扣掉 —— 否则 60s 等待刚结束就会立刻被判卡住/启动超时
                     self._in_declared_wait = False
                     self._wait_reported = False
+                    self._wait_overrun_reported = False
                     self._waited_total += self._last_wait_elapsed
                     self._since = now
                     self._reported_stage = None
+                    self._clear_waiting_text()
                 stage = self._stage
                 held = now - self._since
                 if held >= self.stall_seconds and self._reported_stage != stage:

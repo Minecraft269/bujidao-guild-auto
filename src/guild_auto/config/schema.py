@@ -10,6 +10,7 @@ config/schema.py —— 配置结构契约(键名 / 枚举 / 校验规则)
 """
 
 import os
+import re
 import time
 
 from guild_auto.config.defaults import CHAT_SEND_KEYS, DEFAULT_CONFIG
@@ -30,16 +31,33 @@ VISION_MIN_STAY_MS = 120
 # 默认配置里 game_log 写的就是 `C:\Path\To\Minecraft\logs\latest.log`;用户没改成
 # 真实路径就启动时,旧实现放行到 S8 干等 60 秒才报「游戏日志不存在」(实机日志
 # 2026-11-15 11:17–11:19)。这里在启动校验阶段直接拦下,不进等待、不询问。
-# 片段一律小写比较(大小写不敏感);`<`/`>` 在 Windows 路径里非法,同样按占位符处理。
-_PLACEHOLDER_FRAGMENTS = ("path\\to", "path/to", "your_", "your-", "路径\\到", "路径/到")
+# 相邻两级目录名的组合（小写比较）：`C:\Path\To\...`
+_PLACEHOLDER_SEGMENTS = (("path", "to"), ("路径", "到"))
 
 
 def _looks_like_placeholder(path):
-    """该路径是否还是模板占位符(用户没改默认值)。"""
-    low = str(path).lower()
-    if any(frag in low for frag in _PLACEHOLDER_FRAGMENTS):
+    """该路径是否还是模板占位符(用户没改默认值)。
+
+    按**路径组件**判断，不做整串子串匹配 —— 子串匹配会把合法路径误判成占位符：
+    `C:\\Minecraft\\mypath\\tools\\latest.log` 的 `...myPATH\\TOols...` 会命中
+    `path\\to`，`D:\\backup\\your_world\\...` 会命中 `your_`（复审指出）。
+    `your_` 只认模板风格（后半段含大写或数字，如 `YOUR_QQ_GROUP`），
+    正常目录名 `your_world` 不算。
+    """
+    text = str(path)
+    if "<" in text or ">" in text:  # Windows 路径里非法，一定是模板
         return True
-    return "<" in str(path) or ">" in str(path)
+    parts = [p for p in re.split(r"[\\/]+", text.lower()) if p]
+    for i in range(len(parts) - 1):
+        if (parts[i], parts[i + 1]) in _PLACEHOLDER_SEGMENTS:
+            return True
+    for raw in re.split(r"[\\/]+", text):
+        low = raw.lower()
+        if low.startswith(("your_", "your-")) and any(
+            ch.isupper() or ch.isdigit() for ch in raw[5:]
+        ):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -673,11 +691,9 @@ def validate_config(cfg):
                         # 会按 SMB 超时阻塞几十秒,校验不能变成新的启动卡点;这类路径
                         # 交给后续"允许等待"处理。
                         parent = os.path.dirname(gl_abs)
-                        if (
-                            parent
-                            and not gl.lstrip().startswith("\\\\")
-                            and not os.path.isdir(parent)
-                        ):
+                        # 用规范化后的 parent 判 UNC：`//server/share/...` 会被 abspath
+                        # 变成 `\\server\share\...`，只看原始串会漏（复审指出）。
+                        if parent and not parent.startswith("\\\\") and not os.path.isdir(parent):
                             issues.append(
                                 (
                                     "error",
