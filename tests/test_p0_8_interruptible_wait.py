@@ -13,6 +13,7 @@ FileNotFoundError 崩溃，且 ipc-closed 的 reason 竟然是 normal。
      也不再把配置错误打成「脚本意外关闭(非用户手动)」
 """
 
+import json
 import os
 import tempfile
 import threading
@@ -86,6 +87,12 @@ class TestOpenIsInterruptible(unittest.TestCase):
 
 
 class TestExitReasonIsHonest(unittest.TestCase):
+    def setUp(self):
+        # 模块级 _session_bridge 会被别的用例(驱动 main() 的 UI 路径)留下残余,
+        # 这里先清空,避免本类断言打到别人那座桥上。
+        main_mod._set_session_bridge(None)
+        self.addCleanup(main_mod._set_session_bridge, None)
+
     def test_classification(self):
         cls = main_mod._classify_exit
         self.assertEqual(cls(LogWaitInterrupted("/x", 1.0))[0], "user_stop")
@@ -96,6 +103,43 @@ class TestExitReasonIsHonest(unittest.TestCase):
         self.assertEqual(cls(SystemExit(None))[0], "normal")
         self.assertEqual(cls(RuntimeError("boom"))[0], "crash")
         self.assertEqual(cls(FileNotFoundError("别的文件"))[0], "crash")
+
+    def test_other_config_env_errors_are_config_error(self):
+        """手改坏的 config.json / 日志被占用 / 路径写成目录 —— 都是配置问题,不是崩溃。
+
+        独立审查必修 2:旧口径只认「游戏日志不存在」一条文案,这三类会继续被
+        打成「脚本意外关闭(非用户手动)」。
+        """
+        cls = main_mod._classify_exit
+        broken_json = json.JSONDecodeError("Expecting ',' delimiter", '{"a": 1 "b": 2}', 7)
+        self.assertEqual(cls(broken_json)[0], "config_error")
+        self.assertEqual(
+            cls(PermissionError(13, "拒绝访问", "<synthetic>/latest.log"))[0], "config_error"
+        )
+        self.assertEqual(
+            cls(IsADirectoryError(21, "是目录", "<synthetic>/logs"))[0], "config_error"
+        )
+
+    def test_launch_phase_crash_reaches_session_bridge(self):
+        """launch() 阶段崩溃:binding.active() 还没登记,也必须归因到本轮那座桥。"""
+        bridge = mock.Mock()
+        bridge.exit_reason = "normal"
+        main_mod._set_session_bridge(bridge)
+        self.addCleanup(main_mod._set_session_bridge, None)
+        with (
+            mock.patch.object(main_mod, "_gui_bridge", return_value=None),
+            mock.patch.object(main_mod, "main", side_effect=RuntimeError("launch 内炸了")),
+            mock.patch.object(main_mod.logger, "log_exception"),
+            mock.patch.object(main_mod, "console"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                main_mod.run_cli()
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(
+            bridge.exit_reason,
+            "crash",
+            "ipc-closed 会带着默认 normal —— launch 阶段的崩溃仍被说成正常退出",
+        )
 
     def test_config_error_never_logged_as_unexpected_close(self):
         """崩溃路径(日志缺失):日志必须是「启动失败(配置错误)」,不是「脚本意外关闭」。"""

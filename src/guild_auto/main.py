@@ -13,6 +13,7 @@ main.py —— 布吉岛公会管理脚本(全自动版)入口
 import argparse
 import atexit
 import faulthandler
+import json
 import os
 import re
 import sys
@@ -943,13 +944,21 @@ _EXIT_REASON_TEXT = {
 }
 
 
+# 启动前置条件不满足的异常类型（独立审查必修 2）：
+#   * json.JSONDecodeError —— 用户手改 config.json 写坏（少逗号/引号）
+#   * PermissionError / IsADirectoryError —— game_log 被占用、只读，或路径写成目录
+# 这些是「配置/环境问题」，不该再打成「脚本意外关闭(非用户手动)」。
+_CONFIG_ENV_EXCEPTIONS = (json.JSONDecodeError, PermissionError, IsADirectoryError)
+
+
 def _classify_exit(exc) -> tuple:
     """把退出异常归类成 (reason, 人读文案)。
 
     * user_stop     —— 用户「停止」打断等待(LogWaitInterrupted)或 Ctrl+C；
       **不是**崩溃，退出码 0。
-    * config_error  —— 等满等待仍没有游戏日志(FileNotFoundError)、非零 SystemExit
-      (配置校验失败 / 聊天键不可用)等启动前置条件不满足。
+    * config_error  —— 等满等待仍没有游戏日志(FileNotFoundError)、配置写坏
+      (JSONDecodeError)、日志/文件不可用(PermissionError / IsADirectoryError)、
+      非零 SystemExit(配置校验失败 / 聊天键不可用)等启动前置条件不满足。
     * crash         —— 其余未预期异常。
     """
     from guild_auto.infrastructure.log_watcher import LogWaitInterrupted
@@ -961,9 +970,24 @@ def _classify_exit(exc) -> tuple:
         if code in (None, 0):
             return EXIT_REASON_NORMAL, _EXIT_REASON_TEXT[EXIT_REASON_NORMAL]
         return EXIT_REASON_CONFIG_ERROR, _EXIT_REASON_TEXT[EXIT_REASON_CONFIG_ERROR]
+    if isinstance(exc, _CONFIG_ENV_EXCEPTIONS):
+        return EXIT_REASON_CONFIG_ERROR, _EXIT_REASON_TEXT[EXIT_REASON_CONFIG_ERROR]
     if isinstance(exc, FileNotFoundError) and "游戏日志不存在" in str(exc):
         return EXIT_REASON_CONFIG_ERROR, _EXIT_REASON_TEXT[EXIT_REASON_CONFIG_ERROR]
     return EXIT_REASON_CRASH, _EXIT_REASON_TEXT[EXIT_REASON_CRASH]
+
+
+# 本轮已建、但可能还没登记进 binding.active() 的桥（独立审查必修 1）。
+# binding 只在 launch() 返回 True 之后才 set_active；若 launch() 内部抛异常，
+# _stamp_exit_reason 用 active() 反查会拿不到桥 → atexit 用的那份 bridge 的
+# exit_reason 仍是默认 normal，崩溃又被说成「正常退出」。
+_session_bridge = None
+
+
+def _set_session_bridge(bridge) -> None:
+    """登记/清除本轮 GUI 桥：建桥后立即登记，launch() 未进入开始(关窗/超时)时清除。"""
+    global _session_bridge
+    _session_bridge = bridge
 
 
 def _stamp_exit_reason(reason, text) -> str:
@@ -973,9 +997,11 @@ def _stamp_exit_reason(reason, text) -> str:
       * `bridge.exit_reason` —— atexit 的 ipc-closed 读它（P0-4d 既有机制）；
       * `bridge.push_state(exit_reason/exit_note)` —— 界面据此显示真实原因，
         而不是千篇一律的「核心已退出」（P0-8）。
+    取桥优先用本轮显式登记的 `_session_bridge`，其次才是 binding.active() ——
+    launch() 阶段的崩溃也必须有归宿（见 _session_bridge 的注释）。
     下发失败绝不影响退出本身（界面可能已经关了）。
     """
-    bridge = _gui_bridge()
+    bridge = _session_bridge if _session_bridge is not None else _gui_bridge()
     if bridge is not None:
         bridge.exit_reason = reason
         try:
@@ -1045,6 +1071,10 @@ def gate_on_failures(rt, label, count, halt_reason):
 
 
 def main():
+    # 每轮从零开始：Ctrl+C 菜单选「c 继续」会再进一次 main()，上一轮那座桥已经
+    # 死了，不能让它承接本轮的退出原因（P0-8 独立审查）。
+    _set_session_bridge(None)
+
     # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
     # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。
     def is_paused():
@@ -1103,6 +1133,9 @@ def main():
                 controller=ui_bridge_mod.RuntimeController(),
                 first_run=first_run,
             )
+            # P0-8：建桥就登记 —— launch() 内部崩溃时 _stamp_exit_reason 也要找到它，
+            # 否则 atexit 的 ipc-closed 会带着默认 reason=normal 把崩溃说成正常退出。
+            _set_session_bridge(bridge)
             # R-45/R-46：两个方向都要有归宿 —— GUI 退出→核退出；核退出→GUI 提示并自退。
             # 必须**在 launch() 之前**注册：用户可能一点「开始」都没点就从托盘退出，
             # 那时也要走 quit 让核自己收尾（实测晚注册会回「未知方法: quit」）。
@@ -1122,6 +1155,8 @@ def main():
                     f" 原因={getattr(bridge, 'outcome', '未知')}"
                     f" 界面处置={getattr(bridge, 'exit_reason', 'normal')}，正常退出"
                 )
+                # 用户关窗/超时 = 正常退出：这一轮没有活着的界面会话了
+                _set_session_bridge(None)
                 watchdog.reach_s9()
                 return 0
             ui_bridge_mod.set_active(bridge)
