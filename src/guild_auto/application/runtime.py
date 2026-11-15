@@ -609,15 +609,17 @@ def build_runtime(cfg, console_fn=None, ask_confirm=None, ask_text_fn=None):
         encoding=cfg.get("log_encoding", "auto"),
         poll_interval_ms=int(cfg.get("timeouts", {}).get("poll_interval_ms", 300)),
     )
-    watcher.open()
+    # P0-8：等日志期间必须能被「暂停 / 停止」打断。stop_check 的口径与文件里
+    # 其余调用点一致（P0-3）= 暂停查询；用户「停止」由 log_watcher 内部读
+    # runtime.is_force_stop 感知（与轮转重开同一个出口）。
+    # 这里直接用模块级 is_paused（唯一所有者），不要在函数内定义同名局部量 ——
+    # 局部 def 会让整个函数作用域里的名字变成 local，反而 UnboundLocalError。
+    watcher.open(stop_check=is_paused)
     console_fn(f"日志已连接: {cfg['game_log']} (编码 {watcher.encoding})")
     logger.log_info(
         f"[阶段][EXIT ] S7 build_runtime.watcher "
         f"耗时={time.monotonic() - step_started:.2f}s 编码={watcher.encoding}"
     )
-
-    def is_paused():
-        return _paused
 
     step_started = time.monotonic()
     logger.log_info("[阶段][ENTER] S7 build_runtime.human")

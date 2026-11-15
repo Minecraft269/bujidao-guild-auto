@@ -278,7 +278,11 @@ class TestEncodingDetection(_Base):
 # ===========================================================================
 class TestOpenClose(_Base):
     def test_open_missing_file_polls_then_raises(self):
-        """文件不存在:每秒轮询一次,超过 wait_seconds 抛 FileNotFoundError。"""
+        """文件不存在:按 0.1s 检查切片轮询,超过 wait_seconds 抛 FileNotFoundError。
+
+        P0-8:切片从 1.0s 收到 0.1s —— 「停止」必须在 ≤1s 内被看到,
+        1.0s 硬睡正是实机那次 stop 按了没反应的原因。
+        """
         missing = os.path.join(self.dir, "还没生成的.log")
         w = LogWatcher(missing, encoding="utf-8")
         with self.assertRaises(FileNotFoundError) as ctx:
@@ -289,7 +293,8 @@ class TestOpenClose(_Base):
         self.assertEqual(w._fh, None, "open 失败后不得留下半开的句柄")
         self.assertTrue(self.clock.sleeps, "必须轮询 sleep,不能直接抛错")
         self.assertTrue(
-            all(s == 1.0 for s in self.clock.sleeps), f"轮询间隔应为 1.0s,实际 {self.clock.sleeps}"
+            all(s == 0.1 for s in self.clock.sleeps),
+            f"轮询切片应为 0.1s(停止响应 ≤1s 的前提),实际 {self.clock.sleeps}",
         )
         self.assertGreaterEqual(self.clock.now - self.t0, 3.0, "必须等到超时才抛")
 
