@@ -57,6 +57,42 @@ struct AppState {
     policy: Mutex<ClosePolicy>,
     last_save: Mutex<Instant>,
     tray: Mutex<Option<tauri::tray::TrayIcon>>,
+    // 托盘图标闸门：业务态 + 窗口焦点 → 该不该闪（P0-4b）
+    tray_gate: Mutex<TrayGate>,
+}
+
+/// 托盘图标闸门快照。闪烁驱动线程每 500ms 只读这里（§5）：
+/// **Rust 不判业务状态**，`state` 原样来自前端 `syncTray()` 的推送。
+struct TrayGate {
+    /// 前端推来的业务态：idle / running / paused / failed
+    state: String,
+    /// 主窗口是否在前台。托盘菜单弹出/收起不产生 Focused 事件，天然不算得焦点。
+    focused: bool,
+    /// 驱动线程当前是否在闪
+    blinking: bool,
+    /// 是否因为「主窗口回到前台」而暂停过（决定日志说 start 还是 resume）
+    suspended: bool,
+    /// 下一帧画什么：false=logo，true=全透明
+    phase: bool,
+    /// 当前 DPI 档的物理边长（16/20/24/32/48）
+    size: u32,
+    /// 该档已解码的 logo；None 表示这条档的图加载失败（load_icon 已告警）
+    logo: Option<tauri::image::Image<'static>>,
+}
+
+impl Default for TrayGate {
+    fn default() -> Self {
+        Self {
+            // 启动时不得凭历史状态自动开闪：业务态从 idle 起，只有前端推送 failed 才会变。
+            state: "idle".to_string(),
+            focused: true,
+            blinking: false,
+            suspended: false,
+            phase: false,
+            size: TRAY_SIZES[0],
+            logo: None,
+        }
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -453,7 +489,8 @@ fn win_close_decision(
     }
 }
 
-/// 托盘四态（§5）：失败态带计数角标；提示只显示状态与进度，不含玩家名
+/// 托盘状态（§5）：idle/running/paused 共用同一张 logo，只靠 tooltip 区分；
+/// failed 由焦点闸门决定闪不闪。提示只显示状态与进度，不含玩家名。
 #[tauri::command]
 fn win_set_tray_state(
     app: tauri::AppHandle,
@@ -462,37 +499,235 @@ fn win_set_tray_state(
     fails: u32,
     tip: String,
 ) {
-    let icon_file = if state == "failed" && fails > 0 {
-        format!("tray-failed-{}.png", fails.min(9))
-    } else {
-        format!("tray-{state}.png")
-    };
+    let scale = tray_scale(&app);
+    let size = tray_icon_size(scale);
+    let icon_file = format!("tray-{size}.png");
     let tray_ready = lock(&app_state.tray).is_some();
     logger::trace(
         "tray",
         &format!(
-            "[main.win_set_tray_state] state={state} fails={fails} icon={icon_file} tray_ready={tray_ready} tip_len={}",
+            "[main.win_set_tray_state] state={state} fails={fails} scale={scale:.3} icon={icon_file} tray_ready={tray_ready} tip_len={}",
             tip.len()
         ),
     );
-    if let Some(tray) = lock(&app_state.tray).as_ref() {
-        match load_icon(&app, &icon_file) {
-            Some(img) => {
-                if let Err(e) = tray.set_icon(Some(img)) {
-                    logger::warn("tray", &format!("设置托盘图标失败 file={icon_file}: {e}"));
-                }
-            }
-            // 绝不静默：托盘透明是用户直接可见的缺陷，必须在日志里说清
-            None => logger::warn(
-                "tray",
-                &format!(
-                    "托盘图标不可用 file={icon_file}（内置/资源/同级目录都失败），保留上一个图标"
-                ),
-            ),
-        }
-        let _ = tray.set_tooltip(Some(tip));
+    // 失败次数不再画进图标（三态同图、失败无图形），只留在 tooltip
+    let tip = if state == "failed" && fails > 0 {
+        format!("{tip} · 失败 {fails}")
     } else {
-        logger::debug("tray", "托盘尚未创建，忽略状态更新");
+        tip
+    };
+    {
+        let mut g = lock(&app_state.tray_gate);
+        g.state = state;
+        if g.size != size || g.logo.is_none() {
+            g.size = size;
+            g.logo = load_tray_logo(&app, size);
+        }
+    }
+    // 锁外调用：set_icon 可能跨线程回到主线程，持锁等它会把托盘锁成死结
+    let tray = lock(&app_state.tray).clone();
+    match tray {
+        Some(tray) => {
+            let _ = tray.set_tooltip(Some(tip));
+        }
+        None => logger::debug("tray", "托盘尚未创建，忽略状态更新"),
+    }
+    apply_tray_gate(&app, "state");
+}
+
+/// 焦点闸门（纯函数，用户 02:15 定）：只有「失败且主窗口不在前台」才闪。
+/// idle/running/paused 一律静止常显 —— 启动时 state 是 idle，所以不会凭历史状态开闪。
+fn should_blink(state: &str, focused: bool) -> bool {
+    state == "failed" && !focused
+}
+
+/// 托盘图标五档物理边长：逻辑 16px 在 100%/125%/150%/200%/300% DPI 下的落点。
+/// 与 scripts/make_tray_icons.py 的 SIZES 同源，由 tests/test_tray_icons.py 守卫。
+const TRAY_SIZES: [u32; 5] = [16, 20, 24, 32, 48];
+
+/// 闪烁节拍：每帧 500ms（logo ↔ 全透明）。
+const TRAY_BLINK_MS: u64 = 500;
+
+/// 按 DPI 取最近档。Windows 任务栏小图标的物理边长≈16×scale_factor，
+/// 直接把 16px 的图拉大就是「16px 糊」的根因。
+fn tray_icon_size(scale: f64) -> u32 {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let target = 16.0 * scale;
+    TRAY_SIZES
+        .iter()
+        .copied()
+        .min_by(|a, b| {
+            (f64::from(*a) - target)
+                .abs()
+                .total_cmp(&(f64::from(*b) - target).abs())
+        })
+        .unwrap_or(TRAY_SIZES[0])
+}
+
+/// 托盘所在的 DPI：任务栏在主屏，取主屏 scale_factor；查不到退回主窗口的。
+fn tray_scale(app: &tauri::AppHandle) -> f64 {
+    app.primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .or_else(|| {
+            app.get_webview_window("main")
+                .and_then(|w| w.scale_factor().ok())
+        })
+        .unwrap_or(1.0)
+}
+
+fn load_tray_logo(app: &tauri::AppHandle, size: u32) -> Option<tauri::image::Image<'static>> {
+    load_icon(app, &format!("tray-{size}.png"))
+}
+
+/// 把当前档的 logo 铺回托盘（与 idle 同图）。锁只用来取句柄/图像，绝不在持锁时调 set_icon。
+fn set_tray_logo(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let (logo, tray) = {
+        let g = lock(&state.tray_gate);
+        (g.logo.clone(), lock(&state.tray).clone())
+    };
+    let (Some(logo), Some(tray)) = (logo, tray) else {
+        return;
+    };
+    if let Err(e) = tray.set_icon(Some(logo)) {
+        logger::warn("tray", &format!("设置托盘图标失败（logo）: {e}"));
+    }
+}
+
+/// 应用焦点闸门：该闪就（重新）开闪，不该闪就立刻常显 logo 并停。
+/// `reason` 只用于日志：state / focused / unfocused。
+fn apply_tray_gate(app: &tauri::AppHandle, reason: &str) {
+    let state = app.state::<AppState>();
+    let (want, was_blinking, business, focused) = {
+        let g = lock(&state.tray_gate);
+        (
+            should_blink(&g.state, g.focused),
+            g.blinking,
+            g.state.clone(),
+            g.focused,
+        )
+    };
+
+    if want {
+        if !was_blinking {
+            let resumed = {
+                let mut g = lock(&state.tray_gate);
+                g.blinking = true;
+                g.phase = false;
+                // 从「回前台暂停」里回来叫 resume；本轮失败第一次开闪叫 start
+                std::mem::take(&mut g.suspended)
+            };
+            let verb = if resumed { "resume" } else { "start" };
+            logger::info(
+                "tray",
+                &format!("blink {verb} state={business} focused={focused} reason={reason}"),
+            );
+        }
+        return;
+    }
+
+    let stopped = {
+        let mut g = lock(&state.tray_gate);
+        let was = g.blinking;
+        g.blinking = false;
+        g.phase = false;
+        if reason == "focused" {
+            // 问题还没解决，只是用户回来看了一眼：记住待续
+            g.suspended = was;
+        } else if business != "failed" {
+            // state 变了（不再 failed）：本轮彻底结束
+            g.suspended = false;
+        }
+        was
+    };
+    // 不该闪就常显 logo：三态同图，顺带跟上 DPI 档变化。返回前台时不必等下一拍。
+    set_tray_logo(app);
+    if stopped {
+        if reason == "focused" {
+            logger::info(
+                "tray",
+                &format!("blink suspend reason=focused state={business}"),
+            );
+        } else {
+            logger::info(
+                "tray",
+                &format!("blink stop reason={reason} state={business}"),
+            );
+        }
+    }
+}
+
+/// 闪烁用的「透明帧」RGBA，与 logo 同尺寸，纯代码生成、不落盘。
+///
+/// **alpha 必须是 1，不能是 0**：全 0 alpha 时 Windows 认为这张图没有 alpha 通道，
+/// 退回用 AND 掩码；而 tray-icon 的掩码是每像素 1 字节（1bpp 应每像素 1 bit），
+/// CreateIcon 按 4 字节行宽读，全 1 的掩码被解成「透明-黑×7-透明-黑×7」，
+/// 托盘里看到的就是两根黑竖条（被当成暂停键）。有像素 alpha>0 时 Windows 走
+/// per-pixel alpha，整张图才真的不可见。实测对照见 P0-4b 的复现图。
+fn blank_frame_rgba(size: u32) -> Vec<u8> {
+    let mut rgba = vec![0u8; (size * size * 4) as usize];
+    for alpha in rgba.iter_mut().skip(3).step_by(4) {
+        *alpha = 1;
+    }
+    rgba
+}
+
+/// 常驻闪烁驱动：**一个**线程、500ms 一拍、只读共享快照。
+///
+/// 不用 `tokio::time::interval` 的原因：tokio 不是本 crate 的直接依赖，
+/// 用上它就得改 Cargo.toml（本条「可改」不含该文件）。单线程 sleep 与 interval
+/// 等价：每秒两次唤醒、零忙轮询、不 spawn 任务，CPU 与句柄都不随闪烁时长增长。
+fn spawn_tray_blinker(app: tauri::AppHandle) {
+    let spawned = std::thread::Builder::new()
+        .name("tray-blink".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(TRAY_BLINK_MS));
+            let state = app.state::<AppState>();
+            let (transparent, size) = {
+                let mut g = lock(&state.tray_gate);
+                if !g.blinking {
+                    // 不在闪：这一拍什么都不做（不碰托盘、不碰显卡、不写日志）
+                    continue;
+                }
+                let frame = g.phase;
+                g.phase = !g.phase;
+                (frame, g.size)
+            };
+            let tray = lock(&state.tray).clone();
+            let Some(tray) = tray else { continue };
+            let img = if transparent {
+                let blank = blank_frame_rgba(size);
+                tauri::image::Image::new_owned(blank, size, size)
+            } else {
+                match lock(&state.tray_gate).logo.clone() {
+                    Some(img) => img,
+                    None => continue,
+                }
+            };
+            if let Err(e) = tray.set_icon(Some(img)) {
+                logger::warn("tray", &format!("设置托盘图标失败（闪烁帧）: {e}"));
+            }
+            // 画完再确认一次：闸门可能在 set_icon 期间就把闪停了，
+            // 那最后一帧透明就会一直留着 —— 必须补一张 logo 回去。
+            if !lock(&state.tray_gate).blinking {
+                set_tray_logo(&app);
+            }
+        });
+    match spawned {
+        Ok(_) => logger::info(
+            "tray",
+            &format!("闪烁驱动已启动 interval_ms={TRAY_BLINK_MS}"),
+        ),
+        Err(e) => logger::error(
+            "tray",
+            &format!("闪烁驱动线程启动失败，failed 将不会闪烁: {e}"),
+        ),
     }
 }
 
@@ -501,19 +736,11 @@ fn win_set_tray_state(
 /// 且调用点 `let _ = set_icon(...)` 把错误吞了，日志里只剩一条 DEBUG。
 fn builtin_icon(file: &str) -> Option<&'static [u8]> {
     Some(match file {
-        "tray-idle.png" => include_bytes!("../icons/tray-idle.png"),
-        "tray-running.png" => include_bytes!("../icons/tray-running.png"),
-        "tray-paused.png" => include_bytes!("../icons/tray-paused.png"),
-        "tray-failed.png" => include_bytes!("../icons/tray-failed.png"),
-        "tray-failed-1.png" => include_bytes!("../icons/tray-failed-1.png"),
-        "tray-failed-2.png" => include_bytes!("../icons/tray-failed-2.png"),
-        "tray-failed-3.png" => include_bytes!("../icons/tray-failed-3.png"),
-        "tray-failed-4.png" => include_bytes!("../icons/tray-failed-4.png"),
-        "tray-failed-5.png" => include_bytes!("../icons/tray-failed-5.png"),
-        "tray-failed-6.png" => include_bytes!("../icons/tray-failed-6.png"),
-        "tray-failed-7.png" => include_bytes!("../icons/tray-failed-7.png"),
-        "tray-failed-8.png" => include_bytes!("../icons/tray-failed-8.png"),
-        "tray-failed-9.png" => include_bytes!("../icons/tray-failed-9.png"),
+        "tray-16.png" => include_bytes!("../icons/tray-16.png"),
+        "tray-20.png" => include_bytes!("../icons/tray-20.png"),
+        "tray-24.png" => include_bytes!("../icons/tray-24.png"),
+        "tray-32.png" => include_bytes!("../icons/tray-32.png"),
+        "tray-48.png" => include_bytes!("../icons/tray-48.png"),
         _ => return None,
     })
 }
@@ -939,6 +1166,7 @@ fn main() {
             policy: Mutex::new(ClosePolicy::default()),
             last_save: Mutex::new(Instant::now()),
             tray: Mutex::new(None),
+            tray_gate: Mutex::new(TrayGate::default()),
         })
         .invoke_handler(tauri::generate_handler![
             core_call,
@@ -1027,6 +1255,18 @@ fn main() {
                             "[main.on_window_event] EXIT event=CloseRequested hit=default conclusion=hide",
                         );
                         let _ = window.hide();
+                    }
+                }
+                // 焦点闸门（P0-4b）：回前台立即停闪，切走且问题未解决则续闪。
+                // 托盘菜单弹出/收起只动菜单窗口，不给主窗口发 Focused，故天然不算得焦点。
+                WindowEvent::Focused(on) => {
+                    if window.label() == "main" {
+                        {
+                            let mut g = lock(&state.tray_gate);
+                            g.focused = *on;
+                        }
+                        logger::info("tray", &format!("focus 变化 窗口=main focused={on}"));
+                        apply_tray_gate(&app, if *on { "focused" } else { "unfocused" });
                     }
                 }
                 WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
@@ -1126,16 +1366,38 @@ fn main() {
                         }
                     }
                 });
-            match load_icon(&handle, "tray-idle.png") {
-                Some(img) => builder = builder.icon(img),
+            // 初始图标也按 DPI 取档：起手就铺对尺寸，后面状态推送不会先糊一下
+            let scale = tray_scale(&handle);
+            let size = tray_icon_size(scale);
+            let logo = load_tray_logo(&handle, size);
+            logger::info(
+                "tray",
+                &format!("初始图标 scale={scale:.3} size={size} 文件=tray-{size}.png"),
+            );
+            if let Some(img) = logo.clone() {
+                builder = builder.icon(img);
+            } else {
                 // 透明托盘的元凶就是这里曾经静默跳过
-                None => logger::warn("tray", "托盘初始图标不可用，托盘会显示为空（见上一条失败原因）"),
+                logger::warn("tray", "托盘初始图标不可用，托盘会显示为空（见上一条失败原因）");
             }
             let tray = builder.build(app).map_err(|e| {
                 logger::error("tray", &format!("托盘创建失败（build 返回 Err）: {e}"));
                 e
             })?;
             *lock(&app.state::<AppState>().tray) = Some(tray);
+            {
+                // 焦点初值取真实状态：失败态首次推送时闸门就已经是对的
+                let focused_now = handle
+                    .get_webview_window("main")
+                    .map(|w| w.is_focused().unwrap_or(true))
+                    .unwrap_or(false);
+                let st = app.state::<AppState>();
+                let mut g = lock(&st.tray_gate);
+                g.focused = focused_now;
+                g.size = size;
+                g.logo = logo;
+                logger::info("tray", &format!("闸门初始 focused={focused_now} blinking=false"));            }
+            spawn_tray_blinker(handle.clone());
             logger::info("tray", "[EXIT ] 托盘创建完成");
 
             // 管道连接放后台线程：连不上也不该卡住首屏
@@ -1397,5 +1659,65 @@ mod tests {
         for reason in ["normal", "gui_gone", ""] {
             assert!(auto_exit_on_core_exit(reason), "reason={reason} 应当自退");
         }
+    }
+
+    #[test]
+    fn blink_only_when_failed_and_unfocused() {
+        // failed × 前台 → 不闪（用户 02:15：失败时窗口已在前台就常显）
+        assert!(!should_blink("failed", true));
+        // failed × 后台 → 无限闪
+        assert!(should_blink("failed", false));
+        // 非 failed × 任意焦点 → 一律静止
+        for state in ["idle", "running", "paused", ""] {
+            for focused in [true, false] {
+                assert!(
+                    !should_blink(state, focused),
+                    "state={state} focused={focused} 不该闪"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tray_icon_size_picks_nearest_bucket() {
+        // 逻辑 16px 在常见 DPI 下的落点
+        assert_eq!(tray_icon_size(1.0), 16);
+        assert_eq!(tray_icon_size(1.25), 20);
+        assert_eq!(tray_icon_size(1.5), 24);
+        assert_eq!(tray_icon_size(2.0), 32);
+        assert_eq!(tray_icon_size(3.0), 48);
+        // 超出与非法值都要收敛到最近的安全档
+        assert_eq!(tray_icon_size(9.0), 48);
+        assert_eq!(tray_icon_size(0.0), 16);
+        assert_eq!(tray_icon_size(f64::NAN), 16);
+    }
+
+    #[test]
+    fn blank_frame_is_invisible_but_has_alpha() {
+        // 全 0 alpha 会被 Windows 当成「没有 alpha 通道」，退回 AND 掩码后画成两根黑竖条
+        // （实测复现）。所以每一帧的 alpha 必须是 1：既不可见，又让 Windows 走 per-pixel alpha。
+        for size in TRAY_SIZES {
+            let rgba = blank_frame_rgba(size);
+            assert_eq!(rgba.len(), (size * size * 4) as usize);
+            assert!(
+                rgba.as_chunks::<4>().0.iter().all(|p| *p == [0, 0, 0, 1]),
+                "size={size} 必须每个像素都是 rgb=0 / alpha=1"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_icons_cover_exactly_the_five_sizes() {
+        for size in TRAY_SIZES {
+            let bytes = builtin_icon(&format!("tray-{size}.png"))
+                .unwrap_or_else(|| panic!("tray-{size}.png 没有编进二进制"));
+            let img = tauri::image::Image::from_bytes(bytes)
+                .unwrap_or_else(|e| panic!("tray-{size}.png 解码失败: {e}"));
+            assert_eq!(img.width(), size);
+            assert_eq!(img.height(), size);
+        }
+        // 旧的四态/计数图不得再被引用（源码里连字面量都不留，
+        // 由 tests/test_tray_icons.py 的 grep 断言统一守）
+        assert!(builtin_icon("tray-17.png").is_none());
     }
 }
