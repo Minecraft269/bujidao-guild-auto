@@ -960,7 +960,15 @@ def _classify_exit(exc) -> tuple:
       (JSONDecodeError)、日志/文件不可用(PermissionError / IsADirectoryError)、
       非零 SystemExit(配置校验失败 / 聊天键不可用)等启动前置条件不满足。
     * crash         —— 其余未预期异常。
+
+    `_pinned_exit` 优先：分支在 sys.exit() 之前已经知道真实原因时（见
+    _pin_exit_reason）原样采用一次，否则 SystemExit(0) 会把它改回 normal。
     """
+    global _pinned_exit
+    if _pinned_exit is not None:
+        pinned, _pinned_exit = _pinned_exit, None
+        return pinned
+
     from guild_auto.infrastructure.log_watcher import LogWaitInterrupted
 
     if isinstance(exc, (LogWaitInterrupted, KeyboardInterrupt)):
@@ -982,6 +990,24 @@ def _classify_exit(exc) -> tuple:
 # _stamp_exit_reason 用 active() 反查会拿不到桥 → atexit 用的那份 bridge 的
 # exit_reason 仍是默认 normal，崩溃又被说成「正常退出」。
 _session_bridge = None
+
+# 分支在 sys.exit() 之前已经知道真实原因时（S8 未找到窗口时用户选 q 退出）先钉住它：
+# run_cli 的 `except SystemExit` 会再归类一次，SystemExit(0) 一律归 normal ——
+# 不钉的话真因又被「正常退出」盖掉。
+_pinned_exit = None
+
+
+def _pin_exit_reason(reason, text) -> None:
+    """钉住本次退出原因（由 _classify_exit 采用一次）。"""
+    global _pinned_exit
+    _pinned_exit = (reason, text)
+
+
+def _reset_exit_state() -> None:
+    """每轮启动前清空退出归因状态（Ctrl+C 菜单「c 继续」会再进一次 main()）。"""
+    global _pinned_exit
+    _pinned_exit = None
+    _set_session_bridge(None)
 
 
 def _set_session_bridge(bridge) -> None:
@@ -1071,9 +1097,9 @@ def gate_on_failures(rt, label, count, halt_reason):
 
 
 def main():
-    # 每轮从零开始：Ctrl+C 菜单选「c 继续」会再进一次 main()，上一轮那座桥已经
-    # 死了，不能让它承接本轮的退出原因（P0-8 独立审查）。
-    _set_session_bridge(None)
+    # 每轮从零开始：Ctrl+C 菜单选「c 继续」会再进一次 main()，上一轮那座桥/
+    # 那个钉住的退出原因都已经过期（P0-8 独立审查）。
+    _reset_exit_state()
 
     # 暂停查询钩子：直接委托 runtime 的唯一所有者，不复用模块级副本
     # （副本会读到永远 False 的旧值，是拆分后踩过的静默失效坑）。
@@ -1248,6 +1274,12 @@ def main():
                 logger.log_info("[阶段] S8 用户选择退出(未找到游戏窗口)")
                 console("已退出")
                 watchdog.reach_s9()
+                # P0-8：这不是「正常跑完」—— 前置条件(游戏窗口)不满足，用户选择退出。
+                # 钉住原因再 sys.exit(0)，否则 run_cli 的 except SystemExit 会把
+                # SystemExit(0) 一律归成 normal，界面又被告知「正常退出」。
+                _pin_exit_reason(
+                    EXIT_REASON_CONFIG_ERROR, "未找到游戏窗口，用户选择退出（配置/环境问题）"
+                )
                 sys.exit(0)
         # 窗口句柄以本次查找为准（build_runtime 内查过一次，此处可能得到新值）
         executor.hwnd = hwnd
@@ -1921,7 +1953,15 @@ def run_cli():
             main()
             break  # 正常走完 main() → 退出
         except KeyboardInterrupt:
-            # Ctrl+C:不直接退出,等待用户选择
+            # GUI 会话里这条只有一个来源：用户点「停止」(RuntimeController.stop 置
+            # force_stop → wait_if_paused 抛 KI)。无控制台的 exe 上菜单问了没人答，
+            # 只会白等 pause.py 的 5 秒硬上限，还可能被残留按键误触「c 继续」整套重启
+            # (P0-8 复查指出)。所以 GUI 场景直接按 user_stop 收尾，不进菜单。
+            if _session_bridge is not None or _gui_bridge() is not None:
+                _stamp_exit_reason(EXIT_REASON_USER_STOP, _EXIT_REASON_TEXT[EXIT_REASON_USER_STOP])
+                logger.log_info("GUI 会话收到「停止」：跳过控制台中断菜单，按 user_stop 退出")
+                break
+            # 控制台模式：Ctrl+C 不直接退出,等待用户选择
             logger.log_warning("用户按 Ctrl+C 中断,进入中断菜单(回车退出/c 继续)")
             if _ctrlc_pause_menu():
                 # 复位全局暂停状态:中断时可能 _paused=True,不复位会导致
