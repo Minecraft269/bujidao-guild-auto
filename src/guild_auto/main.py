@@ -601,6 +601,141 @@ def _latest_log_path(cfg):
     return os.path.abspath(os.path.join(log_dir, "latest.log"))
 
 
+# ── P0-11 启动期致命错误的可见反馈 ─────────────────────────────────────────
+_DIALOG_TITLE = "布吉岛公会管理脚本 - 启动失败"
+
+
+def _interactive_desktop() -> bool:
+    """当前进程是否在交互桌面（WinSta0 且可见）。
+
+    服务 / 计划任务 / 无窗口站返回 False —— 这类环境弹窗要么看不见、要么没人关，
+    必须退化为「日志 + 非零退出码」，不能把进程挂在 MessageBox 上。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        handle = user32.GetProcessWindowStation()
+        if not handle:
+            return False
+        need = wintypes.DWORD()
+        name = ctypes.create_unicode_buffer(256)
+        # UOI_NAME = 2
+        if not user32.GetUserObjectInformationW(
+            handle, 2, name, ctypes.sizeof(name), ctypes.byref(need)
+        ):
+            return False
+        if name.value.upper() != "WINSTA0":
+            return False
+
+        # ctypes.wintypes 在部分 Python 版本里没有 USEROBJECTFLAGS，必须本地定义。
+        class _UserObjectFlags(ctypes.Structure):
+            _fields_ = [
+                ("fInherit", wintypes.BOOL),
+                ("fReserved", wintypes.BOOL),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
+        flags = _UserObjectFlags()
+        # UOI_FLAGS = 1；WSF_VISIBLE = 0x0001
+        if not user32.GetUserObjectInformationW(
+            handle, 1, ctypes.byref(flags), ctypes.sizeof(flags), ctypes.byref(need)
+        ):
+            return False
+        return bool(flags.dwFlags & 0x0001)
+    except Exception:
+        return False
+
+
+def _std_handles_absent() -> bool:
+    """双击启动时标准句柄全为 NULL；脚本/管道/重定向一定会给句柄。
+
+    这是「是不是人双击的」最可靠判别：不能只看 sys.stdin —— PyInstaller 的
+    --noconsole 构建即使被重定向也可能把它设成 None。
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        k32.GetStdHandle.restype = ctypes.c_void_p
+        invalid = ctypes.c_void_p(-1).value
+        # STD_INPUT/OUTPUT/ERROR = -10/-11/-12
+        return all(k32.GetStdHandle(which) in (None, 0, invalid) for which in (-10, -11, -12))
+    except Exception:
+        return False
+
+
+def _startup_dialog_needed() -> bool:
+    """只有「双击（标准句柄全 NULL）+ 交互桌面」才弹窗。
+
+    - 纯 CLI 变体有 stdout：错误本来就看得见，不弹窗、输出不变；
+    - 被脚本/管道/计划任务启动时标准句柄存在：不算双击，必须自行退出，不得挂在
+      MessageBox 上；
+    - 服务/无窗口站：_interactive_desktop() 为 False → 退化为日志 + 非零退出码。
+    """
+    if os.name != "nt":
+        return False
+    if sys.stdout is not None or sys.stderr is not None:
+        return False
+    if not _std_handles_absent():
+        return False
+    return _interactive_desktop()
+
+
+def _startup_failure_text(summary: str, errors, log_path: str) -> str:
+    """弹窗正文：错误摘要 + 键名 + 日志绝对路径 + 「双击无窗口是正常的」说明。"""
+    keys: list[str] = []
+    for msg in errors:
+        for m in re.finditer(r"键名[:：]\s*([A-Za-z0-9_.]+)", str(msg)):
+            if m.group(1) not in keys:
+                keys.append(m.group(1))
+    shown = [str(e) for e in errors][:3]
+    lines = [f"启动失败：{summary}", ""]
+    if shown:
+        lines.append("错误摘要：")
+        lines.extend(f"  · {e}" for e in shown)
+        if len(errors) > len(shown):
+            lines.append(f"  · ……另有 {len(errors) - len(shown)} 条")
+        lines.append("")
+    if keys:
+        lines.append("涉及键名：" + "、".join(keys))
+    lines.append(f"日志：{log_path}")
+    lines.append("")
+    lines.append("双击启动时没有控制台窗口是正常现象（界面版不带控制台）。")
+    lines.append("请按上面的键名修正 config.json 后重试；详细原因请查看日志。")
+    return "\n".join(lines)
+
+
+def _notify_startup_failure(summary: str, errors, log_path: str) -> None:
+    """启动期致命错误的最后一道反馈（Windows 原生 MessageBoxW）。
+
+    只负责「让用户看得见」：日志由调用点先写、退出码由调用点决定，
+    这里无论成功失败都不改变这两件事；非交互环境直接返回（不死等弹窗）。
+    """
+    needed = _startup_dialog_needed()
+    logger.log_info(
+        f"[P0-11] 启动失败反馈判定 stdout_none={sys.stdout is None} "
+        f"handles_absent={_std_handles_absent()} desktop={_interactive_desktop()} "
+        f"-> dialog={needed}"
+    )
+    if not needed:
+        return
+    logger.log_warning(f"[P0-11] 启动失败弹窗: {summary} log={log_path}")
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(
+            None, _startup_failure_text(summary, errors, log_path), _DIALOG_TITLE, 0x10
+        )
+    except Exception as e:  # 弹窗失败绝不能影响日志与退出路径
+        logger.log_warning(f"[P0-11] 弹窗失败(忽略): {e!r}")
+
+
 def _bridge_stage(bridge) -> str:
     """界面上当前的 stage 文案（测试替身没有 _state 时返回空串）。"""
     state = getattr(bridge, "_state", None)
@@ -971,6 +1106,9 @@ def prepare_config(args, console_fn=None, exit_fn=None):
             f"[TRACE][main.prepare_config] phase=EXIT ok=False reason=config_invalid "
             f"errors={len(errors)} warnings={len(issues) - len(errors)}"
         )
+        # P0-11：GUI 变体是 --noconsole，上面这行 console 输出无人看得见 ——
+        # 用户双击后只看到"进程没了"。日志已写完，这里补最后一道可见反馈。
+        _notify_startup_failure("配置校验未通过", errors, _latest_log_path(cfg))
         exit_fn(1)
 
     sw = cfg["switches"]
@@ -1233,6 +1371,12 @@ def main():
         reason = "以 --ui 显式要求界面，但 ui.enabled=false：按规范报错退出，不静默降级到控制台"
         logger.log_warning(f"[阶段] S4 决定=报错退出 原因={reason}")
         watchdog.reach_s9()
+        # P0-11：同样是启动期致命错误，GUI 无控制台时补可见反馈
+        _notify_startup_failure(
+            "配置未启用 UI 入口",
+            ["以 --ui 要求界面，但配置项 ui.enabled=false。键名: ui.enabled"],
+            _latest_log_path(cfg),
+        )
         raise SystemExit(
             "配置未启用 UI 入口（ui.enabled=false）。"
             "请先在 config.json 把 ui.enabled 改为 true，或去掉 --ui 使用控制台模式。"
