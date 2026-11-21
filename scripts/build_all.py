@@ -138,6 +138,11 @@ def pyinstaller_args(v: Variant, dist: Path, work: Path, spec: Path) -> list[str
         "--onefile",
         "--clean",
         "--noconfirm",
+        # P6-1 决策(2026-11-21):两边彻底关闭 UPX。不靠"环境里没有 upx"——
+        # 只要 PATH 混进 upx 就会静默启用;显式 --noupx 才可靠。
+        # 理由:UPX 是恶意软件常用壳(杀软误报)/ 体积从 Rust release profile 与依赖裁剪省 /
+        # CI 的 choco install upx 本身不稳定。
+        "--noupx",
         "--name",
         v.exe_name[: -len(".exe")],
         "--paths",
@@ -162,17 +167,6 @@ def pyinstaller_args(v: Variant, dist: Path, work: Path, spec: Path) -> list[str
         args += ["--noconsole"]
     args.append(str(SRC / "guild_auto" / "main.py"))
     return args
-
-
-def _warn_upx() -> None:
-    """UPX 缺失必须可见:PyInstaller 只打一条 warning 就静默跳过压缩。"""
-    if shutil.which("upx"):
-        return
-    print(
-        "[WARNING] 未找到 upx:本次产物未压缩(体积明显大于 CI 产物)。"
-        "安装 upx 后重跑即可;若本机不需要压缩可忽略。",
-        file=sys.stderr,
-    )
 
 
 def _copy_with_retry(src: Path, dst: Path, timeout: float = 60.0) -> None:
@@ -259,6 +253,22 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
+def _popen_with_retry(
+    exe: Path, cwd: Path, env: dict, stdout, timeout: float = 60.0
+) -> subprocess.Popen:
+    """启动刚构建的 exe;杀软可能短暂占用新文件,遇到 PermissionError 就重试。"""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return subprocess.Popen(
+                [str(exe)], cwd=cwd, env=env, stdout=stdout, stderr=subprocess.STDOUT
+            )
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.5)
+
+
 def verify_exe(v: Variant, exe: Path, timeout: float = 30.0) -> tuple[bool, str]:
     """在空目录里跑一次产物,读**产物自己**写出的启动横幅。
 
@@ -269,7 +279,7 @@ def verify_exe(v: Variant, exe: Path, timeout: float = 30.0) -> tuple[bool, str]
     gui 变体是 --noconsole,控制台不可见,日志是唯一可靠通道(8 个变体实测都有)。
     S0 启动快照里的 build_variant 只作兜底:横幅缺失判失败,不拿 S0 冒充横幅。
     """
-    with tempfile.TemporaryDirectory(prefix="guild-auto-check-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="guild-auto-check-", ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
         stdout_file = tmp_path / "stdout.txt"
         log_file = tmp_path / "logs" / "latest.log"
@@ -278,9 +288,7 @@ def verify_exe(v: Variant, exe: Path, timeout: float = 30.0) -> tuple[bool, str]
         env["PYTHONUTF8"] = "1"
         env["PYTHONUNBUFFERED"] = "1"  # 横幅要及时落到 stdout(仅控制台变体可见)
         with stdout_file.open("wb") as fh:
-            proc = subprocess.Popen(
-                [str(exe)], cwd=tmp, env=env, stdout=fh, stderr=subprocess.STDOUT
-            )
+            proc = _popen_with_retry(exe, tmp, env, fh)
             deadline = time.monotonic() + timeout
             try:
                 while time.monotonic() < deadline:
@@ -462,7 +470,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if not ICON.is_file():
         print(f"[WARNING] 图标不存在,所有变体都会构建失败: {ICON}", file=sys.stderr)
-    _warn_upx()
 
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
     t0 = time.monotonic()

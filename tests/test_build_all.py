@@ -77,6 +77,13 @@ class TestPlanFromRegistry(unittest.TestCase):
             self.assertNotIn(f'"{name}"', src)
             self.assertNotIn(f"'{name}'", src)
 
+    def test_pyinstaller_disables_upx(self):
+        """P6-1 决策（2026-11-21）：两边都显式 --noupx，不靠"环境里没有 upx"。"""
+        for v in self.mod.plan():
+            args = self.mod.pyinstaller_args(v, Path("d"), Path("w"), Path("s"))
+            self.assertIn("--noupx", args)
+            self.assertNotIn("--upx-dir", args)
+
     def test_cli_list_matches_plan(self):
         proc = subprocess.run(
             [sys.executable, str(SCRIPT), "--list"],
@@ -139,6 +146,27 @@ class TestCopyRetry(unittest.TestCase):
         ):
             with self.assertRaises(PermissionError):
                 self.mod._copy_with_retry(Path("src"), Path("dst"), timeout=0)
+
+
+class TestPopenRetry(unittest.TestCase):
+    """刚复制的 exe 被杀软短暂占用 → 启动重试,而不是把自检判失败。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_build_all()
+
+    def test_retries_permission_error_then_succeeds(self):
+        calls = []
+
+        def fake_popen(*_a, **_k):
+            calls.append(1)
+            if len(calls) < 3:
+                raise PermissionError("locked")
+            return mock.Mock()
+
+        with mock.patch.object(self.mod.subprocess, "Popen", side_effect=fake_popen):
+            self.mod._popen_with_retry(Path("x"), Path("."), {}, None)
+        self.assertEqual(len(calls), 3)
 
 
 class TestFailureIsolation(unittest.TestCase):
