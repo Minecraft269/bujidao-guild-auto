@@ -23,5 +23,8 @@ jobs:
       - uses: release-drafter/release-drafter@v7
         with:
           config-name: release-drafter.yml
+          # PR 事件下 github.ref 是 refs/pull/N/merge（临时合并提交），v7 会强制 dry-run
+          # 并打一条 warning。显式声明：PR 只预览，push main 才真写草稿。
+          dry-run: ${{ github.event_name == 'pull_request' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

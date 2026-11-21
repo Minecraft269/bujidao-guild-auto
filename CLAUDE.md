@@ -64,6 +64,17 @@
 认证信息一律不得进入仓库（含测试 fixture）。测试数据用合成名；
 真实日志只用于本地分析，不入库。
 
+## 7. PR 标签纪律
+
+**规则**：每个 PR 至少打一个分类 label（`enhancement` / `bug` / `dependencies` / `ci` / `tests` / `documentation`）；
+版本档位按需加 `major` / `minor` / `patch` / `breaking`。
+
+**为什么**：Release Drafter 靠 label 生成 release notes——不打 label 的 PR **不会进任何分类**
+（只会落在「本次变更」的无标题列表里），版本进位也会退回默认 `patch`。
+
+**版本进位口径**（见 `.github/release-drafter.yml`，v7 语法）：`major` / `breaking` → major；
+`enhancement` 或 `minor` → minor；其余 → patch；同时命中多个档位时取最高（major > minor > patch）。
+
 <!-- project-init:begin -->
 ## 项目栈
 python
