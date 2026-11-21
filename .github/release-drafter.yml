@@ -1,25 +1,45 @@
+# Release Drafter v7 配置（2026-11-21，P2-8）
+# v7 移除了 categories[].labels 与顶层 version-resolver：
+#   标签条件一律写进 when，版本档位用 type: version-resolver 分类表达（不渲染分类标题）。
+# 旧配置逐条迁到这里，行为等价：major > minor > patch，未命中任何档位时按 patch。
 name-template: "v$RESOLVED_VERSION"
 tag-template: "v$RESOLVED_VERSION"
 categories:
   - title: "🚀 功能"
-    labels: ["enhancement"]
+    semver-increment: minor
+    when:
+      labels: ["enhancement"]
   - title: "🐛 修复"
-    labels: ["bug"]
+    semver-increment: patch
+    when:
+      labels: ["bug"]
   - title: "📦 依赖更新"
-    labels: ["dependencies"]
+    when:
+      labels: ["dependencies"]
   - title: "🧪 测试与 CI"
-    labels: ["ci", "tests"]
+    when:
+      labels: ["ci", "tests"]
   - title: "📝 文档"
-    labels: ["documentation"]
+    when:
+      labels: ["documentation"]
+  # ── 版本档位（label-only，只参与 $RESOLVED_VERSION，不渲染分类）────────────
+  # 对应旧版 version-resolver.major/minor/patch.labels。
+  - type: version-resolver
+    semver-increment: major
+    when:
+      labels: ["major", "breaking"]
+  - type: version-resolver
+    semver-increment: minor
+    when:
+      label: "minor"
+  - type: version-resolver
+    semver-increment: patch
+    when:
+      label: "patch"
+  # 兜底：没有 when = 匹配全部变更，只贡献 patch；最高档位仍取胜（等价旧 default: patch）。
+  - type: version-resolver
+    semver-increment: patch
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
-version-resolver:
-  major:
-    labels: ["major", "breaking"]
-  minor:
-    labels: ["minor", "enhancement"]
-  patch:
-    labels: ["patch", "bug"]
-  default: patch
 template: |
   ## 本次变更
 
