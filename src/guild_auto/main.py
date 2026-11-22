@@ -825,17 +825,20 @@ class _StartupWatchdog:
         if self._wait_reported:
             return
         self._wait_reported = True
-        text = (
-            f"等待游戏日志: {wait['path']}"
-            f"（最长 {float(wait['expected_s']):.0f}s，点「停止」可取消）"
-        )
-        # 前缀刻意不用「看门狗」:等待是阶段声明的预期行为,不是看门狗告警;
-        # 验收口径要求「等待期间 grep 看门狗 为空」,别自己把 grep 污染了。
-        logger.log_info(text)
+        bridge = None
         try:
             from guild_auto.ui import binding as _ui_binding  # noqa: PLC0415
 
             bridge = _ui_binding.active()
+        except Exception as e:  # 取桥失败只留痕：文案按控制台处理，不影响巡检
+            logger.log_debug(f"[看门狗] 等待态获取界面桥失败: {e!r}")
+        # P0-12：控制台没有「停止」按钮，提示必须说 Ctrl+C；GUI 路径文案保持不变。
+        hint = "点「停止」可取消" if bridge is not None else "按 Ctrl+C 取消"
+        text = f"等待游戏日志: {wait['path']}（最长 {float(wait['expected_s']):.0f}s，{hint}）"
+        # 前缀刻意不用「看门狗」:等待是阶段声明的预期行为,不是看门狗告警;
+        # 验收口径要求「等待期间 grep 看门狗 为空」,别自己把 grep 污染了。
+        logger.log_info(text)
+        try:
             # 用户刚点了「停止」时不要用等待文案盖掉「已停止」（复审核出的窄竞态）
             if bridge is not None and _bridge_stage(bridge) != "已停止":
                 bridge.push_state(stage=text)
@@ -985,24 +988,50 @@ def prepare_config(args, console_fn=None, exit_fn=None):
     )
 
     if created:
-        wants_ui = _bool_arg(args, "ui") or bool(cfg.get("ui", {}).get("enabled", False))
+        ui_flag = _bool_arg(args, "ui")
+        wants_ui = ui_flag or bool(cfg.get("ui", {}).get("enabled", False))
         console_fn(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
         logger.log_warning(f"首次运行:已生成默认配置文件 {os.path.abspath(args.config)}")
         console_fn("请先查看并修改该配置文件——每个配置键前都有 '//' 中文注释,说明作用与取值范围")
         console_fn("重点确认:管理员名(留空自动识别)、日志路径、聊天键、升/降/踢阈值、各开关")
         console_fn("详细说明见 docs/《配置说明.md》")
-        if wants_ui:
+
+        # P0-12：首启能否进配置页，取决于「该构建真的有界面能力 + Gui.exe 真的能找到」，
+        # 而不是只看 ui.enabled。否则 Lite / 缺 Gui.exe 的目录会先宣布进配置页、
+        # 再回落控制台、然后一路冲进 S8 —— 用户看到的首启状态是错的。
+        gui_capable = capabilities_mod.has("gui")
+        gui_exe = None
+        if wants_ui and gui_capable:
+            from guild_auto.ui import binding as _ui_binding
+
+            gui_exe = _ui_binding.gui_executable()
+        enter_ui = wants_ui and gui_capable and gui_exe is not None
+
+        if enter_ui:
             # 要开界面就继续走：界面首启会把用户锁在配置页（§3.5），不需要再按回车
             console_fn("即将打开配置页，请在其中核对并保存后再开始运行…")
             logger.log_info("首次运行且启用 UI：跳过『按回车退出』，直接进入配置页")
             logger.log_trace(
                 "[TRACE][main.prepare_config] phase=DECIDE first_run=True action=enter_ui"
             )
+        elif ui_flag and not gui_capable:
+            # --ui 是显式要求：交给后面的能力门禁报错退出（exit 1），不能按控制台首启放行
+            logger.log_warning("首次运行：--ui 要求界面，但该构建不含 gui 能力，交由能力门禁报错")
         else:
-            # 仅纯控制台模式才停一下，且只在交互终端上等；非交互（管道/计划任务）不留挂
+            if wants_ui and not gui_capable:
+                console_fn("该构建不含界面能力，已按控制台运行。")
+                logger.log_warning("首次运行：该构建不含界面能力，已按控制台运行")
+            elif wants_ui and gui_exe is None:
+                console_fn("⚠ 未找到 Gui.exe（应与核 exe 放在同一目录），已按控制台运行。")
+                logger.log_warning("首次运行：未找到 Gui.exe，已按控制台运行")
+            # 首启停机：必须停在这里，绝不能带着占位符配置冲进 S8
+            # 仅交互终端才等；非交互（管道/计划任务）直接退出，不留挂
             if sys.stdin is not None and sys.stdin.isatty():
+                # 提示必须同时进控制台与日志：验收口径是「日志里有『按回车退出』」
+                console_fn("请修改配置后按回车退出...")
+                logger.log_info("首次运行：等待用户修改配置后按回车退出")
                 try:
-                    input("按回车退出...")
+                    input()
                 except (EOFError, KeyboardInterrupt):
                     logger.log_warning("首次运行等待回车被中断，直接退出")
             else:
@@ -1366,7 +1395,11 @@ def main():
     # 反例保留：--ui 但配置 ui.enabled=false → 报错，而不是静默降级。
     ui_flag = _bool_arg(args, "ui")
     ui_enabled = bool(cfg.get("ui", {}).get("enabled", False))
-    logger.log_info(f"[阶段] S4 UI 入口决策输入: ui_flag={ui_flag} ui_enabled={ui_enabled}")
+    gui_capable = capabilities_mod.has("gui")
+    logger.log_info(
+        f"[阶段] S4 UI 入口决策输入: ui_flag={ui_flag} ui_enabled={ui_enabled} "
+        f"gui_capable={gui_capable}"
+    )
     if ui_flag and not ui_enabled:
         reason = "以 --ui 显式要求界面，但 ui.enabled=false：按规范报错退出，不静默降级到控制台"
         logger.log_warning(f"[阶段] S4 决定=报错退出 原因={reason}")
@@ -1381,7 +1414,15 @@ def main():
             "配置未启用 UI 入口（ui.enabled=false）。"
             "请先在 config.json 把 ui.enabled 改为 true，或去掉 --ui 使用控制台模式。"
         )
-    if ui_flag or ui_enabled:
+    if (ui_flag or ui_enabled) and not gui_capable:
+        # P0-12：无 gui 能力的构建不尝试 UI 入口 —— 不查 Gui.exe、不打印「即将打开配置页」。
+        # --ui 显式要求的情况已在 prepare_config 的能力门禁里报错退出（exit 1）；这里只剩
+        # ui.enabled=true 的隐式意图：提示一句，按控制台跑。
+        logger.log_info(
+            "[阶段] S4 决定=控制台模式 原因=该构建不含界面能力（ui.enabled 不触发能力门禁）"
+        )
+        console("该构建不含界面能力，已按控制台运行。")
+    elif ui_flag or ui_enabled:
         from guild_auto.ui import binding as ui_bridge_mod
 
         exe = ui_bridge_mod.gui_executable()

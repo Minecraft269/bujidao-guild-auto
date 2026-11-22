@@ -361,15 +361,19 @@ class TestPrepareConfig(_Base):
         self.assertEqual(cfg["guild_qq"], DEFAULT_CONFIG["guild_qq"])
 
     def test_missing_config_with_ui_keeps_running_past_placeholder(self):
-        """首启 + UI：占位符降级为 warning，**不退出**，继续进配置页（P0-4d 恢复）。
+        """首启 + UI 且 Gui.exe 可定位：占位符降级为 warning，**不退出**，继续进配置页（P0-4d 恢复）。
 
         P0-9 曾把占位符定成启动 error，导致首启永远进不了配置页（P0-9b 回修）：
         只有 created=True 的这一次降级放行，点「开始」后还会按非首启再校一次。
+        P0-12：进配置页的前提是 Gui.exe 真的能找到；本用例固定为「能找到」。
         """
         path = os.path.join(self.tmp, "brand_new.json")
         exit_fn = mock.Mock()
         console_fn = mock.Mock()
-        main_mod.prepare_config(self._args(path), console_fn=console_fn, exit_fn=exit_fn)
+        from guild_auto.ui import binding as ui_binding
+
+        with mock.patch.object(ui_binding, "gui_executable", lambda: "Gui.exe"):
+            main_mod.prepare_config(self._args(path), console_fn=console_fn, exit_fn=exit_fn)
         exit_fn.assert_not_called()
         self.assertTrue(os.path.exists(path), "首次运行必须生成配置文件")
         printed = " ".join(str(c.args[0]) for c in console_fn.call_args_list if c.args)
