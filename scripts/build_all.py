@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -49,6 +50,7 @@ SRC = REPO_ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from guild_auto import capabilities  # noqa: E402
+from guild_auto.config import ensure_default_config, load_config  # noqa: E402
 
 VARIANT_SCRIPT = Path(__file__).resolve().parent / "build-variants.py"
 CONST_FILE = SRC / "guild_auto" / "_build_capabilities.py"
@@ -269,8 +271,25 @@ def _popen_with_retry(
             time.sleep(0.5)
 
 
+def _seed_check_config(workdir: Path) -> None:
+    """给自检目录放一份「非首启且能通过校验」的配置。
+
+    P0-12 之后，空目录首启会在打印启动横幅之前就停机（控制台首启 / 缺 Gui.exe 回落），
+    自检拿不到横幅。这里固定成非首启 + 控制台模式 + 真实存在的 game_log 文件，
+    让产物走完校验、打印横幅，再被自检结束掉。
+    """
+    cfg_path = workdir / "config.json"
+    ensure_default_config(str(cfg_path))
+    cfg = load_config(str(cfg_path))
+    cfg["ui"]["enabled"] = False
+    game = workdir / "game.log"
+    game.write_text("", encoding="utf-8")
+    cfg["game_log"] = str(game)
+    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+
+
 def verify_exe(v: Variant, exe: Path, timeout: float = 30.0) -> tuple[bool, str]:
-    """在空目录里跑一次产物,读**产物自己**写出的启动横幅。
+    """在临时目录（已放一份非首启的合规配置）里跑一次产物,读**产物自己**写出的启动横幅。
 
     清掉 GUILD_AUTO_CAPABILITIES:产物读不到环境变量,只能靠打包期常量,
     这样比对的是「exe 里烧进去的那份能力清单」,不是源码/环境。
@@ -281,6 +300,7 @@ def verify_exe(v: Variant, exe: Path, timeout: float = 30.0) -> tuple[bool, str]
     """
     with tempfile.TemporaryDirectory(prefix="guild-auto-check-", ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
+        _seed_check_config(tmp_path)
         stdout_file = tmp_path / "stdout.txt"
         log_file = tmp_path / "logs" / "latest.log"
         env = {k: val for k, val in os.environ.items() if k != capabilities.ENV_VAR}

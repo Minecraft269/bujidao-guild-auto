@@ -55,7 +55,10 @@ class TestSchemaDowngradeEntry(unittest.TestCase):
 
 class TestPrepareConfigFirstRun(unittest.TestCase):
     def test_first_run_does_not_exit_and_warns(self):
-        """空目录首启：不退出（放行进配置页），控制台/日志里是 warning 不是 error。"""
+        """空目录首启 + Gui.exe 可定位：不退出（放行进配置页），控制台/日志里是 warning 不是 error。
+
+        P0-12：进配置页的前提是 Gui.exe 真的能找到；本用例固定为「能找到」。
+        """
         d = tempfile.mkdtemp(prefix="p0_9b_")
         path = os.path.join(d, "config.json")
         printed = []
@@ -63,20 +66,23 @@ class TestPrepareConfigFirstRun(unittest.TestCase):
         def _exit(code=0):
             raise AssertionError(f"首启不应退出，却 exit({code})")
 
-        cfg = main_mod.prepare_config(
-            mock.Mock(
-                config=path,
-                admin=None,
-                log=None,
-                options=None,
-                dry_run=False,
-                debug=False,
-                debug_skip=None,
-                ui=None,
-            ),
-            console_fn=lambda *a, **k: printed.append((str(a[0]), k.get("level"))),
-            exit_fn=_exit,
-        )
+        from guild_auto.ui import binding as ui_binding
+
+        with mock.patch.object(ui_binding, "gui_executable", lambda: "Gui.exe"):
+            cfg = main_mod.prepare_config(
+                mock.Mock(
+                    config=path,
+                    admin=None,
+                    log=None,
+                    options=None,
+                    dry_run=False,
+                    debug=False,
+                    debug_skip=None,
+                    ui=None,
+                ),
+                console_fn=lambda *a, **k: printed.append((str(a[0]), k.get("level"))),
+                exit_fn=_exit,
+            )
         joined = "\n".join(t for t, _lvl in printed)
         self.assertIn("占位符", joined)
         self.assertIn("[警告]", joined, "首启占位符必须是警告不是错误")
