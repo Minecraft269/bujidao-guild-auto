@@ -152,6 +152,7 @@ class TestS4NoGuiCapability(unittest.TestCase):
         args = _args("X.json")
         gui = mock.Mock(return_value="Gui.exe")
         with (
+            mock.patch.object(main_mod, "_schedule_startup_self_heal"),  # P0-14：不碰宿主 %TEMP%
             mock.patch.object(main_mod, "parse_args", lambda: args),
             mock.patch.object(main_mod, "prepare_config", lambda a: cfg),
             mock.patch.object(

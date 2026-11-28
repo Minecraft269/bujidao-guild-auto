@@ -583,20 +583,87 @@ _MEI_STALE_AFTER_S = 600.0
 # Win32 常量（只读查询用）
 _PROCESS_QUERY_INFORMATION = 0x0400
 _PROCESS_VM_READ = 0x0010
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _LIST_MODULES_ALL = 0x03
+_MAX_MODULE_PATH = 32768  # NT 最大路径长度；固定 260 会静默截断长路径
 
 
-def _process_module_dirs() -> set[str]:
-    """返回所有进程已加载模块所在目录（normcase 后的绝对路径集合）。
+def _path_key(path: str) -> str:
+    """比较用的路径键：normcase + 去 `\\\\?\\` 前缀（Node/Electron 等进程会带）。
 
-    只读 Win32 查询：EnumProcesses → OpenProcess → EnumProcessModulesEx →
-    GetModuleFileNameExW。取不到权限的进程（系统/受保护进程）直接跳过 ——
-    它们不会加载用户态 onefile 解包出来的模块，不会造成误删。
-    POSIX 上删除运行中进程的文件不影响进程本身，无需这份清单，返回空集。
+    只用于比较，不用于文件操作。
     """
-    if sys.platform != "win32":
-        return set()
+    norm = os.path.normcase(os.path.abspath(path))
+    if norm.startswith("\\\\?\\"):
+        norm = norm[4:]
+        if norm.startswith("unc\\"):
+            norm = "\\\\" + norm[4:]
+    return norm
+
+
+def _same_or_below(key: str, root_key: str) -> bool:
+    return key == root_key or key.startswith(root_key + os.sep)
+
+
+def _win32():
     import ctypes
+
+    return ctypes
+
+
+def _process_session(pid: int) -> int | None:
+    """只读查询进程所在会话；查询失败返回 None（进程可能已退出）。"""
+    ctypes = _win32()
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    session = wintypes.DWORD()
+    if not k32.ProcessIdToSessionId(pid, ctypes.byref(session)):
+        return None
+    return session.value
+
+
+def _process_image_name(pid: int) -> str | None:
+    """只读取进程映像名（LIMITED_INFORMATION 即可，不需要 VM_READ）。"""
+    ctypes = _win32()
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        buf = ctypes.create_unicode_buffer(_MAX_MODULE_PATH)
+        size = wintypes.DWORD(_MAX_MODULE_PATH)
+        if not k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return None
+        return os.path.basename(buf.value)
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _process_module_dirs() -> set[str] | None:
+    """所有进程已加载模块所在目录（比较键）；**None 表示结果不可信**。
+
+    不可信 = 无法证明「没有任何进程在用候选目录」：
+      * EnumProcesses 失败；或返回的 PID 数顶到缓冲区上限（Windows 此时不报错，
+        只把 needed 填成缓冲区大小，多出的进程静默丢失）；
+      * 有同会话进程打不开、且其映像名与本进程 exe 同名（可能是提权的另一个实例）。
+    调用方拿到 None 必须整轮不删 —— 误删运行中实例正是 P0-14 要消除的故障。
+
+    打不开又读不到映像名的进程（受保护/PPL）不可能是未签名的本程序，直接忽略。
+    """
+    ctypes = _win32()
     from ctypes import wintypes
 
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -626,13 +693,27 @@ def _process_module_dirs() -> set[str]:
     pids = (wintypes.DWORD * 4096)()
     needed = wintypes.DWORD()
     if not psapi.EnumProcesses(pids, ctypes.sizeof(pids), ctypes.byref(needed)):
-        return set()
+        return None
+    if needed.value >= ctypes.sizeof(pids):
+        return None
+    count = needed.value // ctypes.sizeof(wintypes.DWORD)
+
+    own_names = {os.path.normcase(os.path.basename(sys.executable or ""))}
+    own_names.add(os.path.normcase(os.path.basename(sys.argv[0] or "")))
+    own_names.discard("")
+    my_session = _process_session(os.getpid())
+
     dirs: set[str] = set()
-    for pid in pids[: needed.value // ctypes.sizeof(wintypes.DWORD)]:
+    for pid in pids[:count]:
         if not pid:
             continue
         handle = k32.OpenProcess(_PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ, False, pid)
         if not handle:
+            if my_session is None or _process_session(pid) != my_session:
+                continue  # 系统/服务会话进程：不会加载用户态 onefile 的模块
+            name = _process_image_name(pid)
+            if name and os.path.normcase(name) in own_names:
+                return None  # 同会话有个看不见的同名实例 → 不能证明没人在用
             continue
         try:
             mods = (wintypes.HMODULE * 1024)()
@@ -642,9 +723,9 @@ def _process_module_dirs() -> set[str]:
             ):
                 continue
             for i in range(cb.value // ctypes.sizeof(wintypes.HMODULE)):
-                buf = ctypes.create_unicode_buffer(260)
-                if psapi.GetModuleFileNameExW(handle, mods[i], buf, 260):
-                    dirs.add(os.path.normcase(os.path.dirname(buf.value)))
+                buf = ctypes.create_unicode_buffer(_MAX_MODULE_PATH)
+                if psapi.GetModuleFileNameExW(handle, mods[i], buf, _MAX_MODULE_PATH):
+                    dirs.add(_path_key(os.path.dirname(buf.value)))
         finally:
             k32.CloseHandle(handle)
     return dirs
@@ -663,8 +744,8 @@ def _mei_scan_roots() -> list[str]:
         roots.append(os.path.dirname(os.path.abspath(mei)))
     seen: list[str] = []
     for root in roots:
-        norm = os.path.normcase(os.path.abspath(root))
-        if norm not in {os.path.normcase(p) for p in seen} and os.path.isdir(root):
+        norm = _path_key(root)
+        if norm not in {_path_key(p) for p in seen} and os.path.isdir(root):
             seen.append(root)
     return seen
 
@@ -672,7 +753,7 @@ def _mei_scan_roots() -> list[str]:
 def _stale_mei_candidates(now: float, min_age_s: float, roots: list[str]) -> list[str]:
     """roots 下 mtime 早于 now - min_age_s 的 _MEI* 目录（排除本进程自己的解包目录）。"""
     own = getattr(sys, "_MEIPASS", None)
-    own_norm = os.path.normcase(os.path.abspath(own)) if own else ""
+    own_key = _path_key(own) if own else ""
     out: list[str] = []
     for root in roots:
         try:
@@ -683,8 +764,8 @@ def _stale_mei_candidates(now: float, min_age_s: float, roots: list[str]) -> lis
             if not name.startswith(_MEI_NAME_PREFIX):
                 continue
             path = os.path.join(root, name)
-            norm = os.path.normcase(os.path.abspath(path))
-            if own_norm and (norm == own_norm or norm.startswith(own_norm + os.sep)):
+            key = _path_key(path)
+            if own_key and _same_or_below(key, own_key):
                 continue
             if not os.path.isdir(path):
                 continue
@@ -703,38 +784,54 @@ def cleanup_stale_mei_dirs(now=None, min_age_s=_MEI_STALE_AFTER_S, roots=None) -
     """启动期自愈（P0-14）：删除无进程持有且超过 10 分钟的 _MEI* 残留。
 
     - 有进程加载了其中模块 → 跳过（不碰运行中的实例）；
-    - 删除失败（典型：安全软件实时扫描持有句柄）→ 记录后放手，不重试、不等待；
-    - 任何异常都不得冒泡：调用点另有一层 try/except，双保险。
+    - 进程枚举不可信（见 `_process_module_dirs`）→ 整轮不删（fail-closed）；
+    - 删除失败（典型：安全软件实时扫描持有句柄）→ 记录后放手，不重试、不等待。
 
+    本函数自身不主动抛异常；生产调用点 `_startup_self_heal` 再兜一层。
     返回 {"removed": [...], "in_use": [...], "failed": [...]}，供单测断言。
     """
     result: dict[str, list[str]] = {"removed": [], "in_use": [], "failed": []}
+    if sys.platform != "win32":
+        return result  # 清理只针对 Windows onefile 解包目录
     now = time.time() if now is None else now
     roots = _mei_scan_roots() if roots is None else roots
     candidates = _stale_mei_candidates(now, min_age_s, roots)
     if not candidates:
         return result
-    in_use = _process_module_dirs()
+    module_dirs = _process_module_dirs()
+    if module_dirs is None:
+        return result
     for path in candidates:
-        if os.path.normcase(os.path.abspath(path)) in in_use:
+        key = _path_key(path)
+        if any(_same_or_below(d, key) for d in module_dirs):
             result["in_use"].append(path)
             continue
-        # 目录无进程在用 → 即便删了一半（杀软锁着个别文件）也不会影响任何人；
-        # 剩下的下次启动继续清，不做重试、不阻塞启动。
-        try:
-            shutil.rmtree(path, ignore_errors=True)
-        except OSError:
-            pass
+        # rmtree(ignore_errors=True) 不会抛（顶层 symlink/junction 也被吞掉）；
+        # 删不掉的目录留在原地，下次启动继续清，不做重试、不阻塞启动。
+        shutil.rmtree(path, ignore_errors=True)
         (result["removed"] if not os.path.exists(path) else result["failed"]).append(path)
     return result
 
 
 def _startup_self_heal() -> None:
-    """P0-14：启动期自愈的统一入口 —— 任何失败都静默，绝不阻塞启动、绝不弹框。"""
+    """启动期自愈的统一入口 —— 任何失败都静默，绝不弹框。"""
     try:
         cleanup_stale_mei_dirs()
     except Exception:
         pass
+
+
+def _schedule_startup_self_heal():
+    """把启动期自愈放到 daemon 线程：有残留时枚举 400+ 进程约 1s，不能拖慢首屏。
+
+    返回线程对象（测试可 join）；线程创建失败同样静默。
+    """
+    try:
+        thread = threading.Thread(target=_startup_self_heal, name="mei-self-heal", daemon=True)
+        thread.start()
+        return thread
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1545,9 +1642,9 @@ def gate_on_failures(rt, label, count, halt_reason):
 
 
 def main():
-    # P0-14：启动期自愈 —— 清掉无进程持有的陈旧 _MEI* 残留，必须先于一切且完全静默
-    # （杀软持有句柄是常态：删不掉就放手，绝不阻塞启动、绝不弹框）。
-    _startup_self_heal()
+    # P0-14：启动期自愈放到后台线程 —— 有残留时枚举 400+ 进程约 1s，不能拖慢首屏；
+    # 删除失败静默跳过，绝不阻塞启动、绝不弹框。
+    _schedule_startup_self_heal()
 
     # 每轮从零开始：Ctrl+C 菜单选「c 继续」会再进一次 main()，上一轮那座桥/
     # 那个钉住的退出原因都已经过期（P0-8 独立审查）。

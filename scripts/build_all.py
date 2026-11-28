@@ -404,7 +404,13 @@ def run_plan(
     return rows
 
 
-def render_index(rows: list[Row], out_root: Path, started_at: str, total_seconds: float) -> str:
+def render_index(
+    rows: list[Row],
+    out_root: Path,
+    started_at: str,
+    total_seconds: float,
+    runtime_tmpdir: Path | None = None,
+) -> str:
     """INDEX.md:变体名 / 文件名 / 字节数 / sha256 / 构建耗时 / 自检 / 状态。"""
     ok_count = sum(1 for r in rows if r.ok)
     lines = [
@@ -417,6 +423,11 @@ def render_index(rows: list[Row], out_root: Path, started_at: str, total_seconds
         f"- 变体总数: {len(rows)}(注册表现算)",
         f"- 成功 / 失败: {ok_count} / {len(rows) - ok_count}",
         f"- 总耗时: {total_seconds:.1f}s",
+    ]
+    if runtime_tmpdir is not None:
+        # 路径被写进 exe:这类产物换机器/删目录可能起不来,不能当发布产物
+        lines.append(f"- runtime-tmpdir: {runtime_tmpdir} (仅限本机,不要发布)")
+    lines += [
         "",
         "| 变体 | 文件 | 字节数 | sha256 | 构建耗时 | 自检 | 状态 |",
         "| --- | --- | ---: | --- | ---: | --- | --- |",
@@ -513,10 +524,14 @@ def main(argv: list[str] | None = None) -> int:
 
     runtime_tmpdir = args.runtime_tmpdir
     if runtime_tmpdir is not None:
+        # 相对路径按仓库根解析：脚本其余部分都以 REPO_ROOT 为子进程 cwd
         runtime_tmpdir = (
-            runtime_tmpdir if runtime_tmpdir.is_absolute() else Path.cwd() / runtime_tmpdir
+            runtime_tmpdir if runtime_tmpdir.is_absolute() else REPO_ROOT / runtime_tmpdir
         )
-        runtime_tmpdir.mkdir(parents=True, exist_ok=True)
+        try:
+            runtime_tmpdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            ap.error(f"--runtime-tmpdir 无法创建 {runtime_tmpdir}: {exc}")
         # 路径会被写进 exe,换了机器/删了目录都可能让 bootloader 起不来 → 仅限本机
         print(f"[P0-14] onefile 解包目录固定为: {runtime_tmpdir}(产物仅限本机使用)")
 
@@ -536,7 +551,9 @@ def main(argv: list[str] | None = None) -> int:
     total_seconds = time.monotonic() - t0
 
     index_path = out_root / "INDEX.md"
-    index_path.write_text(render_index(rows, out_root, started_at, total_seconds), encoding="utf-8")
+    index_path.write_text(
+        render_index(rows, out_root, started_at, total_seconds, runtime_tmpdir), encoding="utf-8"
+    )
     failed = [r for r in rows if not r.ok]
     print()
     print(

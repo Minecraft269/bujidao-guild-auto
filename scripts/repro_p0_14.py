@@ -92,13 +92,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--label", required=True, help="形态名称，只用于输出")
     ap.add_argument("--exe", required=True, type=Path, help="被测 exe")
     ap.add_argument("--watch-dir", required=True, type=Path, help="统计 _MEI* 新增的目录")
-    ap.add_argument("--launches", type=int, default=10, help="连续启动次数（默认 10）")
+    ap.add_argument("--launches", type=int, default=10, help="连续启动次数（默认 10，至少 1）")
     ap.add_argument("--timeout", type=float, default=120.0, help="单次启动超时秒数（默认 120）")
     args = ap.parse_args(argv)
 
     if not args.exe.is_file():
         print(f"exe 不存在: {args.exe}", file=sys.stderr)
         return 2
+    if args.launches < 1:
+        ap.error("--launches 必须 ≥ 1")
+    if args.timeout <= 0:
+        ap.error("--timeout 必须 > 0")
     before = mei_dirs(args.watch_dir)
     results = []
     for i in range(1, args.launches + 1):

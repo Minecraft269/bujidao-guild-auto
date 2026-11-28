@@ -63,6 +63,8 @@ def test_main_launches_gui_and_returns_when_window_closed(tmp_path, cfg, monkeyp
     monkeypatch.setattr(ui_binding, "set_active", lambda b: None)
     monkeypatch.setattr(ui_binding, "RuntimeController", lambda: object())
     monkeypatch.setattr(main_mod.config_mod, "load_config", lambda p: copy.deepcopy(cfg))
+    # P0-14：main() 会在后台线程清宿主 %TEMP% 的 _MEI* 残留，测试不碰宿主环境
+    monkeypatch.setattr(main_mod, "_schedule_startup_self_heal", lambda: None)
 
     assert main_mod.main() == 0
     assert len(_FakeBridge.instances) == 1
@@ -83,6 +85,7 @@ def test_main_falls_back_to_console_when_gui_missing(tmp_path, cfg, monkeypatch)
 
     monkeypatch.setattr(ui_binding, "gui_executable", lambda: None)
     monkeypatch.setattr(ui_binding, "GuiBridge", _FakeBridge)
+    monkeypatch.setattr(main_mod, "_schedule_startup_self_heal", lambda: None)  # P0-14
 
     # 回落后会继续走主流程；用 runtime 构造失败把它截停，只验证决策分支
     monkeypatch.setattr(main_mod.runtime_mod, "build_runtime", mock.Mock(side_effect=SystemExit(0)))
