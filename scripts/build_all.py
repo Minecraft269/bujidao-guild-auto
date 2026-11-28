@@ -134,7 +134,9 @@ def select(variants: list[Variant], names: list[str]) -> list[Variant]:
     return [v for v in variants if v.name in wanted]
 
 
-def pyinstaller_args(v: Variant, dist: Path, work: Path, spec: Path) -> list[str]:
+def pyinstaller_args(
+    v: Variant, dist: Path, work: Path, spec: Path, runtime_tmpdir: Path | None = None
+) -> list[str]:
     """单个变体的 PyInstaller 参数(逐条对齐 build.yml 的 matrix 任务)。"""
     args = [
         "--onefile",
@@ -158,6 +160,12 @@ def pyinstaller_args(v: Variant, dist: Path, work: Path, spec: Path) -> list[str
         "--specpath",
         str(spec),
     ]
+    if runtime_tmpdir is not None:
+        # P0-14：本地开发构建把 onefile 的解包目录固定到项目内已加白的目录，避开
+        # %TEMP% 下「安全软件实时扫描锁住 _MEI…\python312.dll」导致的退出清理失败 /
+        # 再次启动 LoadLibrary 失败。**发布 / CI 不设该参数**（build.yml 不经过本脚本）；
+        # 带该参数的产物把路径写死在 exe 里，只能在解包目录同环境的本机使用。
+        args += ["--runtime-tmpdir", str(runtime_tmpdir)]
     if "vision" in v.capabilities:
         args += ["--collect-all", "winsdk"]
     else:
@@ -189,7 +197,7 @@ def _copy_with_retry(src: Path, dst: Path, timeout: float = 60.0) -> None:
             time.sleep(0.5)
 
 
-def build_one(v: Variant, out_root: Path) -> Row:
+def build_one(v: Variant, out_root: Path, runtime_tmpdir: Path | None = None) -> Row:
     """构建一个变体;任何失败都抛异常,由 run_plan() 记 FAILED 并继续。"""
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="guild-auto-build-", ignore_cleanup_errors=True) as tmp:
@@ -211,7 +219,9 @@ def build_one(v: Variant, out_root: Path) -> Row:
                 sys.executable,
                 "-m",
                 "PyInstaller",
-                *pyinstaller_args(v, tmp_path / "dist", tmp_path / "build", tmp_path),
+                *pyinstaller_args(
+                    v, tmp_path / "dist", tmp_path / "build", tmp_path, runtime_tmpdir
+                ),
             ],
             cwd=REPO_ROOT,
             check=True,
@@ -394,7 +404,13 @@ def run_plan(
     return rows
 
 
-def render_index(rows: list[Row], out_root: Path, started_at: str, total_seconds: float) -> str:
+def render_index(
+    rows: list[Row],
+    out_root: Path,
+    started_at: str,
+    total_seconds: float,
+    runtime_tmpdir: Path | None = None,
+) -> str:
     """INDEX.md:变体名 / 文件名 / 字节数 / sha256 / 构建耗时 / 自检 / 状态。"""
     ok_count = sum(1 for r in rows if r.ok)
     lines = [
@@ -407,6 +423,11 @@ def render_index(rows: list[Row], out_root: Path, started_at: str, total_seconds
         f"- 变体总数: {len(rows)}(注册表现算)",
         f"- 成功 / 失败: {ok_count} / {len(rows) - ok_count}",
         f"- 总耗时: {total_seconds:.1f}s",
+    ]
+    if runtime_tmpdir is not None:
+        # 路径被写进 exe:这类产物换机器/删目录可能起不来,不能当发布产物
+        lines.append(f"- runtime-tmpdir: {runtime_tmpdir} (仅限本机,不要发布)")
+    lines += [
         "",
         "| 变体 | 文件 | 字节数 | sha256 | 构建耗时 | 自检 | 状态 |",
         "| --- | --- | ---: | --- | ---: | --- | --- |",
@@ -471,6 +492,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--verify-timeout", type=float, default=30.0, help="单次产物自检等待秒数(默认 30)"
     )
+    ap.add_argument(
+        "--runtime-tmpdir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "仅本地开发用(P0-14):把 onefile 解包目录固定到 DIR(建议项目内已加白目录),"
+            "避开 %%TEMP%% 下安全软件锁 _MEI 残留。发布/CI 不要带;带此参数的产物仅限本机"
+        ),
+    )
     args = ap.parse_args(argv)
 
     variants = plan()
@@ -491,6 +522,19 @@ def main(argv: list[str] | None = None) -> int:
     if not ICON.is_file():
         print(f"[WARNING] 图标不存在,所有变体都会构建失败: {ICON}", file=sys.stderr)
 
+    runtime_tmpdir = args.runtime_tmpdir
+    if runtime_tmpdir is not None:
+        # 相对路径按仓库根解析：脚本其余部分都以 REPO_ROOT 为子进程 cwd
+        runtime_tmpdir = (
+            runtime_tmpdir if runtime_tmpdir.is_absolute() else REPO_ROOT / runtime_tmpdir
+        )
+        try:
+            runtime_tmpdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            ap.error(f"--runtime-tmpdir 无法创建 {runtime_tmpdir}: {exc}")
+        # 路径会被写进 exe,换了机器/删了目录都可能让 bootloader 起不来 → 仅限本机
+        print(f"[P0-14] onefile 解包目录固定为: {runtime_tmpdir}(产物仅限本机使用)")
+
     started_at = time.strftime("%Y-%m-%d %H:%M:%S")
     t0 = time.monotonic()
     snapshot = _snapshot_const()
@@ -500,13 +544,16 @@ def main(argv: list[str] | None = None) -> int:
             out_root,
             verify=not args.no_verify,
             verify_fn=lambda v, exe: verify_exe(v, exe, args.verify_timeout),
+            build_fn=lambda v, out: build_one(v, out, runtime_tmpdir),
         )
     finally:
         _restore_const(snapshot)
     total_seconds = time.monotonic() - t0
 
     index_path = out_root / "INDEX.md"
-    index_path.write_text(render_index(rows, out_root, started_at, total_seconds), encoding="utf-8")
+    index_path.write_text(
+        render_index(rows, out_root, started_at, total_seconds, runtime_tmpdir), encoding="utf-8"
+    )
     failed = [r for r in rows if not r.ok]
     print()
     print(

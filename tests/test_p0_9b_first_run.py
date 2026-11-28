@@ -122,6 +122,7 @@ class TestPrestartRecheck(unittest.TestCase):
         args.debug_skip = None
         args.dry_run = False
         patches = [
+            mock.patch.object(main_mod, "_schedule_startup_self_heal"),  # P0-14：不碰宿主 %TEMP%
             mock.patch.object(main_mod, "parse_args", lambda: args),
             mock.patch.object(main_mod, "prepare_config", lambda a: copy.deepcopy(cfg)),
             mock.patch.object(main_mod, "console", lambda *a, **k: None),

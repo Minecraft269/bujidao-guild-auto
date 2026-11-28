@@ -292,6 +292,7 @@ class TestMainWiresUiMode(_TempCase):
 
         save_pending = mock.Mock()
         patches = [
+            ("_schedule_startup_self_heal", None),  # 不真实扫描/删除宿主 %TEMP%（P0-14）
             ("parse_args", args),
             ("prepare_config", self.cfg),
             ("runtime_mod.build_runtime", rt),

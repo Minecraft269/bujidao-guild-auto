@@ -151,6 +151,7 @@ class _MainCase(unittest.TestCase):
 
         # (目标, 返回值)；None 表示用无参 MagicMock
         patches = [
+            ("_schedule_startup_self_heal", NO_RET),  # 不真实扫描/删除宿主 %TEMP%（P0-14）
             ("parse_args", "MOCK_ARGS"),
             ("prepare_config", cfg),
             ("runtime_mod.build_runtime", rt),
